@@ -28,10 +28,8 @@ jobs:
       - name: Substitute template variables
         if: steps.check.outputs.needed == 'true'
         run: |
-          REPO_NAME="${{ github.event.repository.name }}"
-          find . -type f \( -name "*.kts" -o -name "*.md" -o -name "*.yml" -o -name "*.kt" -o -name "*.xml" \) \
-            ! -path "./.git/*" \
-            -exec sed -i "s/__TEMPLATE_NAME__/${REPO_NAME}/g" {} +
+          chmod +x personalize.sh
+          ./personalize.sh "${{ github.event.repository.name }}"
 
       - name: Remove setup workflow
         if: steps.check.outputs.needed == 'true'
