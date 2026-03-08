@@ -1,2 +1,2 @@
-# __TEMPLATE_NAME__
+# aWayToGo
 Android Template Repository
