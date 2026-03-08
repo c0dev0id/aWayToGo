@@ -38,6 +38,7 @@ kotlin {
 }
 
 dependencies {
+    implementation("com.google.android.material:material:1.11")
     val composeBom = platform("androidx.compose:compose-bom:2026.02.01")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.9.0")
