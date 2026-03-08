@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "de.codevoid.__TEMPLATE_NAME__"
+    namespace = "de.codevoid.aWayToGo"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "de.codevoid.__TEMPLATE_NAME__"
+        applicationId = "de.codevoid.aWayToGo"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
