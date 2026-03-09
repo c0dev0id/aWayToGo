@@ -68,7 +68,7 @@ diag-maxfps:
 	    --ed zoom $(ZOOM) \
 	    --ez bench $(BENCH) \
 	    --ei duration $(DURATION) \
-	    --ef pixelRatio $(PIXEL_RATIO) \
+	    $(if $(filter-out 0 0.0,$(PIXEL_RATIO)),--ef pixelRatio $(PIXEL_RATIO)) \
 	    --ez crossSourceCollisions $(CROSS_SRC)
 
 # Benchmark: pan right, record frames + load time, show summary.
