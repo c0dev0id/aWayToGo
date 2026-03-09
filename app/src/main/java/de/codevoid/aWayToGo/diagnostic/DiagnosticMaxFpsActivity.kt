@@ -69,7 +69,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         }
     }
 
-    private val glFrameListener = MapLibreMap.OnDidFinishRenderingFrameListener { _ ->
+    private val glFrameListener = MapView.OnDidFinishRenderingFrameListener { _ ->
         val nowMs = SystemClock.elapsedRealtime()
         if (glLastFrameMs != 0L) glLastDtMs = nowMs - glLastFrameMs
         glLastFrameMs = nowMs
@@ -124,7 +124,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             // 0 means "no cap" to MapView.setMaximumFps.
             mapView.setMaximumFps(maxFps)
             map.setPrefetchZoomDelta(prefetch)
-            map.addOnDidFinishRenderingFrameListener(glFrameListener)
+            mapView.addOnDidFinishRenderingFrameListener(glFrameListener)
 
             map.setStyle(styleUrl) {
                 map.animateCamera(
