@@ -1,6 +1,6 @@
 # a simple make file to start developer tools
 
-.PHONY: diag diag-texture install launcher restore browser remote
+.PHONY: diag diag-texture diag-maxfps install launcher restore browser remote
 
 install:
 	RUN_ID=$$(gh run list --repo c0dev0id/aWayToGo --workflow build.yml \
@@ -15,6 +15,9 @@ diag:
 
 diag-texture:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity
+
+diag-maxfps:
+	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity
 
 launcher:
 	adb shell cmd package set-home-activity de.codevoid.aWayToGo/.map.MapActivity

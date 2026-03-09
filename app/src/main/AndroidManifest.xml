@@ -35,6 +35,13 @@
             android:name=".diagnostic.DiagnosticTextureActivity"
             android:exported="true" />
 
+        <!-- Diagnostic: setMaximumFps(30) + setPrefetchZoomDelta(4) — tests
+             whether halving the GL render budget reduces tile-load jank.
+             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity -->
+        <activity
+            android:name=".diagnostic.DiagnosticMaxFpsActivity"
+            android:exported="true" />
+
     </application>
 
 </manifest>

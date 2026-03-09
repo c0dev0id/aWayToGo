@@ -59,4 +59,9 @@ dependencies {
 
     // MapLibre
     implementation("org.maplibre.gl:android-sdk:11.0.0")
+
+    // OkHttp — MapLibre pulls this in transitively, but we declare it
+    // explicitly because we configure the client directly via
+    // HttpRequestUtil.setOkHttpClient() for disk caching and the tile gate.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

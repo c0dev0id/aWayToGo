@@ -208,6 +208,9 @@ class MapActivity : ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
+        // Must be called before MapLibre.getInstance so the custom OkHttp
+        // client (disk cache + tile gate) is in place before any HTTP request.
+        TileCache.init(this)
         MapLibre.getInstance(this)
         remoteControl = RemoteControlManager(this)
 
@@ -297,12 +300,22 @@ class MapActivity : ComponentActivity() {
                 isTiltGesturesEnabled   = true
                 isCompassEnabled        = true
             }
-            // Enter panning mode on any touch-initiated camera movement so the
-            // crosshair appears and GPS tracking is suspended.
+            // Close the tile gate on ANY camera movement — touch, D-pad, or
+            // programmatic (flyToLocation).  New network tile fetches are
+            // queued until the camera is idle so the GL thread is not
+            // interrupted by upload work mid-animation.
+            // Touch gestures additionally trigger visual panning mode.
             m.addOnCameraMoveStartedListener { reason ->
+                TileCache.gate.pause()
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                     enterPanningMode()
                 }
+            }
+            // Open the gate when the camera stops.  MapLibre will immediately
+            // start filling in any missing tiles; the map is static, so
+            // uploads do not drop visible frames.
+            m.addOnCameraIdleListener {
+                TileCache.gate.resume()
             }
             m.setStyle(styleUrl) { s ->
                 map   = m

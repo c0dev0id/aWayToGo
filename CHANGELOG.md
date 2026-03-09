@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Panning mode: entering panning with the D-pad or a touch gesture shows a crosshair at the screen centre and suspends GPS tracking. BACK or CONFIRM (remote) or the my-location button (touch) exits panning mode, re-enables tracking, and flies back to the current GPS position.
+- Tile gate: network tile fetches are suspended during any camera movement and released when the camera becomes idle, so the GL thread is not interrupted by upload work during animation. A 50 MB OkHttp disk cache is also configured so previously-fetched tiles are served from disk (bypassing the gate entirely) on subsequent visits.
 
 ### Changed
 - Map screen rebuilt on raw Android Views + single `Choreographer.FrameCallback` — Jetpack Compose removed from the main screen. Measured on target device: 14 fps with Compose → 59 fps without Compose. `MapActivity` replaces `MainActivity` as the launcher activity.
