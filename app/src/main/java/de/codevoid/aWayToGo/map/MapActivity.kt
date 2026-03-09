@@ -1,4 +1,4 @@
-package de.codevoid.aWayToGo
+package de.codevoid.aWayToGo.map
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey

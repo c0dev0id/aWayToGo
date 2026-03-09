@@ -11,7 +11,7 @@
         android:supportsRtl="true">
 
         <activity
-            android:name=".MapActivity"
+            android:name=".map.MapActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -21,11 +21,11 @@
 
         <!-- Diagnostic activity: raw MapView + Choreographer OSD, zero Compose.
              Launch with:
-               adb shell am start -n de.codevoid.aWayToGo/.DiagnosticActivity
+               adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity
              Compare its fps/dt numbers with the OSD in MapActivity to
              determine whether MapActivity itself is introducing overhead. -->
         <activity
-            android:name=".DiagnosticActivity"
+            android:name=".diagnostic.DiagnosticActivity"
             android:exported="true" />
 
     </application>

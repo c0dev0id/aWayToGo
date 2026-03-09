@@ -1,4 +1,4 @@
-package de.codevoid.aWayToGo
+package de.codevoid.aWayToGo.diagnostic
 
 import android.graphics.Color
 import android.os.Bundle
@@ -7,6 +7,7 @@ import android.view.Gravity
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import de.codevoid.aWayToGo.BuildConfig
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -31,7 +32,7 @@ import org.maplibre.android.maps.MapView
  *                                    device or MapLibre is.
  *   fps here >> fps in MainActivity → Compose overhead is the problem.
  *
- * Launch: adb shell am start -n de.codevoid.aWayToGo/.DiagnosticActivity
+ * Launch: adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity
  */
 class DiagnosticActivity : ComponentActivity() {
 
