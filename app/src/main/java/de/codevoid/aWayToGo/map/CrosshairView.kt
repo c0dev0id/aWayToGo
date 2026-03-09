@@ -47,14 +47,16 @@ class CrosshairView(context: Context) : View(context) {
         val cx = width  / 2f
         val cy = height / 2f
 
-        // Four arms: each LinearGradient runs from the arm origin (full red) to
-        // the tip (transparent), giving a natural fade without a visible edge.
-        drawArm(canvas, cx, cy, cx + armLength, cy)   // right
-        drawArm(canvas, cx, cy, cx - armLength, cy)   // left
-        drawArm(canvas, cx, cy, cx, cy + armLength)   // down
-        drawArm(canvas, cx, cy, cx, cy - armLength)   // up
+        // Each arm starts at the outer edge of the centre reticle (centerRadius away
+        // from the centre) so the empty ring in the SVG stays clear and the user can
+        // see exactly what they are aiming at.  The gradient fades from solid red at
+        // the reticle edge to transparent at armLength.
+        drawArm(canvas, cx + centerRadius, cy, cx + armLength, cy)   // right
+        drawArm(canvas, cx - centerRadius, cy, cx - armLength, cy)   // left
+        drawArm(canvas, cx, cy + centerRadius, cx, cy + armLength)   // down
+        drawArm(canvas, cx, cy - centerRadius, cx, cy - armLength)   // up
 
-        // Centre reticle drawn last so it sits on top of the arm intersection.
+        // Centre reticle drawn last.
         centerDrawable?.let { d ->
             d.setBounds(
                 (cx - centerRadius).toInt(), (cy - centerRadius).toInt(),
