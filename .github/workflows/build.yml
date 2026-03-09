@@ -64,11 +64,6 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
       - name: Download debug APK
         uses: actions/download-artifact@v4
         with:
