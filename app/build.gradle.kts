@@ -36,6 +36,12 @@ android {
             jniLibs.srcDirs(listOf("${rootDir}/rust/target/jniLibs"))
         }
     }
+
+    packaging {
+        jniLibs {
+            keepDebugSymbols += setOf("**/libawaytogo.so", "**/libandroidx.graphics.path.so")
+        }
+    }
 }
 
 kotlin {
