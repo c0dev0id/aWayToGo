@@ -20,7 +20,7 @@ log:
 	mkdir -p log
 	adb logcat -d -v threadtime \
 	    > log/full.log 2>&1 || true
-	grep -E "FATAL|AndroidRuntime|DEBUG|crash_dump|libc|abort" \
+	grep -E "beginning of crash|FATAL|AndroidRuntime|DEBUG|crash_dump|libc|abort" \
 	    log/full.log > log/crash.log || true
 	grep -E "de\.codevoid\.aWayToGo|aWayToGo" \
 	    log/full.log > log/app.log || true
