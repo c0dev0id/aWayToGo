@@ -3,7 +3,7 @@ package de.codevoid.aWayToGo.map
 import android.content.Context
 import okhttp3.Cache
 import okhttp3.OkHttpClient
-import org.maplibre.android.http.HttpRequestUtil
+import org.maplibre.android.module.http.HttpRequestUtil
 import java.io.File
 
 /**
