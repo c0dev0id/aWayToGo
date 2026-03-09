@@ -7,11 +7,13 @@
 #   make diag-bench                         (10s benchmark, default params)
 #   make diag-bench MAXFPS=60 ZOOM=14.0
 #   make diag-bench DURATION=30
-MAXFPS    ?= 30
-PREFETCH  ?= 4
-ZOOM      ?= 12.0
-BENCH     ?= false
-DURATION  ?= 10
+MAXFPS       ?= 30
+PREFETCH     ?= 4
+ZOOM         ?= 12.0
+BENCH        ?= false
+DURATION     ?= 10
+PIXEL_RATIO  ?= 0
+CROSS_SRC    ?= true
 
 .PHONY: diag diag-texture diag-maxfps diag-bench diag-3d install launcher restore browser remote log log-clear
 
@@ -65,13 +67,16 @@ diag-maxfps:
 	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH) \
 	    --ed zoom $(ZOOM) \
 	    --ez bench $(BENCH) \
-	    --ei duration $(DURATION)
+	    --ei duration $(DURATION) \
+	    --ef pixelRatio $(PIXEL_RATIO) \
+	    --ez crossSourceCollisions $(CROSS_SRC)
 
 # Benchmark: pan right, record frames + load time, show summary.
 # Override any tunable on the command line, e.g.:
-#   make diag-bench MAXFPS=60 ZOOM=14.0 PREFETCH=2 DURATION=30
+#   make diag-bench MAXFPS=60 ZOOM=14.0 PREFETCH=2 DURATION=30 PIXEL_RATIO=1.0
 diag-bench:
-	$(MAKE) diag-maxfps BENCH=true MAXFPS=$(MAXFPS) PREFETCH=$(PREFETCH) ZOOM=$(ZOOM) DURATION=$(DURATION)
+	$(MAKE) diag-maxfps BENCH=true MAXFPS=$(MAXFPS) PREFETCH=$(PREFETCH) ZOOM=$(ZOOM) \
+	    DURATION=$(DURATION) PIXEL_RATIO=$(PIXEL_RATIO) CROSS_SRC=$(CROSS_SRC)
 
 diag-3d:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity

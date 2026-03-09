@@ -14,6 +14,7 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import kotlin.math.cos
 
@@ -23,12 +24,14 @@ import kotlin.math.cos
  * Values are supplied as Intent extras so you can sweep the parameter
  * space without recompiling:
  *
- *   Extra key       Type     Default   Meaning
- *   "maxFps"        Int      30        GL render rate cap (0 = unlimited)
- *   "prefetchDelta" Int      4         Zoom levels to prefetch below current zoom
- *   "zoom"          Double   12.0      Initial camera zoom level
- *   "bench"         Boolean  false     Enable benchmark mode (see below)
- *   "duration"      Int      10        Benchmark duration in seconds
+ *   Extra key              Type     Default   Meaning
+ *   "maxFps"               Int      30        GL render rate cap (0 = unlimited)
+ *   "prefetchDelta"        Int      4         Zoom levels to prefetch below current zoom
+ *   "zoom"                 Double   12.0      Initial camera zoom level
+ *   "bench"                Boolean  false     Enable benchmark mode (see below)
+ *   "duration"             Int      10        Benchmark duration in seconds
+ *   "pixelRatio"           Float    0         Render pixel ratio (0 = device default)
+ *   "crossSourceCollisions" Boolean true      Symbol collision detection across layers
  *
  * Benchmark mode (bench=true):
  *   - Map pans right continuously for 10 seconds, starting immediately.
@@ -56,28 +59,33 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         const val EXTRA_MAX_FPS       = "maxFps"
         const val EXTRA_PREFETCH      = "prefetchDelta"
         const val EXTRA_ZOOM          = "zoom"
-        const val EXTRA_BENCH         = "bench"
-        const val EXTRA_DURATION      = "duration"
-        const val DEFAULT_MAX_FPS     = 30
-        const val DEFAULT_PREFETCH    = 4
-        const val DEFAULT_ZOOM        = 12.0
-        const val DEFAULT_BENCH       = false
-        const val DEFAULT_DURATION_S  = 10
-
-        /** Pixel scroll per Choreographer tick during benchmark. */
+        const val EXTRA_BENCH                  = "bench"
+        const val EXTRA_DURATION              = "duration"
+        const val EXTRA_PIXEL_RATIO           = "pixelRatio"
+        const val EXTRA_CROSS_SOURCE          = "crossSourceCollisions"
+        const val DEFAULT_MAX_FPS             = 30
+        const val DEFAULT_PREFETCH            = 4
+        const val DEFAULT_ZOOM                = 12.0
+        const val DEFAULT_BENCH               = false
+        const val DEFAULT_DURATION_S          = 10
+        // pixelRatio 0f = resolve to device density at runtime
+        const val DEFAULT_PIXEL_RATIO         = 0f
+        const val DEFAULT_CROSS_SOURCE        = true
 
         /** Horizontal pan per Choreographer tick (pixels). */
-        const val BENCH_SCROLL_PX     = 5f
+        const val BENCH_SCROLL_PX             = 5f
     }
 
     private lateinit var mapView: MapView
     private lateinit var osdView: TextView
 
-    private var maxFps      = DEFAULT_MAX_FPS
-    private var prefetch    = DEFAULT_PREFETCH
-    private var zoom        = DEFAULT_ZOOM
-    private var bench       = DEFAULT_BENCH
-    private var durationMs  = DEFAULT_DURATION_S * 1_000L
+    private var maxFps               = DEFAULT_MAX_FPS
+    private var prefetch             = DEFAULT_PREFETCH
+    private var zoom                 = DEFAULT_ZOOM
+    private var bench                = DEFAULT_BENCH
+    private var durationMs           = DEFAULT_DURATION_S * 1_000L
+    private var pixelRatio           = DEFAULT_PIXEL_RATIO   // resolved to actual value in onCreate
+    private var crossSourceCollisions = DEFAULT_CROSS_SOURCE
 
     // GL-frame counters — updated from MapLibre's render callback, not Choreographer.
     // This measures actual GPU frame submissions, so setMaximumFps is reflected here.
@@ -156,11 +164,15 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        maxFps      = intent.getIntExtra(EXTRA_MAX_FPS,       DEFAULT_MAX_FPS)
-        prefetch    = intent.getIntExtra(EXTRA_PREFETCH,      DEFAULT_PREFETCH)
-        zoom        = intent.getDoubleExtra(EXTRA_ZOOM,       DEFAULT_ZOOM)
-        bench       = intent.getBooleanExtra(EXTRA_BENCH,     DEFAULT_BENCH)
-        durationMs  = intent.getIntExtra(EXTRA_DURATION,      DEFAULT_DURATION_S) * 1_000L
+        maxFps               = intent.getIntExtra(EXTRA_MAX_FPS,       DEFAULT_MAX_FPS)
+        prefetch             = intent.getIntExtra(EXTRA_PREFETCH,      DEFAULT_PREFETCH)
+        zoom                 = intent.getDoubleExtra(EXTRA_ZOOM,       DEFAULT_ZOOM)
+        bench                = intent.getBooleanExtra(EXTRA_BENCH,     DEFAULT_BENCH)
+        durationMs           = intent.getIntExtra(EXTRA_DURATION,      DEFAULT_DURATION_S) * 1_000L
+        crossSourceCollisions = intent.getBooleanExtra(EXTRA_CROSS_SOURCE, DEFAULT_CROSS_SOURCE)
+        // 0f means "device default" — resolve once so the log shows the real value.
+        pixelRatio = intent.getFloatExtra(EXTRA_PIXEL_RATIO, DEFAULT_PIXEL_RATIO)
+            .takeIf { it > 0f } ?: resources.displayMetrics.density
 
         MapLibre.getInstance(this)
 
@@ -169,7 +181,9 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
 
         val root = FrameLayout(this)
 
-        mapView = MapView(this)
+        val mapOptions = MapLibreMapOptions.createFromAttributes(this)
+            .pixelRatio(pixelRatio)
+        mapView = MapView(this, mapOptions)
         root.addView(mapView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
@@ -201,6 +215,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             glMap = map
             mapView.setMaximumFps(maxFps)
             map.setPrefetchZoomDelta(prefetch)
+            map.setCrossSourceCollisions(crossSourceCollisions)
             mapView.addOnDidFinishRenderingFrameListener(glFrameListener)
 
             // Position the camera at the target zoom immediately — tile fetching
@@ -241,13 +256,16 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         val durationS = durationMs / 1_000L
         val result =
             "frames=$benchTotalFrames avg_fps=$avgFps load_time=$loadStr " +
-            "maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)} duration=${durationS}s"
+            "maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)} " +
+            "duration=${durationS}s pixelRatio=${"%.2f".format(pixelRatio)} " +
+            "crossSourceCollisions=$crossSourceCollisions"
         Log.i(TAG, "RESULT $result")
         osdView.text =
             "── Bench Results ──────────────────\n" +
             "Frames: $benchTotalFrames  Avg: $avgFps fps\n" +
             "Load time: $loadStr\n" +
-            "MaxFPS:$fpsLabel  Prefetch:$prefetch  Zoom:${"%.1f".format(zoom)}  Duration:${durationS}s"
+            "MaxFPS:$fpsLabel  Prefetch:$prefetch  Zoom:${"%.1f".format(zoom)}  Duration:${durationS}s\n" +
+            "PixelRatio:${"%.2f".format(pixelRatio)}  CrossSrc:$crossSourceCollisions"
     }
 
     override fun onStart()   { super.onStart();   mapView.onStart()  }
