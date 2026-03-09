@@ -80,6 +80,8 @@ class RemoteControlManager(private val context: Context) {
     fun unregister() {
         try {
             context.unregisterReceiver(receiver)
-        } catch (_: Exception) {}
+        } catch (_: IllegalArgumentException) {
+            // Receiver was not registered — harmless, treat unregister as idempotent.
+        }
     }
 }

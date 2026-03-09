@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.PointF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -12,7 +13,7 @@ import android.os.Bundle
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
-import android.widget.FrameLayout  // kept for LayoutParams only
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -39,8 +40,33 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Point
 import kotlin.math.cos
 import kotlin.math.sin
+
+// ── Drag line style layer / source IDs ───────────────────────────────────────
+// Two LineLayer instances (casing behind, fill in front) produce the outlined
+// look. A SymbolLayer with line-center placement overlays the distance label.
+private const val SOURCE_DRAG_LINE        = "drag-line"
+private const val LAYER_DRAG_LINE_CASING  = "drag-line-casing"
+private const val LAYER_DRAG_LINE_FILL    = "drag-line-fill"
+private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
+
+// Web-Mercator tile-resolution constants used for bearing-aware pixel→LatLng.
+// MERCATOR_CIRCUMFERENCE: Earth equatorial circumference mapped to a 256-px
+//   tile at zoom 0 (standard Web-Mercator definition).
+// METERS_PER_DEGREE_LAT: approximate metres per degree of latitude (near equator).
+private const val MERCATOR_CIRCUMFERENCE  = 156543.03392
+private const val METERS_PER_DEGREE_LAT  = 111320.0
 
 // Desired pan speed in screen pixels per second.
 private const val PAN_SPEED_PX_PER_SEC = 120f
@@ -164,9 +190,9 @@ class MapActivity : ComponentActivity() {
                         val rotatedDx   = totalDx * cosB - totalDy * sinB
                         val rotatedDy   = totalDx * sinB + totalDy * cosB
                         val latRad      = Math.toRadians(target.latitude)
-                        val metersPerPx = 156543.03392 * cos(latRad) / Math.pow(2.0, pos.zoom)
-                        val latDelta    = -(rotatedDy * metersPerPx) / 111320.0
-                        val lngDelta    =  (rotatedDx * metersPerPx) / (111320.0 * cos(latRad))
+                        val metersPerPx = MERCATOR_CIRCUMFERENCE * cos(latRad) / Math.pow(2.0, pos.zoom)
+                        val latDelta    = -(rotatedDy * metersPerPx) / METERS_PER_DEGREE_LAT
+                        val lngDelta    =  (rotatedDx * metersPerPx) / (METERS_PER_DEGREE_LAT * cos(latRad))
                         LatLng(target.latitude + latDelta, target.longitude + lngDelta)
                     } else target
 
@@ -345,6 +371,9 @@ class MapActivity : ComponentActivity() {
                 // Default fling duration is 150ms (ANIMATION_DURATION_FLING_BASE) — too abrupt.
                 // 500ms gives a natural coast-to-stop for pan, zoom, and rotate.
                 flingAnimationBaseTime = 500L
+                // Default velocity threshold is 1000 (px/s) — too high, so only fast swipes
+                // trigger the ease-out.  300 lets moderate-speed swipes also coast to a stop.
+                flingThreshold = 300
             }
             // Close the tile gate on ANY camera movement — touch, D-pad, or
             // programmatic (flyToLocation).  New network tile fetches are
@@ -491,11 +520,22 @@ class MapActivity : ComponentActivity() {
 
             is RemoteEvent.LongPress -> when (event.key) {
                 RemoteKey.CONFIRM ->
-                    m.locationComponent.cameraMode =
-                        if (m.locationComponent.cameraMode == CameraMode.NONE)
-                            CameraMode.TRACKING
-                        else
-                            CameraMode.NONE
+                    if (isInPanningMode) {
+                        // Capture the map position under the crosshair (screen centre)
+                        // and draw the drag line from the current GPS fix to that point.
+                        val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
+                        val target = m.projection.fromScreenLocation(screenCenter)
+                        m.locationComponent.lastKnownLocation?.let { loc ->
+                            setDragLine(LatLng(loc.latitude, loc.longitude), target)
+                        }
+                    } else {
+                        // Outside panning mode: toggle GPS camera tracking.
+                        m.locationComponent.cameraMode =
+                            if (m.locationComponent.cameraMode == CameraMode.NONE)
+                                CameraMode.TRACKING
+                            else
+                                CameraMode.NONE
+                    }
 
                 RemoteKey.BACK -> {
                     val currentTilt = m.cameraPosition.tilt
@@ -583,6 +623,83 @@ class MapActivity : ComponentActivity() {
                 }
                 override fun onCancel() {}
             },
+        )
+    }
+
+    /**
+     * Draw (or update) the navigation drag line from [from] to [to].
+     *
+     * Visual spec: 6dp red fill with 2dp dark-red casing (= 10dp casing layer
+     * drawn first, 6dp fill layer drawn on top), plus a distance label placed
+     * at the midpoint of the line and rotated to follow it.
+     *
+     * On the first call the GeoJSON source and three style layers are created.
+     * On subsequent calls only the source data is updated — the layers stay.
+     * The label text uses a comma decimal separator ("4,5km") for readability
+     * on the motorcycle-mounted device.
+     */
+    private fun setDragLine(from: LatLng, to: LatLng) {
+        val s = style ?: return
+
+        val distKm = from.distanceTo(to) / 1000.0
+        val label  = "${"%.1f".format(distKm).replace('.', ',')}km"
+
+        val geometry = LineString.fromLngLats(
+            listOf(
+                Point.fromLngLat(from.longitude, from.latitude),
+                Point.fromLngLat(to.longitude,   to.latitude),
+            )
+        )
+        val feature    = Feature.fromGeometry(geometry)
+        feature.addStringProperty("label", label)
+        val collection = FeatureCollection.fromFeatures(listOf(feature))
+
+        // If the source already exists, just push new data — layers stay in place.
+        val existing = s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE)
+        if (existing != null) {
+            existing.setGeoJson(collection)
+            return
+        }
+
+        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE, collection))
+
+        // Casing — dark-red, wider than the fill so 2dp sticks out on each side.
+        s.addLayer(
+            LineLayer(LAYER_DRAG_LINE_CASING, SOURCE_DRAG_LINE).apply {
+                setProperties(
+                    PropertyFactory.lineColor("#8B0000"),
+                    PropertyFactory.lineWidth(10f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+            }
+        )
+
+        // Fill — red, drawn on top of the casing.
+        s.addLayer(
+            LineLayer(LAYER_DRAG_LINE_FILL, SOURCE_DRAG_LINE).apply {
+                setProperties(
+                    PropertyFactory.lineColor("#FF0000"),
+                    PropertyFactory.lineWidth(6f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+            }
+        )
+
+        // Distance label at the midpoint, rotated to follow the line.
+        s.addLayer(
+            SymbolLayer(LAYER_DRAG_LINE_LABEL, SOURCE_DRAG_LINE).apply {
+                setProperties(
+                    PropertyFactory.textField(Expression.get("label")),
+                    PropertyFactory.symbolPlacement(Property.SYMBOL_PLACEMENT_LINE_CENTER),
+                    PropertyFactory.textSize(18f),
+                    PropertyFactory.textColor("#FFFFFF"),
+                    PropertyFactory.textHaloColor("#8B0000"),
+                    PropertyFactory.textHaloWidth(2f),
+                    PropertyFactory.textAllowOverlap(true),
+                )
+            }
         )
     }
 
