@@ -86,10 +86,16 @@ class MapActivity : ComponentActivity() {
     private lateinit var remoteControl: RemoteControlManager
     private lateinit var osdView: TextView
     private lateinit var myLocationButton: ImageView
+    private lateinit var crosshairView: ImageView
 
     private var map: MapLibreMap? = null
     private var style: Style? = null
     private var hasLocationPermission = false
+
+    // True while the user is panning freely (crosshair visible, tracking disabled).
+    // Entered by D-pad or touch gesture; exited by BACK, CONFIRM, or the
+    // my-location button → re-enables GPS tracking and flies back to position.
+    private var isInPanningMode = false
 
     // Active pan directions → vsync timestamp (ns) when the key was first pressed.
     // Used to compute the speed ramp-up in the Choreographer loop.
@@ -262,17 +268,23 @@ class MapActivity : ComponentActivity() {
             setPadding(btnPad, btnPad, btnPad, btnPad)
             isClickable = true
             isFocusable = true
-            setOnClickListener {
-                val m   = map ?: return@setOnClickListener
-                val loc = m.locationComponent.lastKnownLocation ?: return@setOnClickListener
-                m.locationComponent.cameraMode = CameraMode.TRACKING
-                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
-            }
+            setOnClickListener { exitPanningMode() }
         }
         root.addView(
             myLocationButton,
             FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
                 .apply { setMargins(btnMargin, btnMargin, 0, 0) },
+        )
+
+        // Crosshair — centred on screen, only visible in panning mode.
+        val crosshairSize = (48 * density).toInt()
+        crosshairView = ImageView(this).apply {
+            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_crosshair))
+            visibility = View.GONE
+        }
+        root.addView(
+            crosshairView,
+            FrameLayout.LayoutParams(crosshairSize, crosshairSize, Gravity.CENTER),
         )
 
         setContentView(root)
@@ -284,6 +296,13 @@ class MapActivity : ComponentActivity() {
                 isRotateGesturesEnabled = true
                 isTiltGesturesEnabled   = true
                 isCompassEnabled        = true
+            }
+            // Enter panning mode on any touch-initiated camera movement so the
+            // crosshair appears and GPS tracking is suspended.
+            m.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    enterPanningMode()
+                }
             }
             m.setStyle(styleUrl) { s ->
                 map   = m
@@ -356,9 +375,13 @@ class MapActivity : ComponentActivity() {
         when (event) {
 
             is RemoteEvent.KeyDown -> when (event.key) {
-                RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT ->
+                RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
+                    // Moving the D-pad immediately enters panning mode so the
+                    // crosshair appears and GPS tracking is suspended.
+                    enterPanningMode()
                     // Record vsync-clock start time; the Choreographer loop computes ramp from here.
                     panStartNs[event.key] = System.nanoTime()
+                }
                 else -> {}
             }
 
@@ -377,22 +400,33 @@ class MapActivity : ComponentActivity() {
                 RemoteKey.ZOOM_OUT -> m.animateCamera(CameraUpdateFactory.zoomOut())
 
                 RemoteKey.CONFIRM ->
-                    m.locationComponent.lastKnownLocation?.let { loc ->
-                        m.locationComponent.cameraMode = CameraMode.TRACKING
-                        flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+                    // In panning mode: confirm exits panning and re-locks on GPS.
+                    // Outside panning mode: fly to current location directly.
+                    if (isInPanningMode) {
+                        exitPanningMode()
+                    } else {
+                        m.locationComponent.lastKnownLocation?.let { loc ->
+                            flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+                        }
                     }
 
                 RemoteKey.BACK ->
-                    m.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(
-                            CameraPosition.Builder()
-                                .target(m.cameraPosition.target)
-                                .zoom(m.cameraPosition.zoom)
-                                .tilt(m.cameraPosition.tilt)
-                                .bearing(0.0)
-                                .build(),
-                        ),
-                    )
+                    // In panning mode: exit panning → re-lock on GPS.
+                    // Outside panning mode: reset map bearing to north.
+                    if (isInPanningMode) {
+                        exitPanningMode()
+                    } else {
+                        m.animateCamera(
+                            CameraUpdateFactory.newCameraPosition(
+                                CameraPosition.Builder()
+                                    .target(m.cameraPosition.target)
+                                    .zoom(m.cameraPosition.zoom)
+                                    .tilt(m.cameraPosition.tilt)
+                                    .bearing(0.0)
+                                    .build(),
+                            ),
+                        )
+                    }
             }
 
             is RemoteEvent.LongPress -> when (event.key) {
@@ -420,6 +454,36 @@ class MapActivity : ComponentActivity() {
                 else -> {}
             }
         }
+    }
+
+    /**
+     * Switch to panning mode: show the crosshair, disable GPS camera tracking.
+     *
+     * Idempotent — safe to call when already in panning mode (e.g. while the
+     * D-pad is held and multiple KeyDown events arrive).
+     */
+    private fun enterPanningMode() {
+        if (isInPanningMode) return
+        isInPanningMode = true
+        map?.locationComponent?.cameraMode = CameraMode.NONE
+        crosshairView.visibility = View.VISIBLE
+    }
+
+    /**
+     * Leave panning mode: hide the crosshair, re-enable GPS tracking, and
+     * animate back to the user's current location.
+     *
+     * Also used by the my-location button so touch-only users can exit panning.
+     * Calling when already outside panning mode is harmless — the crosshair will
+     * stay hidden and the camera will simply fly to the current location.
+     */
+    private fun exitPanningMode() {
+        isInPanningMode = false
+        crosshairView.visibility = View.GONE
+        val m   = map ?: return
+        val loc = m.locationComponent.lastKnownLocation ?: return
+        m.locationComponent.cameraMode = CameraMode.TRACKING
+        flyToLocation(m, LatLng(loc.latitude, loc.longitude))
     }
 
     /**

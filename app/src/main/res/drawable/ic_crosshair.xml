@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+
+    <!--
+        Crosshair overlay shown when panning mode is active.
+        Two layers: a semi-transparent dark stroke behind a white stroke
+        to stay readable on any map background (light terrain or dark night).
+
+        Arms: four line segments from center toward each edge with a 4dp gap
+        at the centre.  Centre dot: circle radius 2.5dp.
+    -->
+
+    <!-- Dark shadow layer — arms -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#AA000000"
+        android:strokeWidth="4"
+        android:strokeLineCap="butt"
+        android:pathData="M24,8 L24,20 M24,28 L24,40 M8,24 L20,24 M28,24 L40,24" />
+
+    <!-- Dark shadow layer — centre dot (radius 3) -->
+    <path
+        android:fillColor="#AA000000"
+        android:pathData="M21,24 A3,3 0 0 1 27,24 A3,3 0 0 1 21,24 Z" />
+
+    <!-- White arms -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="butt"
+        android:pathData="M24,8 L24,20 M24,28 L24,40 M8,24 L20,24 M28,24 L40,24" />
+
+    <!-- White centre dot (radius 2.5) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M21.5,24 A2.5,2.5 0 0 1 26.5,24 A2.5,2.5 0 0 1 21.5,24 Z" />
+
+</vector>
