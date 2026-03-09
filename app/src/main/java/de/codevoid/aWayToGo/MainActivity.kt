@@ -56,7 +56,6 @@ import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
-import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import kotlin.math.cos
@@ -91,9 +90,14 @@ class MainActivity : ComponentActivity() {
 }
 
 // Desired pan speed in screen pixels per second.
-// withFrameMillis gives us the actual frame delta so this stays
-// constant regardless of display refresh rate (60/90/120 Hz).
 private const val PAN_SPEED_PX_PER_SEC = 350f
+
+// How far ahead (ms) each animateCamera call targets.
+// The GL thread interpolates this segment smoothly at its own refresh rate.
+// On a slow main thread (e.g. 20 fps = 50ms frames) this ensures the GL
+// renderer always has a live animation to play between main-thread updates.
+private const val PAN_LOOK_AHEAD_MS = 150
+
 private const val TILT_3D = 60.0
 
 @SuppressLint("MissingPermission")
@@ -121,26 +125,26 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var style by remember { mutableStateOf<Style?>(null) }
 
-    // TextureView mode: MapLibre renders into a GL texture that Compose composites
-    // in its own hardware layer, rather than using a separate SurfaceView layer.
-    // This removes the per-frame system-compositor blend between two independent
-    // hardware layers, which helps on slower devices.
-    val mapView = remember {
-        MapView(context, MapLibreMapOptions.createFromAttributes(context).textureMode(true))
-    }
+    // SurfaceView mode (default — do NOT use textureMode here).
+    //
+    // SurfaceView gives MapLibre its own hardware layer that the GL thread
+    // drives at the display's native refresh rate, completely independent of
+    // the Compose main thread. TextureView ties GL presentation to the main
+    // thread's composition pass, so a 20 fps main thread caps perceived
+    // rendering to 20 fps even if the GL thread is rendering faster.
+    val mapView = remember { MapView(context) }
 
-    // Coroutine scope for pan loops — tied to composition lifetime,
-    // main dispatcher so MapLibre camera calls stay on the UI thread.
     val coroutineScope = rememberCoroutineScope()
-    // One active Job per directional key; cancelled on key release.
     val panJobs = remember { mutableMapOf<RemoteKey, Job>() }
 
     // ── OSD state (DEBUG builds only) ────────────────────────────────────────
-    // osdFps    : frames per second reported by withFrameMillis (main-thread health)
-    // osdFrameMs: last frame delta in ms (jitter indicator)
-    // osdZoom   : current map zoom level (higher = fewer tiles = less GPU work)
-    // osdPanSpeed: active pan speed in px/s; 0 when not panning
-    var osdFps      by remember { mutableIntStateOf(0) }
+    // osdUiFps  : Compose frame-clock fps  → main-thread health
+    // osdGlFps  : MapLibre GL renderer fps → GPU / style complexity
+    // osdFrameMs: last Compose frame delta  → jitter on the main thread
+    // osdZoom   : current zoom level        → tile count / GPU load
+    // osdPanSpeed: active pan speed px/s    → 0 when not panning
+    var osdUiFps    by remember { mutableIntStateOf(0) }
+    var osdGlFps    by remember { mutableIntStateOf(0) }
     var osdFrameMs  by remember { mutableLongStateOf(0L) }
     var osdZoom     by remember { mutableFloatStateOf(0f) }
     var osdPanSpeed by remember { mutableFloatStateOf(0f) }
@@ -180,9 +184,19 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
         }
     }
 
-    // Always-on frame-rate sampler — runs independently of panning.
-    // Measures the rate at which Compose's frame clock fires, which tells
-    // us whether the main thread is keeping up with the display.
+    // Wire up the GL fps listener as soon as the map is ready.
+    // MapLibre reports GL fps on the main thread, so state assignment is safe.
+    if (BuildConfig.DEBUG) {
+        LaunchedEffect(map) {
+            map?.addOnFpsChangedListener { fps ->
+                osdGlFps = fps.toInt()
+            }
+        }
+    }
+
+    // Always-on Compose frame-rate sampler.
+    // Only triggers recomposition when values actually change to avoid adding
+    // overhead on top of an already-busy main thread.
     if (BuildConfig.DEBUG) {
         LaunchedEffect(Unit) {
             var lastFrameMs = 0L
@@ -190,21 +204,24 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
             var windowStart = 0L
             while (true) {
                 withFrameMillis { frameMs ->
-                    // Frame delta (jitter)
-                    if (lastFrameMs != 0L) osdFrameMs = frameMs - lastFrameMs
+                    val dt = if (lastFrameMs != 0L) frameMs - lastFrameMs else 16L
                     lastFrameMs = frameMs
 
-                    // FPS — count frames in 1-second windows
+                    // Frame delta — only write if changed by ≥ 2 ms to limit recompositions
+                    if (kotlin.math.abs(dt - osdFrameMs) >= 2L) osdFrameMs = dt
+
+                    // FPS — one update per second
                     if (windowStart == 0L) windowStart = frameMs
                     frameCount++
                     if (frameMs - windowStart >= 1000L) {
-                        osdFps = frameCount
+                        osdUiFps = frameCount
                         frameCount = 0
                         windowStart = frameMs
                     }
 
-                    // Zoom level
-                    osdZoom = map?.cameraPosition?.zoom?.toFloat() ?: 0f
+                    // Zoom — only write if changed by ≥ 0.05
+                    val newZoom = map?.cameraPosition?.zoom?.toFloat() ?: 0f
+                    if (kotlin.math.abs(newZoom - osdZoom) >= 0.05f) osdZoom = newZoom
                 }
             }
         }
@@ -216,17 +233,11 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
             val m = map ?: return@collect
             when (event) {
 
-                // Directional keys: start a frame-locked pan loop on press,
-                // cancel it on release.
                 is RemoteEvent.KeyDown -> when (event.key) {
                     RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
                         val key = event.key
                         panJobs[key]?.cancel()
                         panJobs[key] = coroutineScope.launch {
-                            // withFrameMillis suspends until the next vsync frame and
-                            // provides the monotonic frame timestamp in milliseconds.
-                            // We use the real frame delta to keep speed constant across
-                            // 60/90/120 Hz displays.
                             var lastFrameMs = 0L
                             var elapsedMs = 0L
                             while (isActive) {
@@ -239,32 +250,40 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                                     // Linear ramp: 50 % speed at t=0, 100 % at t=1 s.
                                     val ramp = (elapsedMs / 1000f).coerceAtMost(1f)
                                     val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
-                                    val px = speed * dtMs / 1000f
+
+                                    // Pixels to cover in the look-ahead window.
+                                    // animateCamera carries the GL thread through this
+                                    // distance smoothly at its own refresh rate, so
+                                    // perceived motion is fluid even if the main thread
+                                    // only fires at ~20 fps.
+                                    val px = speed * PAN_LOOK_AHEAD_MS / 1000f
 
                                     if (BuildConfig.DEBUG) osdPanSpeed = speed
 
                                     val currentMap = map ?: return@withFrameMillis
                                     when (key) {
-                                        RemoteKey.UP    -> currentMap.panByInstant(0f,  -px)
-                                        RemoteKey.DOWN  -> currentMap.panByInstant(0f,   px)
-                                        RemoteKey.LEFT  -> currentMap.panByInstant(-px,  0f)
-                                        RemoteKey.RIGHT -> currentMap.panByInstant( px,  0f)
+                                        RemoteKey.UP    -> currentMap.panByAnimated(0f,  -px, PAN_LOOK_AHEAD_MS)
+                                        RemoteKey.DOWN  -> currentMap.panByAnimated(0f,   px, PAN_LOOK_AHEAD_MS)
+                                        RemoteKey.LEFT  -> currentMap.panByAnimated(-px,  0f, PAN_LOOK_AHEAD_MS)
+                                        RemoteKey.RIGHT -> currentMap.panByAnimated( px,  0f, PAN_LOOK_AHEAD_MS)
                                         else -> {}
                                     }
                                 }
                             }
                         }
                     }
-                    else -> {} // other keys don't use KeyDown
+                    else -> {}
                 }
 
                 is RemoteEvent.KeyUp -> {
                     panJobs.remove(event.key)?.cancel()
+                    // Stop the in-flight animation immediately so the map doesn't
+                    // coast past where the key was released.
+                    m.cancelTransitions()
                     if (BuildConfig.DEBUG) osdPanSpeed = 0f
                 }
 
                 is RemoteEvent.ShortPress -> when (event.key) {
-                    // Directional panning is handled via KeyDown/KeyUp above
                     RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {}
 
                     RemoteKey.ZOOM_IN ->
@@ -273,7 +292,6 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                         m.animateCamera(CameraUpdateFactory.zoomOut())
 
                     RemoteKey.CONFIRM ->
-                        // Re-centre on user and resume tracking
                         m.locationComponent.lastKnownLocation?.let { loc ->
                             m.locationComponent.cameraMode = CameraMode.TRACKING
                             m.animateCamera(
@@ -284,7 +302,6 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                         }
 
                     RemoteKey.BACK ->
-                        // Reset bearing to north, keep current position and zoom
                         m.animateCamera(
                             CameraUpdateFactory.newCameraPosition(
                                 CameraPosition.Builder()
@@ -299,14 +316,12 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
 
                 is RemoteEvent.LongPress -> when (event.key) {
                     RemoteKey.CONFIRM ->
-                        // Toggle tracking on/off
                         m.locationComponent.cameraMode =
                             if (m.locationComponent.cameraMode == CameraMode.NONE)
                                 CameraMode.TRACKING
                             else
                                 CameraMode.NONE
                     RemoteKey.BACK -> {
-                        // Toggle 3D tilt mode
                         val currentTilt = m.cameraPosition.tilt
                         m.animateCamera(
                             CameraUpdateFactory.newCameraPosition(
@@ -366,19 +381,19 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
         )
 
         // ── Performance OSD (DEBUG builds only) ──────────────────────────────
-        // What each value tells you:
-        //  FPS  — rate at which Compose's frame clock fires. If this is well
-        //         below the display refresh rate, the main thread is the
-        //         bottleneck (too much work per frame).
-        //  dt   — last frame delta in ms. High variance = jitter on the main
-        //         thread; consistently > 16 ms = dropping frames.
-        //  zoom — current zoom level. Lower zoom = more tiles visible = more
-        //         GPU work. Try zooming in to see if rendering improves.
-        //  pan  — active pan speed in px/s (only shown while a key is held).
+        // UI fps  — Compose frame-clock rate. If low, the main thread is the
+        //           bottleneck (too much work per frame or GC pauses).
+        // GL fps  — MapLibre GL renderer rate. If UI fps < GL fps, the main
+        //           thread is the bottleneck. If both are low, the GPU or map
+        //           style complexity is the bottleneck.
+        // dt      — Compose frame delta in ms. Spikes = main-thread jitter.
+        // zoom    — Current zoom. Lower zoom = more tiles = more GPU work.
+        //           Try zooming in; if GL fps improves, style/GPU is the limit.
+        // pan     — Active pan speed px/s (only while a key is held).
         if (BuildConfig.DEBUG) {
             val panLine = if (osdPanSpeed > 0f) "\npan  ${"%.0f".format(osdPanSpeed)} px/s" else ""
             Text(
-                text = "FPS  $osdFps\ndt   ${osdFrameMs}ms\nzoom ${"%.1f".format(osdZoom)}$panLine",
+                text = "UI   ${osdUiFps} fps  dt:${osdFrameMs}ms\nGL   ${osdGlFps} fps\nzoom ${"%.1f".format(osdZoom)}$panLine",
                 color = Color.White,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
@@ -394,30 +409,28 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
 }
 
 /**
- * Instantly reposition the map centre by [xPixels]/[yPixels] screen pixels.
+ * Animate the map centre by [xPixels]/[yPixels] screen pixels over [durationMs].
  *
- * Uses moveCamera (no animation) so it can be called every vsync frame
- * without competing easing curves causing stutter.
+ * Unlike moveCamera (instant), animateCamera hands the interpolation to the
+ * GL thread, which runs at the display's native refresh rate independently of
+ * the Compose main thread. On a slow main thread (e.g. 20 fps), this means
+ * perceived panning remains smooth even though camera targets only arrive at
+ * 20 fps — the GL renderer fills in the in-between frames.
  *
- * The geographic delta is computed directly from the Web Mercator scale at the
- * current zoom level — no projection.toScreenLocation / fromScreenLocation
- * round-trip required, saving two matrix operations per frame.
- *
- * Web Mercator ground resolution (metres/px) at zoom z:
- *   R = 156543.03392 * cos(lat) / 2^z
- * 1 degree of latitude  ≈ 111 320 m
- * 1 degree of longitude ≈ 111 320 * cos(lat) m
+ * Geographic delta is computed via Web Mercator resolution arithmetic to avoid
+ * calling projection.toScreenLocation / fromScreenLocation each frame.
  */
-private fun MapLibreMap.panByInstant(xPixels: Float, yPixels: Float) {
+private fun MapLibreMap.panByAnimated(xPixels: Float, yPixels: Float, durationMs: Int) {
     val pos = cameraPosition
     val target = pos.target ?: return
     val latRad = Math.toRadians(target.latitude)
     val metersPerPx = 156543.03392 * cos(latRad) / Math.pow(2.0, pos.zoom)
-    val latDelta  = -(yPixels * metersPerPx) / 111320.0
-    val lngDelta  =  (xPixels * metersPerPx) / (111320.0 * cos(latRad))
-    moveCamera(
+    val latDelta = -(yPixels * metersPerPx) / 111320.0
+    val lngDelta =  (xPixels * metersPerPx) / (111320.0 * cos(latRad))
+    animateCamera(
         CameraUpdateFactory.newLatLng(
             LatLng(target.latitude + latDelta, target.longitude + lngDelta)
-        )
+        ),
+        durationMs
     )
 }
