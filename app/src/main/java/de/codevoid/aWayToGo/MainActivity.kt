@@ -26,7 +26,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import de.codevoid.aWayToGo.remote.RemoteControlManager
+import de.codevoid.aWayToGo.remote.RemoteEvent
+import de.codevoid.aWayToGo.remote.RemoteKey
+import kotlinx.coroutines.flow.SharedFlow
 import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
@@ -37,28 +42,45 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var remoteControl: RemoteControlManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MapLibre.getInstance(this)
+        remoteControl = RemoteControlManager(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MapScreen()
+                    MapScreen(remoteEvents = remoteControl.events)
                 }
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        remoteControl.register()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        remoteControl.unregister()
+    }
 }
+
+private const val PAN_PIXELS = 300f
+private const val PAN_DURATION_MS = 200
+private const val TILT_3D = 60.0
 
 @SuppressLint("MissingPermission")
 @Composable
-fun MapScreen() {
+fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val styleUrl = "https://api.maptiler.com/maps/outdoor-v2/style.json?key=${BuildConfig.MAPTILER_KEY}"
 
-    // Location permission state — check upfront, updated after runtime request
     var hasLocationPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -74,13 +96,12 @@ fun MapScreen() {
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
     }
 
-    // Map and style refs — set once the async callbacks fire
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var style by remember { mutableStateOf<Style?>(null) }
 
     val mapView = remember { MapView(context) }
 
-    // Request location permission immediately on first composition
+    // Request location permission on first composition
     LaunchedEffect(Unit) {
         permissionLauncher.launch(
             arrayOf(
@@ -90,7 +111,7 @@ fun MapScreen() {
         )
     }
 
-    // Enable location component and zoom to user once style + permission are both ready
+    // Enable location component once style + permission are both ready
     LaunchedEffect(map, style, hasLocationPermission) {
         val m = map ?: return@LaunchedEffect
         val s = style ?: return@LaunchedEffect
@@ -105,8 +126,6 @@ fun MapScreen() {
             renderMode = RenderMode.COMPASS
         }
 
-        // Zoom to last known location immediately if available; the TRACKING camera
-        // mode will keep following the user as GPS fixes arrive.
         m.locationComponent.lastKnownLocation?.let { location ->
             m.animateCamera(
                 CameraUpdateFactory.newLatLngZoom(
@@ -114,6 +133,76 @@ fun MapScreen() {
                     14.0
                 )
             )
+        }
+    }
+
+    // Handle remote control events
+    LaunchedEffect(Unit) {
+        remoteEvents.collect { event ->
+            val m = map ?: return@collect
+            when (event) {
+                is RemoteEvent.ShortPress -> when (event.key) {
+                    RemoteKey.UP ->
+                        m.animateCamera(CameraUpdateFactory.scrollBy(0f, -PAN_PIXELS), PAN_DURATION_MS)
+                    RemoteKey.DOWN ->
+                        m.animateCamera(CameraUpdateFactory.scrollBy(0f, PAN_PIXELS), PAN_DURATION_MS)
+                    RemoteKey.LEFT ->
+                        m.animateCamera(CameraUpdateFactory.scrollBy(-PAN_PIXELS, 0f), PAN_DURATION_MS)
+                    RemoteKey.RIGHT ->
+                        m.animateCamera(CameraUpdateFactory.scrollBy(PAN_PIXELS, 0f), PAN_DURATION_MS)
+                    RemoteKey.ZOOM_IN ->
+                        m.animateCamera(CameraUpdateFactory.zoomIn())
+                    RemoteKey.ZOOM_OUT ->
+                        m.animateCamera(CameraUpdateFactory.zoomOut())
+                    RemoteKey.CONFIRM ->
+                        // Re-centre on user and resume tracking
+                        m.locationComponent.lastKnownLocation?.let { loc ->
+                            m.locationComponent.cameraMode = CameraMode.TRACKING
+                            m.animateCamera(
+                                CameraUpdateFactory.newLatLngZoom(
+                                    LatLng(loc.latitude, loc.longitude), 14.0
+                                )
+                            )
+                        }
+                    RemoteKey.BACK ->
+                        // Reset bearing to north, keep current position and zoom
+                        m.animateCamera(
+                            CameraUpdateFactory.newCameraPosition(
+                                CameraPosition.Builder()
+                                    .target(m.cameraPosition.target)
+                                    .zoom(m.cameraPosition.zoom)
+                                    .tilt(m.cameraPosition.tilt)
+                                    .bearing(0.0)
+                                    .build()
+                            )
+                        )
+                }
+                is RemoteEvent.LongPress -> when (event.key) {
+                    RemoteKey.CONFIRM ->
+                        // Toggle tracking on/off
+                        m.locationComponent.cameraMode =
+                            if (m.locationComponent.cameraMode == CameraMode.NONE)
+                                CameraMode.TRACKING
+                            else
+                                CameraMode.NONE
+                    RemoteKey.BACK -> {
+                        // Toggle 3D tilt mode
+                        val currentTilt = m.cameraPosition.tilt
+                        m.animateCamera(
+                            CameraUpdateFactory.newCameraPosition(
+                                CameraPosition.Builder()
+                                    .target(m.cameraPosition.target)
+                                    .zoom(m.cameraPosition.zoom)
+                                    .bearing(m.cameraPosition.bearing)
+                                    .tilt(if (currentTilt > 0.0) 0.0 else TILT_3D)
+                                    .build()
+                            )
+                        )
+                    }
+                    else -> {}
+                }
+                is RemoteEvent.KeyDown, is RemoteEvent.KeyUp -> { /* unused at map level */ }
+            }
         }
     }
 
@@ -144,7 +233,7 @@ fun MapScreen() {
                     m.uiSettings.apply {
                         isRotateGesturesEnabled = true
                         isTiltGesturesEnabled = true
-                        isCompassEnabled = true  // appears when rotated from north; tap to reset
+                        isCompassEnabled = true
                     }
                     m.setStyle(styleUrl) { s ->
                         map = m
