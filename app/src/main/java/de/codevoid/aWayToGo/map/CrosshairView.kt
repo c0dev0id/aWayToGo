@@ -2,76 +2,31 @@ package de.codevoid.aWayToGo.map
 
 import android.content.Context
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.Shader
 import android.view.View
 import androidx.core.content.ContextCompat
 import de.codevoid.aWayToGo.R
 
 /**
- * Full-screen crosshair overlay shown in panning mode.
- *
- * Four gradient arms extend from the centre of the screen — each arm fades
- * from solid red at the reticle edge to fully transparent at [ARM_LENGTH_DP].
- * The [ARM_LENGTH_DP] value intentionally exceeds typical screen half-widths so
- * the fade completes before the screen boundary regardless of device size, with
- * no hard line at the edge.
- *
- * A circular reticle ([R.drawable.ic_crosshair_center]) is drawn on top of the
- * arm intersection to clearly mark the target point.
+ * Crosshair reticle shown in panning mode, centred on the screen.
  */
 class CrosshairView(context: Context) : View(context) {
 
     private companion object {
-        const val ARM_LENGTH_DP   = 350f  // fade ends here; exceeds most screen half-widths
-        const val ARM_THICKNESS_DP =  6f
-        const val CENTER_SIZE_DP  = 100f  // diameter of the centre reticle drawable
+        const val CENTER_SIZE_DP = 50f
     }
 
-    private val density       = context.resources.displayMetrics.density
-    private val armLength     = ARM_LENGTH_DP    * density
-    private val armThickness  = ARM_THICKNESS_DP * density
-    private val centerRadius  = CENTER_SIZE_DP   * density / 2f
-
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        strokeWidth = armThickness
-        strokeCap   = Paint.Cap.BUTT
-        style       = Paint.Style.STROKE
-    }
-
-    private val centerDrawable = ContextCompat.getDrawable(context, R.drawable.ic_crosshair_center)
+    private val centerRadius = CENTER_SIZE_DP * context.resources.displayMetrics.density / 2f
+    private val drawable = ContextCompat.getDrawable(context, R.drawable.ic_crosshair_center)
 
     override fun onDraw(canvas: Canvas) {
         val cx = width  / 2f
         val cy = height / 2f
-
-        // Each arm starts at the outer edge of the centre reticle (centerRadius away
-        // from the centre) so the empty ring in the SVG stays clear and the user can
-        // see exactly what they are aiming at.  The gradient fades from solid red at
-        // the reticle edge to transparent at armLength.
-        drawArm(canvas, cx + centerRadius, cy, cx + armLength, cy)   // right
-        drawArm(canvas, cx - centerRadius, cy, cx - armLength, cy)   // left
-        drawArm(canvas, cx, cy + centerRadius, cx, cy + armLength)   // down
-        drawArm(canvas, cx, cy - centerRadius, cx, cy - armLength)   // up
-
-        // Centre reticle drawn last.
-        centerDrawable?.let { d ->
+        drawable?.let { d ->
             d.setBounds(
                 (cx - centerRadius).toInt(), (cy - centerRadius).toInt(),
                 (cx + centerRadius).toInt(), (cy + centerRadius).toInt(),
             )
             d.draw(canvas)
         }
-    }
-
-    private fun drawArm(canvas: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
-        paint.shader = LinearGradient(
-            x0, y0, x1, y1,
-            Color.RED, Color.TRANSPARENT,
-            Shader.TileMode.CLAMP,
-        )
-        canvas.drawLine(x0, y0, x1, y1, paint)
     }
 }
