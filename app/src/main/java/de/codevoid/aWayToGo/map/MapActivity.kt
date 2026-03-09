@@ -45,6 +45,9 @@ import kotlin.math.sin
 // Desired pan speed in screen pixels per second.
 private const val PAN_SPEED_PX_PER_SEC = 120f
 
+// Desired zoom speed in MapLibre zoom levels per second.
+private const val ZOOM_SPEED_PER_SEC = 1.5f
+
 // How far ahead (ms) each animateCamera call targets.
 // The GL thread interpolates this segment smoothly at its own refresh rate.
 // At 59 fps (16ms frames) 32ms gives the GL thread 2 frames of animation
@@ -113,43 +116,71 @@ class MapActivity : ComponentActivity() {
             val dtNs = if (osdLastFrameNs != 0L) frameTimeNanos - osdLastFrameNs else 16_000_000L
             osdLastFrameNs = frameTimeNanos
 
-            // ── Pan ────────────────────────────────────────────────────────────
+            // ── Pan + Zoom ─────────────────────────────────────────────────────
             val currentMap = map
             var panSpeed = 0f
             if (currentMap != null && panStartNs.isNotEmpty()) {
-                // Accumulate the combined delta for all active directions into
-                // a single animateCamera call to avoid competing animations.
-                var totalDx = 0f
-                var totalDy = 0f
+                // Accumulate deltas for all held keys.  Pan and zoom are merged into
+                // a single animateCamera call so they never compete with each other.
+                var totalDx   = 0f
+                var totalDy   = 0f
+                var totalZoom = 0f
 
                 for ((key, startNs) in panStartNs) {
                     val elapsedMs = (frameTimeNanos - startNs) / 1_000_000L
                     // Linear ramp: 50 % speed at t=0, 100 % at t=2 s.
-                    val ramp  = (elapsedMs / 2000f).coerceAtMost(1f)
-                    val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
-                    val px    = speed * PAN_LOOK_AHEAD_MS / 1000f
-                    if (speed > panSpeed) panSpeed = speed
-
+                    val ramp = (elapsedMs / 2000f).coerceAtMost(1f)
                     when (key) {
-                        RemoteKey.UP    -> totalDy -= px
-                        RemoteKey.DOWN  -> totalDy += px
-                        RemoteKey.LEFT  -> totalDx -= px
-                        RemoteKey.RIGHT -> totalDx += px
+                        RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
+                            val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
+                            val px    = speed * PAN_LOOK_AHEAD_MS / 1000f
+                            if (speed > panSpeed) panSpeed = speed
+                            when (key) {
+                                RemoteKey.UP    -> totalDy -= px
+                                RemoteKey.DOWN  -> totalDy += px
+                                RemoteKey.LEFT  -> totalDx -= px
+                                RemoteKey.RIGHT -> totalDx += px
+                                else -> {}
+                            }
+                        }
+                        RemoteKey.ZOOM_IN, RemoteKey.ZOOM_OUT -> {
+                            val delta = ZOOM_SPEED_PER_SEC * (0.5f + 0.5f * ramp) * PAN_LOOK_AHEAD_MS / 1000f
+                            if (key == RemoteKey.ZOOM_IN) totalZoom += delta else totalZoom -= delta
+                        }
                         else -> {}
                     }
                 }
 
-                if (totalDx != 0f || totalDy != 0f) {
-                    // Rotate the screen-space pan vector by the current map bearing so
-                    // joystick directions always follow what the rider sees on screen,
-                    // not geographic north — pushing UP always scrolls the map content
-                    // downward regardless of how the map is rotated.
-                    val bearingRad = Math.toRadians(currentMap.cameraPosition.bearing)
-                    val cosB = cos(bearingRad).toFloat()
-                    val sinB = sin(bearingRad).toFloat()
-                    val rotatedDx = totalDx * cosB - totalDy * sinB
-                    val rotatedDy = totalDx * sinB + totalDy * cosB
-                    currentMap.panByAnimated(rotatedDx, rotatedDy, PAN_LOOK_AHEAD_MS)
+                if (totalDx != 0f || totalDy != 0f || totalZoom != 0f) {
+                    val pos    = currentMap.cameraPosition
+                    val target = pos.target
+
+                    // Bearing-aware pan: rotate screen-space vector by map bearing so
+                    // pushing UP always scrolls map content down regardless of rotation.
+                    val newLatLng = if (target != null && (totalDx != 0f || totalDy != 0f)) {
+                        val bearingRad  = Math.toRadians(pos.bearing)
+                        val cosB        = cos(bearingRad).toFloat()
+                        val sinB        = sin(bearingRad).toFloat()
+                        val rotatedDx   = totalDx * cosB - totalDy * sinB
+                        val rotatedDy   = totalDx * sinB + totalDy * cosB
+                        val latRad      = Math.toRadians(target.latitude)
+                        val metersPerPx = 156543.03392 * cos(latRad) / Math.pow(2.0, pos.zoom)
+                        val latDelta    = -(rotatedDy * metersPerPx) / 111320.0
+                        val lngDelta    =  (rotatedDx * metersPerPx) / (111320.0 * cos(latRad))
+                        LatLng(target.latitude + latDelta, target.longitude + lngDelta)
+                    } else target
+
+                    currentMap.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder()
+                                .target(newLatLng)
+                                .zoom(pos.zoom + totalZoom)
+                                .bearing(pos.bearing)
+                                .tilt(pos.tilt)
+                                .build(),
+                        ),
+                        PAN_LOOK_AHEAD_MS,
+                    )
                 }
             }
 
@@ -404,7 +435,10 @@ class MapActivity : ComponentActivity() {
                     // Moving the D-pad immediately enters panning mode so the
                     // crosshair appears and GPS tracking is suspended.
                     enterPanningMode()
-                    // Record vsync-clock start time; the Choreographer loop computes ramp from here.
+                    panStartNs[event.key] = System.nanoTime()
+                }
+                RemoteKey.ZOOM_IN, RemoteKey.ZOOM_OUT -> {
+                    // Zoom keys use the same ramp-up / look-ahead mechanism as pan.
                     panStartNs[event.key] = System.nanoTime()
                 }
                 else -> {}
@@ -420,9 +454,7 @@ class MapActivity : ComponentActivity() {
 
             is RemoteEvent.ShortPress -> when (event.key) {
                 RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {}
-
-                RemoteKey.ZOOM_IN  -> m.animateCamera(CameraUpdateFactory.zoomIn())
-                RemoteKey.ZOOM_OUT -> m.animateCamera(CameraUpdateFactory.zoomOut())
+                RemoteKey.ZOOM_IN, RemoteKey.ZOOM_OUT -> {}  // handled by KeyDown/KeyUp
 
                 RemoteKey.CONFIRM ->
                     // In panning mode: confirm exits panning and re-locks on GPS.
@@ -591,29 +623,3 @@ class MapActivity : ComponentActivity() {
     }
 }
 
-/**
- * Animate the map centre by [xPixels]/[yPixels] screen pixels over [durationMs].
- *
- * Unlike moveCamera (instant), animateCamera hands the interpolation to the
- * GL thread, which runs at the display's native refresh rate independently of
- * the main thread. On a slow main thread (e.g. 20 fps), this means perceived
- * panning remains smooth even though camera targets only arrive at 20 fps —
- * the GL renderer fills in the in-between frames.
- *
- * Geographic delta is computed via Web Mercator resolution arithmetic to avoid
- * calling projection.toScreenLocation / fromScreenLocation each frame.
- */
-private fun MapLibreMap.panByAnimated(xPixels: Float, yPixels: Float, durationMs: Int) {
-    val pos    = cameraPosition
-    val target = pos.target ?: return
-    val latRad     = Math.toRadians(target.latitude)
-    val metersPerPx = 156543.03392 * cos(latRad) / Math.pow(2.0, pos.zoom)
-    val latDelta   = -(yPixels * metersPerPx) / 111320.0
-    val lngDelta   =  (xPixels * metersPerPx) / (111320.0 * cos(latRad))
-    animateCamera(
-        CameraUpdateFactory.newLatLng(
-            LatLng(target.latitude + latDelta, target.longitude + lngDelta),
-        ),
-        durationMs,
-    )
-}
