@@ -139,12 +139,10 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
 
     // ── OSD state (DEBUG builds only) ────────────────────────────────────────
     // osdUiFps  : Compose frame-clock fps  → main-thread health
-    // osdGlFps  : MapLibre GL renderer fps → GPU / style complexity
     // osdFrameMs: last Compose frame delta  → jitter on the main thread
     // osdZoom   : current zoom level        → tile count / GPU load
     // osdPanSpeed: active pan speed px/s    → 0 when not panning
     var osdUiFps    by remember { mutableIntStateOf(0) }
-    var osdGlFps    by remember { mutableIntStateOf(0) }
     var osdFrameMs  by remember { mutableLongStateOf(0L) }
     var osdZoom     by remember { mutableFloatStateOf(0f) }
     var osdPanSpeed by remember { mutableFloatStateOf(0f) }
@@ -181,16 +179,6 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                     14.0
                 )
             )
-        }
-    }
-
-    // Wire up the GL fps listener as soon as the map is ready.
-    // MapLibre reports GL fps on the main thread, so state assignment is safe.
-    if (BuildConfig.DEBUG) {
-        LaunchedEffect(map) {
-            map?.addOnFpsChangedListener { fps ->
-                osdGlFps = fps.toInt()
-            }
         }
     }
 
@@ -381,19 +369,15 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
         )
 
         // ── Performance OSD (DEBUG builds only) ──────────────────────────────
-        // UI fps  — Compose frame-clock rate. If low, the main thread is the
-        //           bottleneck (too much work per frame or GC pauses).
-        // GL fps  — MapLibre GL renderer rate. If UI fps < GL fps, the main
-        //           thread is the bottleneck. If both are low, the GPU or map
-        //           style complexity is the bottleneck.
-        // dt      — Compose frame delta in ms. Spikes = main-thread jitter.
-        // zoom    — Current zoom. Lower zoom = more tiles = more GPU work.
-        //           Try zooming in; if GL fps improves, style/GPU is the limit.
-        // pan     — Active pan speed px/s (only while a key is held).
+        // UI fps — Compose frame-clock rate. If low, the main thread is the
+        //          bottleneck (too much work per frame or GC pauses).
+        // dt     — Compose frame delta in ms. Spikes = main-thread jitter.
+        // zoom   — Current zoom. Lower zoom = more tiles = more GPU work.
+        // pan    — Active pan speed px/s (only while a key is held).
         if (BuildConfig.DEBUG) {
             val panLine = if (osdPanSpeed > 0f) "\npan  ${"%.0f".format(osdPanSpeed)} px/s" else ""
             Text(
-                text = "UI   ${osdUiFps} fps  dt:${osdFrameMs}ms\nGL   ${osdGlFps} fps\nzoom ${"%.1f".format(osdZoom)}$panLine",
+                text = "UI   ${osdUiFps} fps  dt:${osdFrameMs}ms\nzoom ${"%.1f".format(osdZoom)}$panLine",
                 color = Color.White,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
