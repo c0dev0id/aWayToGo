@@ -42,6 +42,14 @@
             android:name=".diagnostic.DiagnosticMaxFpsActivity"
             android:exported="true" />
 
+        <!-- Diagnostic: OpenMapTiles maptiler-3d-gl-style (3D building extrusions).
+             Style JSON is fetched from GitHub and {key} placeholders are substituted
+             at runtime.  Compare fps/dt with DiagnosticActivity (outdoor-v2 baseline).
+             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity -->
+        <activity
+            android:name=".diagnostic.Diagnostic3dStyleActivity"
+            android:exported="true" />
+
     </application>
 
 </manifest>
