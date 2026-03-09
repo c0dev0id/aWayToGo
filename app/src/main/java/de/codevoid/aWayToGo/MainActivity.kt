@@ -168,12 +168,19 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                             // We use the real frame delta to keep speed constant across
                             // 60/90/120 Hz displays.
                             var lastFrameMs = 0L
+                            var elapsedMs = 0L
                             while (isActive) {
                                 withFrameMillis { frameMs ->
                                     val dtMs = if (lastFrameMs == 0L) 16L
                                                else (frameMs - lastFrameMs).coerceAtMost(100L)
                                     lastFrameMs = frameMs
-                                    val px = PAN_SPEED_PX_PER_SEC * dtMs / 1000f
+                                    elapsedMs += dtMs
+
+                                    // Linear ramp: 50 % speed at t=0, 100 % at t=1 s.
+                                    val ramp = (elapsedMs / 1000f).coerceAtMost(1f)
+                                    val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
+                                    val px = speed * dtMs / 1000f
+
                                     val currentMap = map ?: return@withFrameMillis
                                     when (key) {
                                         RemoteKey.UP    -> currentMap.panByInstant(0f,  -px)
