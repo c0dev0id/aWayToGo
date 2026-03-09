@@ -183,6 +183,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
 
         val mapOptions = MapLibreMapOptions.createFromAttributes(this)
             .pixelRatio(pixelRatio)
+            .crossSourceCollisions(crossSourceCollisions)
         mapView = MapView(this, mapOptions)
         root.addView(mapView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -215,7 +216,6 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             glMap = map
             mapView.setMaximumFps(maxFps)
             map.setPrefetchZoomDelta(prefetch)
-            map.setCrossSourceCollisions(crossSourceCollisions)
             mapView.addOnDidFinishRenderingFrameListener(glFrameListener)
 
             // Position the camera at the target zoom immediately — tile fetching
