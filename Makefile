@@ -53,7 +53,7 @@ browser:
 	adb shell am start -n org.mozilla.firefox/.App
 
 remote:
-	adb shell am broadcast -a de.codevoid.andremote2.OVERLAY_TOGGLE
+	adb shell am broadcast -a de.codevoid.andremote2.OVERLAY_TOGGLE -p de.codevoid.andremote2
 
 mc:
 	adb shell am start -n com.ghisler.android.TotalCommander/.TotalCommander
