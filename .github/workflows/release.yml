@@ -53,6 +53,14 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version "^3" --locked
+
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Decode signing keystore
