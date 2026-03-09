@@ -3,7 +3,6 @@ package de.codevoid.aWayToGo
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.graphics.PointF
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -44,8 +43,10 @@ import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import kotlin.math.cos
 
 class MainActivity : ComponentActivity() {
 
@@ -107,7 +108,13 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var style by remember { mutableStateOf<Style?>(null) }
 
-    val mapView = remember { MapView(context) }
+    // TextureView mode: MapLibre renders into a GL texture that Compose composites
+    // in its own hardware layer, rather than using a separate SurfaceView layer.
+    // This removes the per-frame system-compositor blend between two independent
+    // hardware layers, which helps on slower devices.
+    val mapView = remember {
+        MapView(context, MapLibreMapOptions.createFromAttributes(context).textureMode(true))
+    }
 
     // Coroutine scope for pan loops — tied to composition lifetime,
     // main dispatcher so MapLibre camera calls stay on the UI thread.
@@ -307,10 +314,26 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
  *
  * Uses moveCamera (no animation) so it can be called every vsync frame
  * without competing easing curves causing stutter.
+ *
+ * The geographic delta is computed directly from the Web Mercator scale at the
+ * current zoom level — no projection.toScreenLocation / fromScreenLocation
+ * round-trip required, saving two matrix operations per frame.
+ *
+ * Web Mercator ground resolution (metres/px) at zoom z:
+ *   R = 156543.03392 * cos(lat) / 2^z
+ * 1 degree of latitude  ≈ 111 320 m
+ * 1 degree of longitude ≈ 111 320 * cos(lat) m
  */
 private fun MapLibreMap.panByInstant(xPixels: Float, yPixels: Float) {
-    val target = cameraPosition.target ?: return
-    val center = projection.toScreenLocation(target)
-    val newCenter = PointF(center.x + xPixels, center.y + yPixels)
-    moveCamera(CameraUpdateFactory.newLatLng(projection.fromScreenLocation(newCenter)))
+    val pos = cameraPosition
+    val target = pos.target ?: return
+    val latRad = Math.toRadians(target.latitude)
+    val metersPerPx = 156543.03392 * cos(latRad) / Math.pow(2.0, pos.zoom)
+    val latDelta  = -(yPixels * metersPerPx) / 111320.0
+    val lngDelta  =  (xPixels * metersPerPx) / (111320.0 * cos(latRad))
+    moveCamera(
+        CameraUpdateFactory.newLatLng(
+            LatLng(target.latitude + latDelta, target.longitude + lngDelta)
+        )
+    )
 }
