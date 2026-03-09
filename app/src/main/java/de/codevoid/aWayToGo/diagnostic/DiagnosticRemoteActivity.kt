@@ -40,7 +40,7 @@ class DiagnosticRemoteActivity : ComponentActivity() {
 
         /**
          * All confirmed actions under [PREFIX], verified by grepping the
-         * decompiled DMD2 APK (smali_classes4/com/thorkracing/**).
+         * decompiled DMD2 APK (smali bytecode under com/thorkracing/).
          *
          * keypress  — remote control buttons; extras: key_press (int),
          *             key_release (int), joy (String), deviceName (String)

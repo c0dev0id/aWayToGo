@@ -59,6 +59,9 @@ dependencies {
 
     // MapLibre
     implementation("org.maplibre.gl:android-sdk:11.0.0")
+    // GeoJSON — declared explicitly because MapLibre uses `implementation` scope
+    // (not `api`), so the library is not available at our compile time transitively.
+    implementation("org.maplibre.gl:android-sdk-geojson:6.0.0")
 
     // OkHttp — MapLibre pulls this in transitively, but we declare it
     // explicitly because we configure the client directly via
