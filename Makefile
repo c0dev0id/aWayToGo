@@ -10,18 +10,21 @@ PREFETCH ?= 4
 
 # Dump the device logcat into log/ so Claude can read the files directly.
 #
-#   log/crash.log  — all AndroidRuntime fatal exceptions (any process)
-#   log/app.log    — all lines tagged with our package name
+#   log/full.log   — complete logcat buffer (everything)
+#   log/crash.log  — lines from FATAL/crash-related tags
+#   log/app.log    — lines mentioning our package or PID
 #
 # Run `make log-clear` before reproducing a bug to flush stale entries,
 # then `make log` after the crash to capture only the relevant session.
 log:
 	mkdir -p log
-	adb logcat -d -s AndroidRuntime:E \
-	    > log/crash.log 2>&1 || true
-	adb logcat -d \
-	    | grep "de\.codevoid\.aWayToGo" \
-	    > log/app.log 2>&1 || true
+	adb logcat -d -v threadtime \
+	    > log/full.log 2>&1 || true
+	grep -E "FATAL|AndroidRuntime|DEBUG|crash_dump|libc|abort" \
+	    log/full.log > log/crash.log || true
+	grep -E "de\.codevoid\.aWayToGo|aWayToGo" \
+	    log/full.log > log/app.log || true
+	@echo "full:  $$(wc -l < log/full.log) lines → log/full.log"
 	@echo "crash: $$(wc -l < log/crash.log) lines → log/crash.log"
 	@echo "app:   $$(wc -l < log/app.log) lines → log/app.log"
 
