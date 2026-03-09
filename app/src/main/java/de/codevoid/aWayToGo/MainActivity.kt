@@ -9,20 +9,33 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -122,6 +135,16 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
     // One active Job per directional key; cancelled on key release.
     val panJobs = remember { mutableMapOf<RemoteKey, Job>() }
 
+    // ── OSD state (DEBUG builds only) ────────────────────────────────────────
+    // osdFps    : frames per second reported by withFrameMillis (main-thread health)
+    // osdFrameMs: last frame delta in ms (jitter indicator)
+    // osdZoom   : current map zoom level (higher = fewer tiles = less GPU work)
+    // osdPanSpeed: active pan speed in px/s; 0 when not panning
+    var osdFps      by remember { mutableIntStateOf(0) }
+    var osdFrameMs  by remember { mutableLongStateOf(0L) }
+    var osdZoom     by remember { mutableFloatStateOf(0f) }
+    var osdPanSpeed by remember { mutableFloatStateOf(0f) }
+
     // Request location permission on first composition
     LaunchedEffect(Unit) {
         permissionLauncher.launch(
@@ -157,6 +180,36 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
         }
     }
 
+    // Always-on frame-rate sampler — runs independently of panning.
+    // Measures the rate at which Compose's frame clock fires, which tells
+    // us whether the main thread is keeping up with the display.
+    if (BuildConfig.DEBUG) {
+        LaunchedEffect(Unit) {
+            var lastFrameMs = 0L
+            var frameCount = 0
+            var windowStart = 0L
+            while (true) {
+                withFrameMillis { frameMs ->
+                    // Frame delta (jitter)
+                    if (lastFrameMs != 0L) osdFrameMs = frameMs - lastFrameMs
+                    lastFrameMs = frameMs
+
+                    // FPS — count frames in 1-second windows
+                    if (windowStart == 0L) windowStart = frameMs
+                    frameCount++
+                    if (frameMs - windowStart >= 1000L) {
+                        osdFps = frameCount
+                        frameCount = 0
+                        windowStart = frameMs
+                    }
+
+                    // Zoom level
+                    osdZoom = map?.cameraPosition?.zoom?.toFloat() ?: 0f
+                }
+            }
+        }
+    }
+
     // Handle remote control events
     LaunchedEffect(Unit) {
         remoteEvents.collect { event ->
@@ -188,6 +241,8 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                                     val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
                                     val px = speed * dtMs / 1000f
 
+                                    if (BuildConfig.DEBUG) osdPanSpeed = speed
+
                                     val currentMap = map ?: return@withFrameMillis
                                     when (key) {
                                         RemoteKey.UP    -> currentMap.panByInstant(0f,  -px)
@@ -205,6 +260,7 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
 
                 is RemoteEvent.KeyUp -> {
                     panJobs.remove(event.key)?.cancel()
+                    if (BuildConfig.DEBUG) osdPanSpeed = 0f
                 }
 
                 is RemoteEvent.ShortPress -> when (event.key) {
@@ -289,24 +345,52 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
         }
     }
 
-    AndroidView(
-        factory = {
-            mapView.apply {
-                getMapAsync { m ->
-                    m.uiSettings.apply {
-                        isRotateGesturesEnabled = true
-                        isTiltGesturesEnabled = true
-                        isCompassEnabled = true
-                    }
-                    m.setStyle(styleUrl) { s ->
-                        map = m
-                        style = s
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(
+            factory = {
+                mapView.apply {
+                    getMapAsync { m ->
+                        m.uiSettings.apply {
+                            isRotateGesturesEnabled = true
+                            isTiltGesturesEnabled = true
+                            isCompassEnabled = true
+                        }
+                        m.setStyle(styleUrl) { s ->
+                            map = m
+                            style = s
+                        }
                     }
                 }
-            }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // ── Performance OSD (DEBUG builds only) ──────────────────────────────
+        // What each value tells you:
+        //  FPS  — rate at which Compose's frame clock fires. If this is well
+        //         below the display refresh rate, the main thread is the
+        //         bottleneck (too much work per frame).
+        //  dt   — last frame delta in ms. High variance = jitter on the main
+        //         thread; consistently > 16 ms = dropping frames.
+        //  zoom — current zoom level. Lower zoom = more tiles visible = more
+        //         GPU work. Try zooming in to see if rendering improves.
+        //  pan  — active pan speed in px/s (only shown while a key is held).
+        if (BuildConfig.DEBUG) {
+            val panLine = if (osdPanSpeed > 0f) "\npan  ${"%.0f".format(osdPanSpeed)} px/s" else ""
+            Text(
+                text = "FPS  $osdFps\ndt   ${osdFrameMs}ms\nzoom ${"%.1f".format(osdZoom)}$panLine",
+                color = Color.White,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 16.sp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+    }
 }
 
 /**
