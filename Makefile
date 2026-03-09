@@ -21,3 +21,6 @@ restore:
 
 browser:
 	adb shell am start -n org.mozilla.firefox/.App
+
+remote:
+	adb shell am broadcast -a de.codevoid.andremote2.OVERLAY_TOGGLE
