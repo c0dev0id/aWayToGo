@@ -141,6 +141,10 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
                 glLastFps       = (glFrameCount * 1_000L / windowMs).toInt()
                 glFrameCount    = 0
                 glWindowStartMs = nowMs
+                if (bench && !benchDone) {
+                    val elapsed = (nowMs - benchStartMs) / 1000.0
+                    Log.i(TAG, "fps=$glLastFps dt=${glLastDtMs}ms elapsed=${"%.1f".format(elapsed)}s")
+                }
             }
         }
 
