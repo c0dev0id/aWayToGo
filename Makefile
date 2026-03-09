@@ -23,7 +23,7 @@ diag-texture:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity
 
 diag-maxfps:
-	adb shell am start \
+	adb shell am start -S \
 	    -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
 	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH)
 

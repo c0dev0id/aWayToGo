@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.diagnostic
 
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Choreographer
 import android.view.Gravity
 import android.widget.FrameLayout
@@ -11,6 +12,7 @@ import de.codevoid.aWayToGo.BuildConfig
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 
 /**
@@ -49,32 +51,35 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     private var maxFps      = DEFAULT_MAX_FPS
     private var prefetch    = DEFAULT_PREFETCH
 
-    private var lastFrameNs = 0L
-    private var frameCount  = 0
-    private var windowStartNs = 0L
-    private var lastFps     = 0
-    private var lastDtMs    = 0L
+    // GL-frame counters — updated from MapLibre's render callback, not Choreographer.
+    // This measures actual GPU frame submissions, so setMaximumFps is reflected here.
+    @Volatile private var glFrameCount    = 0
+    @Volatile private var glWindowStartMs = 0L
+    @Volatile private var glLastFps       = 0
+    @Volatile private var glLastDtMs      = 0L
+    @Volatile private var glLastFrameMs   = 0L
 
-    private val frameCallback = object : Choreographer.FrameCallback {
+    // Choreographer only drives OSD refresh — it no longer counts frames itself.
+    private val osdRefreshCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (lastFrameNs != 0L) {
-                lastDtMs = (frameTimeNanos - lastFrameNs) / 1_000_000L
-            }
-            lastFrameNs = frameTimeNanos
-
-            frameCount++
-            if (windowStartNs == 0L) windowStartNs = frameTimeNanos
-            val windowNs = frameTimeNanos - windowStartNs
-            if (windowNs >= 1_000_000_000L) {
-                lastFps   = (frameCount * 1_000_000_000L / windowNs).toInt()
-                frameCount = 0
-                windowStartNs = frameTimeNanos
-            }
-
             val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
-            osdView.text = "MaxFPS:$fpsLabel Prefetch:$prefetch\nfps  $lastFps  dt:${lastDtMs}ms"
-
+            osdView.text =
+                "MaxFPS:$fpsLabel Prefetch:$prefetch\ngl-fps $glLastFps  dt:${glLastDtMs}ms"
             Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    private val glFrameListener = MapLibreMap.OnDidFinishRenderingFrameListener { _ ->
+        val nowMs = SystemClock.elapsedRealtime()
+        if (glLastFrameMs != 0L) glLastDtMs = nowMs - glLastFrameMs
+        glLastFrameMs = nowMs
+        glFrameCount++
+        if (glWindowStartMs == 0L) glWindowStartMs = nowMs
+        val windowMs = nowMs - glWindowStartMs
+        if (windowMs >= 1_000L) {
+            glLastFps       = (glFrameCount * 1_000L / windowMs).toInt()
+            glFrameCount    = 0
+            glWindowStartMs = nowMs
         }
     }
 
@@ -119,6 +124,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             // 0 means "no cap" to MapView.setMaximumFps.
             mapView.setMaximumFps(maxFps)
             map.setPrefetchZoomDelta(prefetch)
+            map.addOnDidFinishRenderingFrameListener(glFrameListener)
 
             map.setStyle(styleUrl) {
                 map.animateCamera(
@@ -132,10 +138,10 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     override fun onResume()  {
         super.onResume()
         mapView.onResume()
-        Choreographer.getInstance().postFrameCallback(frameCallback)
+        Choreographer.getInstance().postFrameCallback(osdRefreshCallback)
     }
     override fun onPause()   {
-        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        Choreographer.getInstance().removeFrameCallback(osdRefreshCallback)
         mapView.onPause()
         super.onPause()
     }
