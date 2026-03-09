@@ -33,13 +33,14 @@ import org.maplibre.android.maps.Style
 import kotlin.math.cos
 
 // Desired pan speed in screen pixels per second.
-private const val PAN_SPEED_PX_PER_SEC = 350f
+private const val PAN_SPEED_PX_PER_SEC = 60f
 
 // How far ahead (ms) each animateCamera call targets.
 // The GL thread interpolates this segment smoothly at its own refresh rate.
-// On a slow main thread (e.g. 20 fps = 50ms frames) this ensures the GL
-// renderer always has a live animation to play between main-thread updates.
-private const val PAN_LOOK_AHEAD_MS = 150
+// At 59 fps (16ms frames) 32ms gives the GL thread 2 frames of animation
+// to interpolate between main-thread updates — enough for smooth movement
+// without adding noticeable look-ahead lag.
+private const val PAN_LOOK_AHEAD_MS = 32
 
 private const val TILT_3D = 60.0
 
