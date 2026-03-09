@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Drag line: long-pressing CONFIRM while in panning mode draws a red line (6dp fill, 2dp darkred casing) from the current GPS position to the crosshair, with a distance label along the line.
+- Analog joystick support: the remote's analog stick sends `joy` string broadcasts (e.g. `"U5L3"`); the map now pans continuously in the indicated direction with proportional speed, integrated via the existing Choreographer loop.
+- `DiagnosticRemoteActivity`: intent sniffer that registers for all confirmed `com.thorkracing.wireddevices.*` actions and displays every received broadcast with its extras on screen. Launched via `make diag-remote`.
+- `RemoteEvent.JoyInput`: new sealed-class event carrying normalised `(dx, dy)` in [−1, 1].
+- `make log` now writes a `log/remote.log` filtered to `RemoteControl` tag entries.
+- `make diag-remote` target to launch `DiagnosticRemoteActivity` from the host machine.
+
+### Changed
+- `RemoteControlManager`: logs every broadcast received (extras list, joy value, key codes with resolved `RemoteKey`), and logs on register/unregister. Prefers `joy` extra over `key_press` when both appear in the same broadcast.
+- `RemoteControlManager.unregister()`: narrowed catch from `Exception` to `IllegalArgumentException` (the only exception the Android API can throw here).
+- Web Mercator magic numbers extracted to named top-level constants (`MERCATOR_CIRCUMFERENCE`, `METERS_PER_DEGREE_LAT`).
+
+### Fixed
+- Analog joystick was silently ignored because the Choreographer gate (`panStartNs.isNotEmpty()`) excluded the `joyDx/joyDy` path. Condition now also passes when `joyDx != 0f || joyDy != 0f`.
+- Build: `com.mapbox.geojson` does not exist in MapLibre 11; corrected to `org.maplibre.geojson` and added an explicit `android-sdk-geojson:6.0.0` compile dependency (MapLibre declares it as `implementation`, so it is not transitively available at compile time).
+- Build: Kotlin supports nested block comments; a `/*` sequence inside the KDoc comment of `DiagnosticRemoteActivity` caused the outer comment to be unclosed, swallowing the rest of the file. Rewrote the affected line.
+
 ### Changed
 - MapActivity: set `pixelRatio=3.0`, `maxFps=60`, `prefetchDelta=2` based on benchmark results. These settings yielded the best gl_fps on the target device (avg=28, min=18 at zoom 14) with no visible stutter during pan.
 
