@@ -2,7 +2,7 @@
 
 COMMIT := $(shell git rev-parse --short HEAD)
 
-.PHONY: diag install
+.PHONY: diag install launcher restore
 
 diag:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity
@@ -12,4 +12,10 @@ install:
 	adb install -r aWayToGo-dev-$(COMMIT).apk
 	rm -f aWayToGo-dev-$(COMMIT).apk
 	adb shell am start -n de.codevoid.aWayToGo/.map.MapActivity
+
+launcher:
+	adb shell cmd package set-home-activity de.codevoid.aWayToGo/.map.MapActivity
+
+restore:
+	adb shell cmd package set-home-activity com.android.launcher3/.uioverrides.QuickstepLauncher
 
