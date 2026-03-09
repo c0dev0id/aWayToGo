@@ -61,6 +61,7 @@ jobs:
 
       - name: Build signed release APK
         env:
+          MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
