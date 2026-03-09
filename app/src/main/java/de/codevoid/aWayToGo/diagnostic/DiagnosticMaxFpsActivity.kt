@@ -105,7 +105,8 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             // Cap the GL render rate.  At 30 fps the GL thread wakes every
             // ~33 ms instead of ~16 ms, freeing CPU and GPU time for tile
             // decode/upload threads between frames.
-            map.setMaximumFps(30)
+            // Note: setMaximumFps is on MapView, not MapLibreMap.
+            mapView.setMaximumFps(30)
 
             // Prefetch tiles 4 zoom levels above the current zoom so
             // zoom-out transitions have tiles pre-loaded.
