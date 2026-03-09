@@ -116,8 +116,8 @@ jobs:
       - name: Rename APK
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          mv app-release.apk "androsnd-dev-${SHORT_SHA}.apk"
-          echo "apk_name=androsnd-dev-${SHORT_SHA}.apk" >> "$GITHUB_ENV"
+          mv app-release.apk "aWayToGo-dev-${SHORT_SHA}.apk"
+          echo "apk_name=aWayToGo-dev-${SHORT_SHA}.apk" >> "$GITHUB_ENV"
 
       - name: Delete existing dev release
         env:
