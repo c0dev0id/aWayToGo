@@ -3,6 +3,7 @@ package de.codevoid.aWayToGo
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.graphics.PointF
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -26,11 +28,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import android.graphics.PointF
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -71,8 +76,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private const val PAN_PIXELS = 300f
-private const val PAN_DURATION_MS = 200
+// Pixels moved per pan step — tuned so ~300 px/s at PAN_INTERVAL_MS
+private const val PAN_STEP_PX = 15f
+// How often the pan loop fires (ms). Lower = smoother but more CPU.
+private const val PAN_INTERVAL_MS = 50L
+// Animation duration per step — slightly longer than the interval so
+// consecutive steps blend together instead of snapping.
+private const val PAN_ANIM_MS = 80
 private const val TILT_3D = 60.0
 
 @SuppressLint("MissingPermission")
@@ -101,6 +111,12 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
     var style by remember { mutableStateOf<Style?>(null) }
 
     val mapView = remember { MapView(context) }
+
+    // Coroutine scope for launching pan loops — tied to the composition lifetime,
+    // main dispatcher so MapLibre camera calls stay on the UI thread.
+    val coroutineScope = rememberCoroutineScope()
+    // One Job slot per directional key; cancelled when the key is released.
+    val panJobs = remember { mutableMapOf<RemoteKey, Job>() }
 
     // Request location permission on first composition
     LaunchedEffect(Unit) {
@@ -142,15 +158,44 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
         remoteEvents.collect { event ->
             val m = map ?: return@collect
             when (event) {
+
+                // Directional keys: start a smooth continuous pan on press,
+                // cancel it on release. A quick tap runs exactly one loop step.
+                is RemoteEvent.KeyDown -> when (event.key) {
+                    RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
+                        val key = event.key
+                        panJobs[key]?.cancel()
+                        panJobs[key] = coroutineScope.launch {
+                            while (isActive) {
+                                val currentMap = map ?: break
+                                when (key) {
+                                    RemoteKey.UP    -> currentMap.panBy(0f, -PAN_STEP_PX, PAN_ANIM_MS)
+                                    RemoteKey.DOWN  -> currentMap.panBy(0f,  PAN_STEP_PX, PAN_ANIM_MS)
+                                    RemoteKey.LEFT  -> currentMap.panBy(-PAN_STEP_PX, 0f, PAN_ANIM_MS)
+                                    RemoteKey.RIGHT -> currentMap.panBy( PAN_STEP_PX, 0f, PAN_ANIM_MS)
+                                    else -> {}
+                                }
+                                delay(PAN_INTERVAL_MS)
+                            }
+                        }
+                    }
+                    else -> {} // other keys don't use KeyDown
+                }
+
+                is RemoteEvent.KeyUp -> {
+                    // Stop the pan loop for this key (if any)
+                    panJobs.remove(event.key)?.cancel()
+                }
+
                 is RemoteEvent.ShortPress -> when (event.key) {
-                    RemoteKey.UP    -> m.panBy(0f, -PAN_PIXELS, PAN_DURATION_MS)
-                    RemoteKey.DOWN  -> m.panBy(0f,  PAN_PIXELS, PAN_DURATION_MS)
-                    RemoteKey.LEFT  -> m.panBy(-PAN_PIXELS, 0f, PAN_DURATION_MS)
-                    RemoteKey.RIGHT -> m.panBy( PAN_PIXELS, 0f, PAN_DURATION_MS)
+                    // Directional keys are handled via KeyDown/KeyUp above
+                    RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {}
+
                     RemoteKey.ZOOM_IN ->
                         m.animateCamera(CameraUpdateFactory.zoomIn())
                     RemoteKey.ZOOM_OUT ->
                         m.animateCamera(CameraUpdateFactory.zoomOut())
+
                     RemoteKey.CONFIRM ->
                         // Re-centre on user and resume tracking
                         m.locationComponent.lastKnownLocation?.let { loc ->
@@ -161,6 +206,7 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                                 )
                             )
                         }
+
                     RemoteKey.BACK ->
                         // Reset bearing to north, keep current position and zoom
                         m.animateCamera(
@@ -174,6 +220,7 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                             )
                         )
                 }
+
                 is RemoteEvent.LongPress -> when (event.key) {
                     RemoteKey.CONFIRM ->
                         // Toggle tracking on/off
@@ -198,7 +245,6 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                     }
                     else -> {}
                 }
-                is RemoteEvent.KeyDown, is RemoteEvent.KeyUp -> { /* unused at map level */ }
             }
         }
     }
