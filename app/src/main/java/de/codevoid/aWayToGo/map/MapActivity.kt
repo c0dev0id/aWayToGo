@@ -312,6 +312,10 @@ class MapActivity : ComponentActivity() {
                 isRotateGesturesEnabled = true
                 isTiltGesturesEnabled   = true
                 isCompassEnabled        = true
+                // Enable ease-out after touch gestures (fling/pan inertia, pinch-zoom
+                // deceleration, rotate deceleration).  These are touch-only — programmatic
+                // animateCamera calls (remote control) are not affected.
+                setAllVelocityAnimationsEnabled(true)
             }
             // Close the tile gate on ANY camera movement — touch, D-pad, or
             // programmatic (flyToLocation).  New network tile fetches are
