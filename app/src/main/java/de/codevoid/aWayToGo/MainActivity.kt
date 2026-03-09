@@ -141,6 +141,11 @@ fun MapScreen() {
         factory = {
             mapView.apply {
                 getMapAsync { m ->
+                    m.uiSettings.apply {
+                        isRotateGesturesEnabled = true
+                        isTiltGesturesEnabled = true
+                        isCompassEnabled = true  // appears when rotated from north; tap to reset
+                    }
                     m.setStyle(styleUrl) { s ->
                         map = m
                         style = s
