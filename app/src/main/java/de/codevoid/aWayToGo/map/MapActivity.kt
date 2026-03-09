@@ -50,10 +50,10 @@ private const val ZOOM_SPEED_PER_SEC = 1.5f
 
 // How far ahead (ms) each animateCamera call targets.
 // The GL thread interpolates this segment smoothly at its own refresh rate.
-// At 59 fps (16ms frames) 32ms gives the GL thread 2 frames of animation
-// to interpolate between main-thread updates — enough for smooth movement
-// without adding noticeable look-ahead lag.
-private const val PAN_LOOK_AHEAD_MS = 32
+// At 60 fps (16ms frames) 48ms gives the GL thread 3 frames of animation
+// to interpolate between main-thread updates — smoother movement with
+// still-imperceptible look-ahead lag.
+private const val PAN_LOOK_AHEAD_MS = 48
 
 private const val TILT_3D = 60.0
 
