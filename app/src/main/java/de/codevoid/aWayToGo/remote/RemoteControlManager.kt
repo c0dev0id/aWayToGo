@@ -39,7 +39,6 @@ class RemoteControlManager(private val context: Context) {
             when {
                 intent.hasExtra("key_press") -> onKeyPress(
                     keyCode = intent.getIntExtra("key_press", 0),
-                    deviceName = intent.getStringExtra("deviceName"),
                 )
                 intent.hasExtra("key_release") -> onKeyRelease(
                     keyCode = intent.getIntExtra("key_release", 0),
@@ -48,7 +47,7 @@ class RemoteControlManager(private val context: Context) {
         }
     }
 
-    private fun onKeyPress(keyCode: Int, deviceName: String?) {
+    private fun onKeyPress(keyCode: Int) {
         val key = RemoteKey.fromKeyCode(keyCode) ?: return
         if (key in LONG_PRESS_KEYS) {
             pressTimestamps[key] = System.currentTimeMillis()

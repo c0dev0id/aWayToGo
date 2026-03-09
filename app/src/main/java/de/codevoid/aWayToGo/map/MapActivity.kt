@@ -85,7 +85,6 @@ class MapActivity : ComponentActivity() {
     private var osdWindowNs    = 0L
     private var osdLastFps     = 0
     private var osdLastDtMs    = 0L
-    private var osdLastPanSpeed = 0f
 
     // ── Choreographer loop ────────────────────────────────────────────────────
     //
@@ -98,12 +97,12 @@ class MapActivity : ComponentActivity() {
 
             // ── Pan ────────────────────────────────────────────────────────────
             val currentMap = map
+            var panSpeed = 0f
             if (currentMap != null && panStartNs.isNotEmpty()) {
                 // Accumulate the combined delta for all active directions into
                 // a single animateCamera call to avoid competing animations.
                 var totalDx = 0f
                 var totalDy = 0f
-                var maxSpeed = 0f
 
                 for ((key, startNs) in panStartNs) {
                     val elapsedMs = (frameTimeNanos - startNs) / 1_000_000L
@@ -111,7 +110,7 @@ class MapActivity : ComponentActivity() {
                     val ramp  = (elapsedMs / 2000f).coerceAtMost(1f)
                     val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
                     val px    = speed * PAN_LOOK_AHEAD_MS / 1000f
-                    if (speed > maxSpeed) maxSpeed = speed
+                    if (speed > panSpeed) panSpeed = speed
 
                     when (key) {
                         RemoteKey.UP    -> totalDy -= px
@@ -125,9 +124,6 @@ class MapActivity : ComponentActivity() {
                 if (totalDx != 0f || totalDy != 0f) {
                     currentMap.panByAnimated(totalDx, totalDy, PAN_LOOK_AHEAD_MS)
                 }
-                osdLastPanSpeed = maxSpeed
-            } else {
-                osdLastPanSpeed = 0f
             }
 
             // ── OSD (DEBUG builds only) ────────────────────────────────────────
@@ -144,8 +140,8 @@ class MapActivity : ComponentActivity() {
                 }
 
                 val zoom    = map?.cameraPosition?.zoom ?: 0.0
-                val panLine = if (osdLastPanSpeed > 0f)
-                    "\npan  ${"%.0f".format(osdLastPanSpeed)} px/s" else ""
+                val panLine = if (panSpeed > 0f)
+                    "\npan  ${"%.0f".format(panSpeed)} px/s" else ""
                 osdView.text =
                     "fps  $osdLastFps  dt:${osdLastDtMs}ms\nzoom ${"%.1f".format(zoom)}$panLine"
             }
