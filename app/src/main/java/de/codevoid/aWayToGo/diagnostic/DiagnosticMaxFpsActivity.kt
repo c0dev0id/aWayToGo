@@ -12,7 +12,6 @@ import de.codevoid.aWayToGo.BuildConfig
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
-import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 
 /**
@@ -57,7 +56,6 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     @Volatile private var glWindowStartMs = 0L
     @Volatile private var glLastFps       = 0
     @Volatile private var glLastDtMs      = 0L
-    @Volatile private var glLastFrameMs   = 0L
 
     // Choreographer only drives OSD refresh — it no longer counts frames itself.
     private val osdRefreshCallback = object : Choreographer.FrameCallback {
@@ -69,19 +67,22 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         }
     }
 
-    private val glFrameListener = MapView.OnDidFinishRenderingFrameListener { _ ->
-        val nowMs = SystemClock.elapsedRealtime()
-        if (glLastFrameMs != 0L) glLastDtMs = nowMs - glLastFrameMs
-        glLastFrameMs = nowMs
-        glFrameCount++
-        if (glWindowStartMs == 0L) glWindowStartMs = nowMs
-        val windowMs = nowMs - glWindowStartMs
-        if (windowMs >= 1_000L) {
-            glLastFps       = (glFrameCount * 1_000L / windowMs).toInt()
-            glFrameCount    = 0
-            glWindowStartMs = nowMs
+    // onDidFinishRenderingFrame(fully, frameEncodingTime, frameRenderingTime)
+    // frameRenderingTime is the GPU render duration in ms for this frame.
+    // We use it directly for dt and count frames for FPS over a 1-second window.
+    private val glFrameListener =
+        MapView.OnDidFinishRenderingFrameListener { _, _, frameRenderingTime ->
+            glLastDtMs = frameRenderingTime.toLong()
+            glFrameCount++
+            val nowMs = SystemClock.elapsedRealtime()
+            if (glWindowStartMs == 0L) glWindowStartMs = nowMs
+            val windowMs = nowMs - glWindowStartMs
+            if (windowMs >= 1_000L) {
+                glLastFps       = (glFrameCount * 1_000L / windowMs).toInt()
+                glFrameCount    = 0
+                glWindowStartMs = nowMs
+            }
         }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
