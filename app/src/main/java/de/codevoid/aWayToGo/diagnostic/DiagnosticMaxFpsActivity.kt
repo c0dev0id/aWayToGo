@@ -99,6 +99,8 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     @Volatile private    var benchTotalFrames  = 0
     @Volatile private    var benchLoadTimeMs   = -1L   // -1 = not yet first-full-render
     @Volatile private    var benchDone         = false
+    @Volatile private    var benchFpsMin       = Int.MAX_VALUE
+    @Volatile private    var benchFpsMax       = 0
     private              var glMap: MapLibreMap? = null
 
     // ── Choreographer: OSD refresh ───────────────────────────────────────────
@@ -153,6 +155,8 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
                 glFrameCount    = 0
                 glWindowStartMs = nowMs
                 if (bench && !benchDone) {
+                    if (glLastFps < benchFpsMin) benchFpsMin = glLastFps
+                    if (glLastFps > benchFpsMax) benchFpsMax = glLastFps
                     val elapsed = (nowMs - benchStartMs) / 1000.0
                     Log.i(TAG, "fps=$glLastFps dt=${glLastDtMs}ms elapsed=${"%.1f".format(elapsed)}s")
                 }
@@ -253,23 +257,26 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     /** Called on the main thread (from Choreographer) after [durationMs]. */
     private fun finishBench() {
         benchDone = true
-        val avgFps   = (benchTotalFrames * 1_000L / durationMs).toInt()
+        val glFpsAvg = (benchTotalFrames * 1_000L / durationMs).toInt()
+        val glFpsMin = if (benchFpsMin == Int.MAX_VALUE) 0 else benchFpsMin
+        val glFpsMax = benchFpsMax
         val loadStr  = if (benchLoadTimeMs >= 0L)
             "${"%.2f".format(benchLoadTimeMs / 1000.0)}s"
         else
             "n/a (still loading)"
-        val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
+        val fpsLabel  = if (maxFps == 0) "unlimited" else maxFps.toString()
         val durationS = durationMs / 1_000L
         val result =
-            "frames=$benchTotalFrames avg_fps=$avgFps load_time=$loadStr " +
+            "gl_fps_avg=$glFpsAvg gl_fps_min=$glFpsMin gl_fps_max=$glFpsMax " +
+            "frames=$benchTotalFrames load_time=$loadStr " +
             "maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)} " +
             "duration=${durationS}s pixelRatio=${"%.2f".format(pixelRatio)} " +
             "crossSourceCollisions=$crossSourceCollisions"
         Log.i(TAG, "RESULT $result")
         osdView.text =
             "── Bench Results ──────────────────\n" +
-            "Frames: $benchTotalFrames  Avg: $avgFps fps\n" +
-            "Load time: $loadStr\n" +
+            "gl-fps  avg:$glFpsAvg  min:$glFpsMin  max:$glFpsMax\n" +
+            "Frames: $benchTotalFrames  Load time: $loadStr\n" +
             "MaxFPS:$fpsLabel  Prefetch:$prefetch  Zoom:${"%.1f".format(zoom)}  Duration:${durationS}s\n" +
             "PixelRatio:${"%.2f".format(pixelRatio)}  CrossSrc:$crossSourceCollisions"
     }
