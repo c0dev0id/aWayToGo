@@ -11,7 +11,7 @@
         android:supportsRtl="true">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".MapActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -22,8 +22,8 @@
         <!-- Diagnostic activity: raw MapView + Choreographer OSD, zero Compose.
              Launch with:
                adb shell am start -n de.codevoid.aWayToGo/.DiagnosticActivity
-             Compare its fps/dt numbers with the OSD in MainActivity to
-             determine whether Compose is contributing to main-thread slowness. -->
+             Compare its fps/dt numbers with the OSD in MapActivity to
+             determine whether MapActivity itself is introducing overhead. -->
         <activity
             android:name=".DiagnosticActivity"
             android:exported="true" />

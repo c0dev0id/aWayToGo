@@ -5,7 +5,7 @@
 | Component | Technology |
 |---|---|
 | Language | Kotlin |
-| UI Framework | Jetpack Compose |
+| UI Framework | Android Views (map screen); Jetpack Compose reserved for future secondary screens |
 | Architecture | MVI |
 | Map Rendering | MapLibre Native (Android SDK) |
 | Offline Map Storage | MBTiles (SQLite) |
@@ -16,6 +16,21 @@
 | Background Work | WorkManager |
 
 ## Key Decisions
+
+### Compose removed from the map screen
+
+**Measurement:** On the target device, the `DiagnosticActivity` (raw `MapView` + `Choreographer`, no Compose) ran at **59 fps / 16 ms dt**. The `MainActivity` (same `MapView` wrapped in `AndroidView` inside Compose) ran at **14 fps / 50 ms dt**. Compose added ~34 ms of main-thread overhead per frame on this hardware, reducing perceived responsiveness from smooth to visibly choppy.
+
+**Decision:** The map screen (`MapActivity`) is implemented as a raw `ComponentActivity` with:
+- A `MapView` filling the screen in SurfaceView mode (GL thread is independent of the main thread).
+- A single `Choreographer.FrameCallback` that drives both panning and the OSD at vsync rate.
+- Plain Android `TextView` for the OSD overlay.
+
+All features from the Compose version are preserved: location tracking, remote control, pan ramp-up, `animateCamera` look-ahead, gesture settings, tilt toggle, tracking toggle.
+
+Compose is not removed from the project — it is kept for potential use in future secondary screens (settings, route management, GPX browser). The `buildFeatures { compose = true }` block and Compose BOM are removed from `app/build.gradle.kts` for now and can be re-added when needed.
+
+**Implication for future development:** New map-adjacent UI elements (POI overlays, navigation bar, routing panel) should be implemented as Android Views or `SurfaceView` layers, not as Compose composables on top of the map. This keeps the main thread budget free for MapLibre callbacks and input handling.
 
 ### Single-screen / map-centric UI
 The map is always present at the root of the Compose hierarchy. Panels, bottom sheets, and overlays compose on top of it. The map is never destroyed during normal navigation. If full-screen flows are needed in future (e.g. GPX file manager), they use separate Activities, not Compose destinations, to avoid MapLibre reinitialisation cost.
@@ -62,7 +77,8 @@ As UI panels are added, each ViewModel will consume `remoteEvents` and handle di
 ```
 ┌─────────────────────────────────────────┐
 │              UI Layer                    │
-│  Compose + MVI ViewModels               │
+│  Android Views + Choreographer (map)    │
+│  MVI ViewModels for stateful panels     │
 │  Map, Overlays, Panels, Bottom Sheets   │
 ├─────────────────────────────────────────┤
 │            Domain Layer                  │
@@ -115,8 +131,9 @@ GPS is a single source of truth in NavigationRepository. Both NavigationDomain a
 
 ### UI Performance
 
-- MVI + StateFlow ensures the UI only reacts to state emissions, never polling or blocking the main thread.
-- Compose recomposition scope is kept tight via isolated per-domain ViewModels and `derivedStateOf` for computed state.
+- The map screen uses a single `Choreographer.FrameCallback` instead of Compose to keep the main thread budget for MapLibre input callbacks. This yielded a measured improvement from 14 fps to 59 fps on the target device.
+- New map-adjacent UI elements must be Android Views, not Compose composables, to avoid reintroducing the main-thread overhead.
+- MVI + StateFlow will be used for stateful panels (routing, navigation bar) when they are added.
 - The map is never destroyed during normal app use (single-screen architecture), avoiding MapLibre reinitialisation cost.
 
 ### Persistence
