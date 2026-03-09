@@ -32,6 +32,24 @@ Compose is not removed from the project — it is kept for potential use in futu
 
 **Implication for future development:** New map-adjacent UI elements (POI overlays, navigation bar, routing panel) should be implemented as Android Views or `SurfaceView` layers, not as Compose composables on top of the map. This keeps the main thread budget free for MapLibre callbacks and input handling.
 
+### MapLibre rendering tuning — pixelRatio, maxFps, prefetchDelta
+
+**Benchmark methodology:** A parameterised `DiagnosticMaxFpsActivity` was built to run 10s pan benchmarks with configurable zoom, maxFps cap, pixelRatio, prefetchDelta, and crossSourceCollisions. Each run records `gl_fps_avg`, `gl_fps_min`, and `gl_fps_max` from MapLibre's `OnDidFinishRenderingFrameListener`. These are the primary metrics — they reflect what the user actually sees.
+
+**Findings:**
+
+- **pixelRatio=3.0 is the most impactful setting.** Higher pixelRatio causes MapLibre to satisfy tile quality from a lower zoom tier → fewer, larger tiles per viewport → less tile-fetch congestion during pan. The effect is most visible in `gl_fps_min`: pxr=1.0 drops to min=4 at zoom 14/16 (visible freeze); pxr=3.0 holds min=18. Tested 1.0, 1.5, 2.0, 3.0, 4.0 — 3.0 was the sweet spot on this device (4.0 did not improve min further).
+
+- **maxFps=60 over 30.** At 30fps, the render loop fires every 33ms, so a tile-load stall consumes a proportionally larger fraction of the frame budget. At 60fps, the scheduler has more recovery opportunities per second. Battery impact is acceptable; 120fps adds unnecessary GPU load with diminishing returns for a navigation use case.
+
+- **prefetchDelta=2 over 4.** Less aggressive prefetching reduces concurrent in-flight tile requests competing with the current viewport, improving gl_fps during active pan. Counterintuitive but consistent across all 24 benchmark runs.
+
+- **crossSourceCollisions**: no measurable effect on gl_fps. Left at default (true).
+
+**Applied settings:** `pixelRatio=3.0`, `maxFps=60`, `prefetchDelta=2`
+
+**Note:** `OnDidFinishRenderingFrameListener.frameRenderingTime` is always 0 in MapLibre Native Android 11.0.0 — the field is not populated. Do not rely on it.
+
 ### Single-screen / map-centric UI
 The map is always present at the root of the Compose hierarchy. Panels, bottom sheets, and overlays compose on top of it. The map is never destroyed during normal navigation. If full-screen flows are needed in future (e.g. GPX file manager), they use separate Activities, not Compose destinations, to avoid MapLibre reinitialisation cost.
 
