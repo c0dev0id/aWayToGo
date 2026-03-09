@@ -38,6 +38,74 @@ The Maptiler API key is injected at build time from the `MAPTILER_KEY` environme
 ### MVI architecture
 Navigation apps have complex, overlapping state (routing, map camera, download progress, GPS, active navigation). MVI provides unidirectional data flow which handles this better than MVVM's two-way binding. Each domain panel (navigation bar, routing panel, GPX panel) has its own ViewModel with its own MVI state — no single monolithic ViewModel.
 
+## Architecture
+
+### Layer Structure
+
+```
+┌─────────────────────────────────────────┐
+│              UI Layer                    │
+│  Compose + MVI ViewModels               │
+│  Map, Overlays, Panels, Bottom Sheets   │
+├─────────────────────────────────────────┤
+│            Domain Layer                  │
+│  UseCases — orchestrate business logic  │
+├─────────────────────────────────────────┤
+│           Data Layer                     │
+│  Repositories — single source of truth  │
+├─────────────────────────────────────────┤
+│         Infrastructure Layer             │
+│  BRouter │ MapLibre │ MBTiles │ Room    │
+│  Maptiler │ GPS │ TTS │ WorkManager     │
+└─────────────────────────────────────────┘
+```
+
+### Domain Modules
+
+Each domain has its own Repository and UseCases. The rest of the app never talks to infrastructure directly — always through the Repository.
+
+**MapDomain** — tile source, MBTiles management, camera state, offline area tracking.
+
+**RoutingDomain** — BRouter integration and profile management. BRouter runs as a bounded service inside the app process; a Kotlin wrapper isolates it so no other module touches BRouter directly.
+
+**NavigationDomain** — active navigation session, GPS tracking, off-route detection, TTS instructions. Runs as a Foreground Service to continue in the background. Publishes state as a `StateFlow` that the UI layer observes.
+
+**GpxDomain** — GPX import, export, storage, and display. Triggers tile download suggestions via bounding box computation.
+
+**SettingsDomain** — user preferences, backed by DataStore.
+
+### Cross-Domain Workflows
+
+Domains do not depend on each other directly. Cross-domain workflows are orchestrated by UseCases that sit above the repositories:
+
+- **StartNavigationUseCase** — takes a `Route` from RoutingDomain, hands it to NavigationDomain, starts the foreground service.
+- **ImportGpxUseCase** — parses GPX via GpxDomain, computes bounding box, triggers MapDomain tile download suggestion.
+- **RerouteUseCase** — triggered by NavigationDomain off-route event, calls RoutingDomain with current GPS position, updates NavigationDomain with new route.
+
+### UI State Management
+
+Each domain panel (routing panel, navigation bar, GPX panel, download panel) has its own ViewModel with its own MVI state. There is no single monolithic ViewModel for the whole screen. This keeps recomposition scope tight — a download progress update does not trigger recomposition of the navigation bar.
+
+GPS is a single source of truth in NavigationRepository. Both NavigationDomain and MapDomain observe it; neither owns it independently.
+
+### Background & Threading
+
+- BRouter route calculation is CPU-heavy and runs on `Dispatchers.Default`. Never awaited on the main thread. Progress is exposed as `StateFlow`.
+- Tile downloads are owned by WorkManager — runs off main thread, survives app death, reports progress via observable work state.
+- All Room queries use suspend functions on `Dispatchers.IO`.
+- Navigation (GPS, TTS, off-route detection) runs in a Foreground Service.
+- MapLibre renders on its own GL thread, independent of Compose.
+
+### UI Performance
+
+- MVI + StateFlow ensures the UI only reacts to state emissions, never polling or blocking the main thread.
+- Compose recomposition scope is kept tight via isolated per-domain ViewModels and `derivedStateOf` for computed state.
+- The map is never destroyed during normal app use (single-screen architecture), avoiding MapLibre reinitialisation cost.
+
+### Persistence
+
+Room owns all structured app data — GPX files, route history, downloaded area metadata. MBTiles files are stored as raw SQLite files on disk; Room tracks their metadata only.
+
 ## Core Features (Planned)
 
 - Offline map display with MBTiles tile cache
