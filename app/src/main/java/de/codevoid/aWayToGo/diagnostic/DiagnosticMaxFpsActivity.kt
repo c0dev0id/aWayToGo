@@ -14,6 +14,7 @@ import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import kotlin.math.cos
 
 /**
  * Diagnostic activity: configurable [MapView.setMaximumFps] + [MapLibreMap.setPrefetchZoomDelta].
@@ -117,7 +118,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
                 finishBench()
                 return
             }
-            glMap?.moveCamera(CameraUpdateFactory.scrollBy(BENCH_SCROLL_PX, 0f))
+            glMap?.panInstant(BENCH_SCROLL_PX, 0f)
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
@@ -257,4 +258,23 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         super.onLowMemory()
         mapView.onLowMemory()
     }
+}
+
+/**
+ * Instantly pan the map by [xPixels] right and [yPixels] down (no animation).
+ * Converts pixel offsets to LatLng deltas using the web-mercator scale factor,
+ * matching the approach used in MapActivity.panByAnimated.
+ */
+private fun MapLibreMap.panInstant(xPixels: Float, yPixels: Float) {
+    val pos    = cameraPosition
+    val target = pos.target ?: return
+    val latRad      = Math.toRadians(target.latitude)
+    val metersPerPx = 156543.03392 * cos(latRad) / Math.pow(2.0, pos.zoom)
+    val latDelta    = -(yPixels * metersPerPx) / 111320.0
+    val lngDelta    =  (xPixels * metersPerPx) / (111320.0 * cos(latRad))
+    moveCamera(
+        CameraUpdateFactory.newLatLng(
+            LatLng(target.latitude + latDelta, target.longitude + lngDelta)
+        )
+    )
 }
