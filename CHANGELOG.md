@@ -21,5 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `themes.xml`: replaced `Theme.MaterialComponents.DayNight.NoActionBar` with `android:Theme.DeviceDefault.Light.NoActionBar` (no external dependency required for a pure Compose app)
 - `LocalLifecycleOwner` import updated to `androidx.lifecycle.compose` (old location deprecated)
 
+### Changed (build pipeline)
+- Build workflow now produces a release APK (`assembleRelease`) instead of a debug APK
+- Release build has minification (`isMinifyEnabled = true`) and resource shrinking enabled
+- ABI filters restrict native libs to `arm64-v8a` and `armeabi-v7a` — drops emulator ABIs (~30–40 MB)
+- Added `proguard-rules.pro` with MapLibre keep rules
+
 ### Removed
 - `scripts/` directory (leftover from project template)

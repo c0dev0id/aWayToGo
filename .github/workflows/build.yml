@@ -43,16 +43,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      - name: Build release APK
         env:
           MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
 
-      - name: Upload debug APK
+      - name: Upload unsigned release APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: app-unsigned
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
 
   sign:
     needs: build
@@ -67,16 +67,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Download debug APK
+      - name: Download unsigned release APK
         uses: actions/download-artifact@v4
         with:
-          name: app-debug
+          name: app-unsigned
 
       - name: Set up signing keystore
         run: |
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > "${{ runner.temp }}/release.keystore"
 
-      - name: Strip and sign APK
+      - name: Align and sign APK
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
@@ -84,7 +84,7 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           BUILD_TOOLS_DIR=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
-          "$BUILD_TOOLS_DIR/zipalign" -v -p 4 app-debug.apk app-release-aligned.apk
+          "$BUILD_TOOLS_DIR/zipalign" -v -p 4 app-release-unsigned.apk app-release-aligned.apk
           "$BUILD_TOOLS_DIR/apksigner" sign \
             --ks "$SIGNING_KEYSTORE_PATH" \
             --ks-pass "pass:$SIGNING_KEYSTORE_PASSWORD" \
