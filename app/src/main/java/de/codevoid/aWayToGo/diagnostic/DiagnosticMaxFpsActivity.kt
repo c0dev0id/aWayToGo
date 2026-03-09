@@ -14,38 +14,46 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapView
 
 /**
- * Diagnostic activity: [MapLibreMap.setMaximumFps] capped at 30 + prefetch enabled.
+ * Diagnostic activity: configurable [MapView.setMaximumFps] + [MapLibreMap.setPrefetchZoomDelta].
  *
- * Tests whether capping the GL render rate at 30 fps frees enough CPU/GPU
- * headroom to make tile loading feel less intrusive.  The hypothesis is that
- * at 60 fps the GL thread is starved for time, and halving the render budget
- * lets tile decode/upload threads run faster so the "tile pop-in" is shorter.
+ * Values are supplied as Intent integer extras so you can sweep the parameter
+ * space without recompiling:
  *
- * Prefetch is enabled with a zoom-delta of 4 (load tiles 4 zoom levels above
- * the current zoom) so that zoom-out transitions hit fewer cache misses.
+ *   Extra key       Default   Meaning
+ *   "maxFps"        30        GL render rate cap (0 = unlimited)
+ *   "prefetchDelta" 4         Zoom levels to prefetch below current zoom
  *
- * How to compare:
- *   make diag            → SurfaceView / 60 fps / no explicit prefetch
- *   make diag-maxfps     → SurfaceView / 30 fps / prefetch delta 4
+ * Launch via Makefile (override defaults with Make variables):
  *
- * What to observe while panning / zooming:
- *   - Is tile pop-in shorter or less frequent?
- *   - Does panning feel smoother despite the lower frame rate?
- *   - Does the OSD fps settle at ~30 as expected?
+ *   make diag-maxfps                         → maxFps=30  prefetchDelta=4
+ *   make diag-maxfps MAXFPS=45               → maxFps=45  prefetchDelta=4
+ *   make diag-maxfps MAXFPS=0  PREFETCH=2    → unlimited fps, delta 2
  *
- * Launch:
- *   adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity
+ * Or directly via adb:
+ *   adb shell am start \
+ *     -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
+ *     --ei maxFps 45 --ei prefetchDelta 6
  */
 class DiagnosticMaxFpsActivity : ComponentActivity() {
+
+    companion object {
+        const val EXTRA_MAX_FPS       = "maxFps"
+        const val EXTRA_PREFETCH      = "prefetchDelta"
+        const val DEFAULT_MAX_FPS     = 30
+        const val DEFAULT_PREFETCH    = 4
+    }
 
     private lateinit var mapView: MapView
     private lateinit var osdView: TextView
 
+    private var maxFps      = DEFAULT_MAX_FPS
+    private var prefetch    = DEFAULT_PREFETCH
+
     private var lastFrameNs = 0L
-    private var frameCount = 0
+    private var frameCount  = 0
     private var windowStartNs = 0L
-    private var lastFps = 0
-    private var lastDtMs = 0L
+    private var lastFps     = 0
+    private var lastDtMs    = 0L
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -58,12 +66,13 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             if (windowStartNs == 0L) windowStartNs = frameTimeNanos
             val windowNs = frameTimeNanos - windowStartNs
             if (windowNs >= 1_000_000_000L) {
-                lastFps = (frameCount * 1_000_000_000L / windowNs).toInt()
+                lastFps   = (frameCount * 1_000_000_000L / windowNs).toInt()
                 frameCount = 0
                 windowStartNs = frameTimeNanos
             }
 
-            osdView.text = "MaxFPS:30 Prefetch:4\nfps  $lastFps  dt:${lastDtMs}ms"
+            val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
+            osdView.text = "MaxFPS:$fpsLabel Prefetch:$prefetch\nfps  $lastFps  dt:${lastDtMs}ms"
 
             Choreographer.getInstance().postFrameCallback(this)
         }
@@ -71,6 +80,10 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        maxFps   = intent.getIntExtra(EXTRA_MAX_FPS,    DEFAULT_MAX_FPS)
+        prefetch = intent.getIntExtra(EXTRA_PREFETCH,   DEFAULT_PREFETCH)
+
         MapLibre.getInstance(this)
 
         val styleUrl = "https://api.maptiler.com/maps/outdoor-v2/style.json" +
@@ -84,13 +97,14 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
+        val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
         osdView = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 12f
             typeface = android.graphics.Typeface.MONOSPACE
             setBackgroundColor(Color.argb(140, 0, 0, 0))
             setPadding(16, 8, 16, 8)
-            text = "MaxFPS:30 Prefetch:4\nfps  --  dt:--ms"
+            text = "MaxFPS:$fpsLabel Prefetch:$prefetch\nfps  --  dt:--ms"
         }
         root.addView(osdView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -102,15 +116,9 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
 
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { map ->
-            // Cap the GL render rate.  At 30 fps the GL thread wakes every
-            // ~33 ms instead of ~16 ms, freeing CPU and GPU time for tile
-            // decode/upload threads between frames.
-            // Note: setMaximumFps is on MapView, not MapLibreMap.
-            mapView.setMaximumFps(30)
-
-            // Prefetch tiles 4 zoom levels above the current zoom so
-            // zoom-out transitions have tiles pre-loaded.
-            map.setPrefetchZoomDelta(4)
+            // 0 means "no cap" to MapView.setMaximumFps.
+            mapView.setMaximumFps(maxFps)
+            map.setPrefetchZoomDelta(prefetch)
 
             map.setStyle(styleUrl) {
                 map.animateCamera(
@@ -120,32 +128,19 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        mapView.onStart()
-    }
-
-    override fun onResume() {
+    override fun onStart()   { super.onStart();   mapView.onStart()  }
+    override fun onResume()  {
         super.onResume()
         mapView.onResume()
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
-
-    override fun onPause() {
+    override fun onPause()   {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         mapView.onPause()
         super.onPause()
     }
-
-    override fun onStop() {
-        super.onStop()
-        mapView.onStop()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        mapView.onDestroy()
-    }
+    override fun onStop()    { super.onStop();    mapView.onStop()   }
+    override fun onDestroy() { super.onDestroy(); mapView.onDestroy() }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)

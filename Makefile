@@ -1,5 +1,11 @@
 # a simple make file to start developer tools
 
+# diag-maxfps tunables — override on the command line:
+#   make diag-maxfps MAXFPS=45
+#   make diag-maxfps MAXFPS=0 PREFETCH=2   (0 = unlimited fps)
+MAXFPS   ?= 30
+PREFETCH ?= 4
+
 .PHONY: diag diag-texture diag-maxfps diag-3d install launcher restore browser remote
 
 install:
@@ -17,7 +23,9 @@ diag-texture:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity
 
 diag-maxfps:
-	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity
+	adb shell am start \
+	    -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
+	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH)
 
 diag-3d:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity
