@@ -270,26 +270,11 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, btnMargin, 0, 0) },
         )
 
-        // Crosshair — two full-screen red lines (horizontal + vertical) centred on screen.
-        // Spans edge-to-edge so it remains readable at a glance from handlebar distance.
+        // Crosshair — gradient arms fading to transparent + circular reticle at centre.
         // Only visible in panning mode.
-        val crosshairThickness = (6 * density).toInt()
-        val crosshairContainer = FrameLayout(this).apply { visibility = View.GONE }
-        crosshairContainer.addView(
-            View(this).apply { setBackgroundColor(Color.RED) },
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, crosshairThickness, Gravity.CENTER_VERTICAL,
-            ),
-        )
-        crosshairContainer.addView(
-            View(this).apply { setBackgroundColor(Color.RED) },
-            FrameLayout.LayoutParams(
-                crosshairThickness, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL,
-            ),
-        )
-        crosshairView = crosshairContainer
+        crosshairView = CrosshairView(this).apply { visibility = View.GONE }
         root.addView(
-            crosshairContainer,
+            crosshairView,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
             ),
