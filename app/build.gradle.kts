@@ -48,6 +48,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // Lifecycle
+    implementation("androidx.lifecycle:lifecycle-runtime-compose")
+
     // MapLibre
     implementation("org.maplibre.gl:android-sdk:11.0.0")
 }

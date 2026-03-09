@@ -13,11 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - INTERNET permission in `AndroidManifest.xml`
 - `MAPTILER_KEY` env var passed to build steps in CI workflows (build and release)
 - Development journal at `.github/development-journal.md`
+- `androidx.lifecycle:lifecycle-runtime-compose` dependency for `LocalLifecycleOwner`
 
 ### Changed
-- Root `build.gradle.kts`: replaced duplicate `kotlin.plugin.compose` entry with `org.jetbrains.kotlin.android`
-- App `build.gradle.kts`: added `org.jetbrains.kotlin.android` plugin and enabled `buildConfig`
+- App `build.gradle.kts`: enabled `buildConfig`, removed `org.jetbrains.kotlin.android` plugin (not required since AGP 9.0)
 - `MainActivity`: replaced placeholder `Greeting` composable with full-screen `MapScreen`
+- `themes.xml`: replaced `Theme.MaterialComponents.DayNight.NoActionBar` with `android:Theme.DeviceDefault.Light.NoActionBar` (no external dependency required for a pure Compose app)
+- `LocalLifecycleOwner` import updated to `androidx.lifecycle.compose` (old location deprecated)
 
 ### Removed
 - `scripts/` directory (leftover from project template)
