@@ -24,3 +24,15 @@ browser:
 
 remote:
 	adb shell am broadcast -a de.codevoid.andremote2.OVERLAY_TOGGLE
+
+mc:
+	adb shell am start -n com.ghisler.android.TotalCommander/.TotalCommander
+
+snd:
+	adb shell am start -n de.codevoid.androsnd/.MainActivity
+
+photos:
+	adb shell am start -n com.google.android.apps.photos/.home.HomeActivity
+
+dmd:
+	adb shell am start -n com.thorkracing.dmd2launcher/.Main
