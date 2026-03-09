@@ -36,7 +36,7 @@ import org.maplibre.android.maps.Style
 import kotlin.math.cos
 
 // Desired pan speed in screen pixels per second.
-private const val PAN_SPEED_PX_PER_SEC = 60f
+private const val PAN_SPEED_PX_PER_SEC = 120f
 
 // How far ahead (ms) each animateCamera call targets.
 // The GL thread interpolates this segment smoothly at its own refresh rate.
@@ -107,8 +107,8 @@ class MapActivity : ComponentActivity() {
 
                 for ((key, startNs) in panStartNs) {
                     val elapsedMs = (frameTimeNanos - startNs) / 1_000_000L
-                    // Linear ramp: 50 % speed at t=0, 100 % at t=1 s.
-                    val ramp  = (elapsedMs / 1000f).coerceAtMost(1f)
+                    // Linear ramp: 50 % speed at t=0, 100 % at t=2 s.
+                    val ramp  = (elapsedMs / 2000f).coerceAtMost(1f)
                     val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
                     val px    = speed * PAN_LOOK_AHEAD_MS / 1000f
                     if (speed > maxSpeed) maxSpeed = speed
