@@ -5,3 +5,7 @@ local.properties
 /build/
 app/build/
 rust/target/
+
+# local credentials / helper scripts — never commit these
+.gh_token
+doit.sh
