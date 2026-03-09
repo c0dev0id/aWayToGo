@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.diagnostic
 
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.os.SystemClock
 import android.view.Choreographer
 import android.view.Gravity
@@ -50,6 +51,7 @@ import kotlin.math.cos
 class DiagnosticMaxFpsActivity : ComponentActivity() {
 
     companion object {
+        private const val TAG         = "DiagBench"
         const val EXTRA_MAX_FPS       = "maxFps"
         const val EXTRA_PREFETCH      = "prefetchDelta"
         const val EXTRA_ZOOM          = "zoom"
@@ -228,6 +230,10 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         else
             "n/a (still loading)"
         val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
+        val result =
+            "frames=$benchTotalFrames avg_fps=$avgFps load_time=$loadStr " +
+            "maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)}"
+        Log.i(TAG, "RESULT $result")
         osdView.text =
             "── Bench Results ──────────────────\n" +
             "Frames: $benchTotalFrames  Avg: $avgFps fps\n" +
