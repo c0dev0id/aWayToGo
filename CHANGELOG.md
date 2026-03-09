@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- DMD remote control support via `com.thorkracing.wireddevices.keypress` broadcast
+- Long-press detection for CONFIRM and BACK buttons (500 ms threshold)
+- Directional keys pan the map continuously while held; panning stops on key release
+- ZOOM_IN / ZOOM_OUT keys zoom the map
+- CONFIRM short-press re-centres on the user and resumes tracking; long-press toggles tracking on/off
+- BACK short-press resets bearing to north; long-press toggles 3D tilt (0° ↔ 60°)
+- Rotate, tilt, and compass gestures enabled on the map
+- User location displayed and map camera tracks it on start (requires location permission)
 - MapLibre Native Android SDK for map rendering
 - `MAPTILER_KEY` injected at build time via `BuildConfig` from environment variable
 - `MapScreen` composable with full lifecycle handling (`onStart`, `onResume`, `onPause`, `onStop`, `onDestroy`)
