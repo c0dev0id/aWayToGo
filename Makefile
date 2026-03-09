@@ -1,21 +1,6 @@
 # a simple make file to start developer tools
 
-# diag-maxfps / diag-bench tunables — override on the command line:
-#   make diag-maxfps MAXFPS=45
-#   make diag-maxfps MAXFPS=0 PREFETCH=2   (0 = unlimited fps)
-#   make diag-maxfps ZOOM=15.0
-#   make diag-bench                         (10s benchmark, default params)
-#   make diag-bench MAXFPS=60 ZOOM=14.0
-#   make diag-bench DURATION=30
-MAXFPS       ?= 30
-PREFETCH     ?= 4
-ZOOM         ?= 12.0
-BENCH        ?= false
-DURATION     ?= 10
-PIXEL_RATIO  ?= 0
-CROSS_SRC    ?= true
-
-.PHONY: diag diag-texture diag-maxfps diag-bench diag-3d install launcher restore browser remote log log-clear
+.PHONY: diag install launcher restore browser remote log log-clear
 
 # Dump the device logcat into log/ so Claude can read the files directly.
 #
@@ -47,7 +32,7 @@ log-clear:
 	adb logcat -c
 	@echo "logcat buffer cleared"
 
-install: log-clear
+install:
 	RUN_ID=$$(gh run list --repo c0dev0id/aWayToGo --workflow build.yml \
 	          --status success --limit 1 --json databaseId --jq '.[0].databaseId') && \
 	gh run download $$RUN_ID --repo c0dev0id/aWayToGo --name app-signed --dir /tmp/aWayToGo-install && \
@@ -57,29 +42,6 @@ install: log-clear
 
 diag:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity
-
-diag-texture:
-	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity
-
-diag-maxfps:
-	adb shell am start -S \
-	    -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
-	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH) \
-	    --ed zoom $(ZOOM) \
-	    --ez bench $(BENCH) \
-	    --ei duration $(DURATION) \
-	    $(if $(filter-out 0 0.0,$(PIXEL_RATIO)),--ef pixelRatio $(PIXEL_RATIO)) \
-	    --ez crossSourceCollisions $(CROSS_SRC)
-
-# Benchmark: pan right, record frames + load time, show summary.
-# Override any tunable on the command line, e.g.:
-#   make diag-bench MAXFPS=60 ZOOM=14.0 PREFETCH=2 DURATION=30 PIXEL_RATIO=1.0
-diag-bench:
-	$(MAKE) diag-maxfps BENCH=true MAXFPS=$(MAXFPS) PREFETCH=$(PREFETCH) ZOOM=$(ZOOM) \
-	    DURATION=$(DURATION) PIXEL_RATIO=$(PIXEL_RATIO) CROSS_SRC=$(CROSS_SRC)
-
-diag-3d:
-	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity
 
 launcher:
 	adb shell cmd package set-home-activity de.codevoid.aWayToGo/.map.MapActivity

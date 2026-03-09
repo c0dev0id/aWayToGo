@@ -28,27 +28,6 @@
             android:name=".diagnostic.DiagnosticActivity"
             android:exported="true" />
 
-        <!-- Diagnostic: TextureView mode — compare fps/dt with DiagnosticActivity
-             to measure whether HWC compositing latency differs on this device.
-             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity -->
-        <activity
-            android:name=".diagnostic.DiagnosticTextureActivity"
-            android:exported="true" />
-
-        <!-- Diagnostic: setMaximumFps(30) + setPrefetchZoomDelta(4) — tests
-             whether halving the GL render budget reduces tile-load jank.
-             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity -->
-        <activity
-            android:name=".diagnostic.DiagnosticMaxFpsActivity"
-            android:exported="true" />
-
-        <!-- Diagnostic: OpenMapTiles maptiler-3d-gl-style (3D building extrusions).
-             Style JSON is fetched from GitHub and {key} placeholders are substituted
-             at runtime.  Compare fps/dt with DiagnosticActivity (outdoor-v2 baseline).
-             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity -->
-        <activity
-            android:name=".diagnostic.Diagnostic3dStyleActivity"
-            android:exported="true" />
 
     </application>
 
