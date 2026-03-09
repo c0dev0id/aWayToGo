@@ -40,6 +40,7 @@ import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import kotlin.math.cos
+import kotlin.math.sin
 
 // Desired pan speed in screen pixels per second.
 private const val PAN_SPEED_PX_PER_SEC = 120f
@@ -139,7 +140,16 @@ class MapActivity : ComponentActivity() {
                 }
 
                 if (totalDx != 0f || totalDy != 0f) {
-                    currentMap.panByAnimated(totalDx, totalDy, PAN_LOOK_AHEAD_MS)
+                    // Rotate the screen-space pan vector by the current map bearing so
+                    // joystick directions always follow what the rider sees on screen,
+                    // not geographic north — pushing UP always scrolls the map content
+                    // downward regardless of how the map is rotated.
+                    val bearingRad = Math.toRadians(currentMap.cameraPosition.bearing)
+                    val cosB = cos(bearingRad).toFloat()
+                    val sinB = sin(bearingRad).toFloat()
+                    val rotatedDx = totalDx * cosB - totalDy * sinB
+                    val rotatedDy = totalDx * sinB + totalDy * cosB
+                    currentMap.panByAnimated(rotatedDx, rotatedDy, PAN_LOOK_AHEAD_MS)
                 }
             }
 
