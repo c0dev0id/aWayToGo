@@ -26,6 +26,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.graphics.PointF
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
@@ -142,14 +143,10 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
             val m = map ?: return@collect
             when (event) {
                 is RemoteEvent.ShortPress -> when (event.key) {
-                    RemoteKey.UP ->
-                        m.animateCamera(CameraUpdateFactory.scrollBy(0f, -PAN_PIXELS), PAN_DURATION_MS)
-                    RemoteKey.DOWN ->
-                        m.animateCamera(CameraUpdateFactory.scrollBy(0f, PAN_PIXELS), PAN_DURATION_MS)
-                    RemoteKey.LEFT ->
-                        m.animateCamera(CameraUpdateFactory.scrollBy(-PAN_PIXELS, 0f), PAN_DURATION_MS)
-                    RemoteKey.RIGHT ->
-                        m.animateCamera(CameraUpdateFactory.scrollBy(PAN_PIXELS, 0f), PAN_DURATION_MS)
+                    RemoteKey.UP    -> m.panBy(0f, -PAN_PIXELS, PAN_DURATION_MS)
+                    RemoteKey.DOWN  -> m.panBy(0f,  PAN_PIXELS, PAN_DURATION_MS)
+                    RemoteKey.LEFT  -> m.panBy(-PAN_PIXELS, 0f, PAN_DURATION_MS)
+                    RemoteKey.RIGHT -> m.panBy( PAN_PIXELS, 0f, PAN_DURATION_MS)
                     RemoteKey.ZOOM_IN ->
                         m.animateCamera(CameraUpdateFactory.zoomIn())
                     RemoteKey.ZOOM_OUT ->
@@ -243,5 +240,21 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
             }
         },
         modifier = Modifier.fillMaxSize()
+    )
+}
+
+/**
+ * Pan the map by a given number of screen pixels with animation.
+ *
+ * MapLibre 11.x removed CameraUpdateFactory.scrollBy(). This extension
+ * converts the current map centre to screen coordinates, offsets by the
+ * requested pixel delta, then converts back to LatLng and animates there.
+ */
+private fun MapLibreMap.panBy(xPixels: Float, yPixels: Float, durationMs: Int) {
+    val center = projection.toScreenLocation(cameraPosition.target)
+    val newCenter = PointF(center.x + xPixels, center.y + yPixels)
+    animateCamera(
+        CameraUpdateFactory.newLatLng(projection.fromScreenLocation(newCenter)),
+        durationMs
     )
 }
