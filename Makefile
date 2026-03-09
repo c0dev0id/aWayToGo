@@ -6,10 +6,12 @@
 #   make diag-maxfps ZOOM=15.0
 #   make diag-bench                         (10s benchmark, default params)
 #   make diag-bench MAXFPS=60 ZOOM=14.0
-MAXFPS   ?= 30
-PREFETCH ?= 4
-ZOOM     ?= 12.0
-BENCH    ?= false
+#   make diag-bench DURATION=30
+MAXFPS    ?= 30
+PREFETCH  ?= 4
+ZOOM      ?= 12.0
+BENCH     ?= false
+DURATION  ?= 10
 
 .PHONY: diag diag-texture diag-maxfps diag-bench diag-3d install launcher restore browser remote log log-clear
 
@@ -62,13 +64,14 @@ diag-maxfps:
 	    -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
 	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH) \
 	    --ed zoom $(ZOOM) \
-	    --ez bench $(BENCH)
+	    --ez bench $(BENCH) \
+	    --ei duration $(DURATION)
 
-# 10-second benchmark: pan right, record frames + load time, show summary.
+# Benchmark: pan right, record frames + load time, show summary.
 # Override any tunable on the command line, e.g.:
-#   make diag-bench MAXFPS=60 ZOOM=14.0 PREFETCH=2
+#   make diag-bench MAXFPS=60 ZOOM=14.0 PREFETCH=2 DURATION=30
 diag-bench:
-	$(MAKE) diag-maxfps BENCH=true MAXFPS=$(MAXFPS) PREFETCH=$(PREFETCH) ZOOM=$(ZOOM)
+	$(MAKE) diag-maxfps BENCH=true MAXFPS=$(MAXFPS) PREFETCH=$(PREFETCH) ZOOM=$(ZOOM) DURATION=$(DURATION)
 
 diag-3d:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity

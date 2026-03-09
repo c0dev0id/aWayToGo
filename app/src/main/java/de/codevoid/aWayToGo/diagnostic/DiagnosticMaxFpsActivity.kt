@@ -27,7 +27,8 @@ import kotlin.math.cos
  *   "maxFps"        Int      30        GL render rate cap (0 = unlimited)
  *   "prefetchDelta" Int      4         Zoom levels to prefetch below current zoom
  *   "zoom"          Double   12.0      Initial camera zoom level
- *   "bench"         Boolean  false     10-second benchmark mode (see below)
+ *   "bench"         Boolean  false     Enable benchmark mode (see below)
+ *   "duration"      Int      10        Benchmark duration in seconds
  *
  * Benchmark mode (bench=true):
  *   - Map pans right continuously for 10 seconds, starting immediately.
@@ -56,13 +57,14 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         const val EXTRA_PREFETCH      = "prefetchDelta"
         const val EXTRA_ZOOM          = "zoom"
         const val EXTRA_BENCH         = "bench"
+        const val EXTRA_DURATION      = "duration"
         const val DEFAULT_MAX_FPS     = 30
         const val DEFAULT_PREFETCH    = 4
         const val DEFAULT_ZOOM        = 12.0
         const val DEFAULT_BENCH       = false
+        const val DEFAULT_DURATION_S  = 10
 
-        /** Benchmark run duration. */
-        const val BENCH_DURATION_MS   = 10_000L
+        /** Pixel scroll per Choreographer tick during benchmark. */
 
         /** Horizontal pan per Choreographer tick (pixels). */
         const val BENCH_SCROLL_PX     = 5f
@@ -75,6 +77,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     private var prefetch    = DEFAULT_PREFETCH
     private var zoom        = DEFAULT_ZOOM
     private var bench       = DEFAULT_BENCH
+    private var durationMs  = DEFAULT_DURATION_S * 1_000L
 
     // GL-frame counters — updated from MapLibre's render callback, not Choreographer.
     // This measures actual GPU frame submissions, so setMaximumFps is reflected here.
@@ -116,7 +119,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         override fun doFrame(frameTimeNanos: Long) {
             if (benchDone) return
             val elapsedMs = SystemClock.elapsedRealtime() - benchStartMs
-            if (elapsedMs >= BENCH_DURATION_MS) {
+            if (elapsedMs >= durationMs) {
                 finishBench()
                 return
             }
@@ -153,10 +156,11 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        maxFps   = intent.getIntExtra(EXTRA_MAX_FPS,       DEFAULT_MAX_FPS)
-        prefetch = intent.getIntExtra(EXTRA_PREFETCH,      DEFAULT_PREFETCH)
-        zoom     = intent.getDoubleExtra(EXTRA_ZOOM,       DEFAULT_ZOOM)
-        bench    = intent.getBooleanExtra(EXTRA_BENCH,     DEFAULT_BENCH)
+        maxFps      = intent.getIntExtra(EXTRA_MAX_FPS,       DEFAULT_MAX_FPS)
+        prefetch    = intent.getIntExtra(EXTRA_PREFETCH,      DEFAULT_PREFETCH)
+        zoom        = intent.getDoubleExtra(EXTRA_ZOOM,       DEFAULT_ZOOM)
+        bench       = intent.getBooleanExtra(EXTRA_BENCH,     DEFAULT_BENCH)
+        durationMs  = intent.getIntExtra(EXTRA_DURATION,      DEFAULT_DURATION_S) * 1_000L
 
         MapLibre.getInstance(this)
 
@@ -225,24 +229,25 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         }
     }
 
-    /** Called on the main thread (from Choreographer) after BENCH_DURATION_MS. */
+    /** Called on the main thread (from Choreographer) after [durationMs]. */
     private fun finishBench() {
         benchDone = true
-        val avgFps   = (benchTotalFrames * 1_000L / BENCH_DURATION_MS).toInt()
+        val avgFps   = (benchTotalFrames * 1_000L / durationMs).toInt()
         val loadStr  = if (benchLoadTimeMs >= 0L)
             "${"%.2f".format(benchLoadTimeMs / 1000.0)}s"
         else
             "n/a (still loading)"
         val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
+        val durationS = durationMs / 1_000L
         val result =
             "frames=$benchTotalFrames avg_fps=$avgFps load_time=$loadStr " +
-            "maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)}"
+            "maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)} duration=${durationS}s"
         Log.i(TAG, "RESULT $result")
         osdView.text =
             "── Bench Results ──────────────────\n" +
             "Frames: $benchTotalFrames  Avg: $avgFps fps\n" +
             "Load time: $loadStr\n" +
-            "MaxFPS:$fpsLabel  Prefetch:$prefetch  Zoom:${"%.1f".format(zoom)}"
+            "MaxFPS:$fpsLabel  Prefetch:$prefetch  Zoom:${"%.1f".format(zoom)}  Duration:${durationS}s"
     }
 
     override fun onStart()   { super.onStart();   mapView.onStart()  }
