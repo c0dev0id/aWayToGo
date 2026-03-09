@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -32,7 +33,6 @@ import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -76,13 +76,10 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Pixels moved per pan step — tuned so ~300 px/s at PAN_INTERVAL_MS
-private const val PAN_STEP_PX = 15f
-// How often the pan loop fires (ms). Lower = smoother but more CPU.
-private const val PAN_INTERVAL_MS = 50L
-// Animation duration per step — slightly longer than the interval so
-// consecutive steps blend together instead of snapping.
-private const val PAN_ANIM_MS = 80
+// Desired pan speed in screen pixels per second.
+// withFrameMillis gives us the actual frame delta so this stays
+// constant regardless of display refresh rate (60/90/120 Hz).
+private const val PAN_SPEED_PX_PER_SEC = 350f
 private const val TILT_3D = 60.0
 
 @SuppressLint("MissingPermission")
@@ -112,10 +109,10 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
 
     val mapView = remember { MapView(context) }
 
-    // Coroutine scope for launching pan loops — tied to the composition lifetime,
+    // Coroutine scope for pan loops — tied to composition lifetime,
     // main dispatcher so MapLibre camera calls stay on the UI thread.
     val coroutineScope = rememberCoroutineScope()
-    // One Job slot per directional key; cancelled when the key is released.
+    // One active Job per directional key; cancelled on key release.
     val panJobs = remember { mutableMapOf<RemoteKey, Job>() }
 
     // Request location permission on first composition
@@ -159,23 +156,33 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
             val m = map ?: return@collect
             when (event) {
 
-                // Directional keys: start a smooth continuous pan on press,
-                // cancel it on release. A quick tap runs exactly one loop step.
+                // Directional keys: start a frame-locked pan loop on press,
+                // cancel it on release.
                 is RemoteEvent.KeyDown -> when (event.key) {
                     RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
                         val key = event.key
                         panJobs[key]?.cancel()
                         panJobs[key] = coroutineScope.launch {
+                            // withFrameMillis suspends until the next vsync frame and
+                            // provides the monotonic frame timestamp in milliseconds.
+                            // We use the real frame delta to keep speed constant across
+                            // 60/90/120 Hz displays.
+                            var lastFrameMs = 0L
                             while (isActive) {
-                                val currentMap = map ?: break
-                                when (key) {
-                                    RemoteKey.UP    -> currentMap.panBy(0f, -PAN_STEP_PX, PAN_ANIM_MS)
-                                    RemoteKey.DOWN  -> currentMap.panBy(0f,  PAN_STEP_PX, PAN_ANIM_MS)
-                                    RemoteKey.LEFT  -> currentMap.panBy(-PAN_STEP_PX, 0f, PAN_ANIM_MS)
-                                    RemoteKey.RIGHT -> currentMap.panBy( PAN_STEP_PX, 0f, PAN_ANIM_MS)
-                                    else -> {}
+                                withFrameMillis { frameMs ->
+                                    val dtMs = if (lastFrameMs == 0L) 16L
+                                               else (frameMs - lastFrameMs).coerceAtMost(100L)
+                                    lastFrameMs = frameMs
+                                    val px = PAN_SPEED_PX_PER_SEC * dtMs / 1000f
+                                    val currentMap = map ?: return@withFrameMillis
+                                    when (key) {
+                                        RemoteKey.UP    -> currentMap.panByInstant(0f,  -px)
+                                        RemoteKey.DOWN  -> currentMap.panByInstant(0f,   px)
+                                        RemoteKey.LEFT  -> currentMap.panByInstant(-px,  0f)
+                                        RemoteKey.RIGHT -> currentMap.panByInstant( px,  0f)
+                                        else -> {}
+                                    }
                                 }
-                                delay(PAN_INTERVAL_MS)
                             }
                         }
                     }
@@ -183,12 +190,11 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
                 }
 
                 is RemoteEvent.KeyUp -> {
-                    // Stop the pan loop for this key (if any)
                     panJobs.remove(event.key)?.cancel()
                 }
 
                 is RemoteEvent.ShortPress -> when (event.key) {
-                    // Directional keys are handled via KeyDown/KeyUp above
+                    // Directional panning is handled via KeyDown/KeyUp above
                     RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {}
 
                     RemoteKey.ZOOM_IN ->
@@ -290,19 +296,14 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
 }
 
 /**
- * Pan the map by a given number of screen pixels with animation.
+ * Instantly reposition the map centre by [xPixels]/[yPixels] screen pixels.
  *
- * MapLibre 11.x removed CameraUpdateFactory.scrollBy(). This extension
- * converts the current map centre to screen coordinates, offsets by the
- * requested pixel delta, then converts back to LatLng and animates there.
+ * Uses moveCamera (no animation) so it can be called every vsync frame
+ * without competing easing curves causing stutter.
  */
-private fun MapLibreMap.panBy(xPixels: Float, yPixels: Float, durationMs: Int) {
-    // cameraPosition.target is nullable in MapLibre 11.x — bail if no camera target yet
+private fun MapLibreMap.panByInstant(xPixels: Float, yPixels: Float) {
     val target = cameraPosition.target ?: return
     val center = projection.toScreenLocation(target)
     val newCenter = PointF(center.x + xPixels, center.y + yPixels)
-    animateCamera(
-        CameraUpdateFactory.newLatLng(projection.fromScreenLocation(newCenter)),
-        durationMs
-    )
+    moveCamera(CameraUpdateFactory.newLatLng(projection.fromScreenLocation(newCenter)))
 }
