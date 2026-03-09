@@ -6,7 +6,30 @@
 MAXFPS   ?= 30
 PREFETCH ?= 4
 
-.PHONY: diag diag-texture diag-maxfps diag-3d install launcher restore browser remote
+.PHONY: diag diag-texture diag-maxfps diag-3d install launcher restore browser remote log log-clear
+
+# Dump the device logcat into log/ so Claude can read the files directly.
+#
+#   log/crash.log  — all AndroidRuntime fatal exceptions (any process)
+#   log/app.log    — all lines tagged with our package name
+#
+# Run `make log-clear` before reproducing a bug to flush stale entries,
+# then `make log` after the crash to capture only the relevant session.
+log:
+	mkdir -p log
+	adb logcat -d -s AndroidRuntime:E \
+	    > log/crash.log 2>&1 || true
+	adb logcat -d \
+	    | grep "de\.codevoid\.aWayToGo" \
+	    > log/app.log 2>&1 || true
+	@echo "crash: $$(wc -l < log/crash.log) lines → log/crash.log"
+	@echo "app:   $$(wc -l < log/app.log) lines → log/app.log"
+
+# Clear the on-device log ring buffer so the next `make log` only shows
+# entries from the current run.
+log-clear:
+	adb logcat -c
+	@echo "logcat buffer cleared"
 
 install:
 	RUN_ID=$$(gh run list --repo c0dev0id/aWayToGo --workflow build.yml \

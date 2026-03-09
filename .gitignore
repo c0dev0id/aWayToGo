@@ -9,3 +9,6 @@ rust/target/
 # local credentials / helper scripts — never commit these
 .gh_token
 doit.sh
+
+# device log dumps (make log)
+log/
