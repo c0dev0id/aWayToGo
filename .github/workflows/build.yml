@@ -44,6 +44,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build debug APK
+        env:
+          MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
         run: ./gradlew assembleDebug
 
       - name: Upload debug APK
