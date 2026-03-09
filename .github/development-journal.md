@@ -38,6 +38,23 @@ The Maptiler API key is injected at build time from the `MAPTILER_KEY` environme
 ### MVI architecture
 Navigation apps have complex, overlapping state (routing, map camera, download progress, GPS, active navigation). MVI provides unidirectional data flow which handles this better than MVVM's two-way binding. Each domain panel (navigation bar, routing panel, GPX panel) has its own ViewModel with its own MVI state — no single monolithic ViewModel.
 
+### Remote control as a first-class input method
+The app must be 100% operable via a DMD wired remote controller (Bluetooth/wired, sends Android broadcasts). The remote has 8 keys: directional pad (4 keys), confirm, back, zoom in, zoom out. This is the primary input method — touch is secondary.
+
+The remote broadcasts `com.thorkracing.wireddevices.keypress` intents with `key_press` and `key_release` extras, giving full press/release cycle visibility. This enables long press detection without polling: record the `key_press` timestamp, compare to `key_release`, emit `ShortPress` or `LongPress` accordingly.
+
+`RemoteControlManager` owns the `BroadcastReceiver` and is the only class aware of the broadcast protocol. It exposes a `SharedFlow<RemoteEvent>` — the rest of the app reacts to typed events with no knowledge of intents. Long press is detected for `CONFIRM` (66) and `BACK` (111) only, with a 500ms threshold. All other keys always emit `ShortPress`.
+
+Key mapping at the map screen level:
+- Directional pad → pan map
+- Zoom in/out (136/137) → zoom one level
+- CONFIRM short → re-centre on user and resume tracking
+- CONFIRM long → toggle tracking on/off
+- BACK short → reset bearing to north
+- BACK long → toggle 3D tilt (0° ↔ 60°)
+
+As UI panels are added, each ViewModel will consume `remoteEvents` and handle directional navigation, confirm, and back in its own context. The key mapping is context-dependent — the same key does different things depending on which panel has focus.
+
 ## Architecture
 
 ### Layer Structure
