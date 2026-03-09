@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Greeting(text: String = RustBridge.greetFromRust()) {
+fun Greeting(text: String = "Hello, aWayToGo!") {
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
         Text(text = text)
     }
