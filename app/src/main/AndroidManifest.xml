@@ -22,13 +22,17 @@
             </intent-filter>
         </activity>
 
-        <!-- Diagnostic activity: raw MapView + Choreographer OSD, zero Compose.
-             Launch with:
-               adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity
-             Compare its fps/dt numbers with the OSD in MapActivity to
-             determine whether MapActivity itself is introducing overhead. -->
+        <!-- Diagnostic: SurfaceView mode (default).
+             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity -->
         <activity
             android:name=".diagnostic.DiagnosticActivity"
+            android:exported="true" />
+
+        <!-- Diagnostic: TextureView mode — compare fps/dt with DiagnosticActivity
+             to measure whether HWC compositing latency differs on this device.
+             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity -->
+        <activity
+            android:name=".diagnostic.DiagnosticTextureActivity"
             android:exported="true" />
 
     </application>

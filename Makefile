@@ -1,6 +1,6 @@
 # a simple make file to start developer tools
 
-.PHONY: diag install launcher restore browser remote
+.PHONY: diag diag-texture install launcher restore browser remote
 
 install:
 	RUN_ID=$$(gh run list --repo c0dev0id/aWayToGo --workflow build.yml \
@@ -12,6 +12,9 @@ install:
 
 diag:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity
+
+diag-texture:
+	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticTextureActivity
 
 launcher:
 	adb shell cmd package set-home-activity de.codevoid.aWayToGo/.map.MapActivity
