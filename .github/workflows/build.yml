@@ -25,6 +25,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Run lint
+        env:
+          MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
         run: ./gradlew lint
 
   build:
@@ -43,16 +45,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build release APK
+      - name: Build debug APK
         env:
           MAPTILER_KEY: ${{ secrets.MAPTILER_KEY }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleDebug
 
-      - name: Upload unsigned release APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-unsigned
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
 
   sign:
     needs: build
@@ -67,10 +69,10 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Download unsigned release APK
+      - name: Download debug APK
         uses: actions/download-artifact@v4
         with:
-          name: app-unsigned
+          name: app-debug
 
       - name: Set up signing keystore
         run: |
@@ -84,20 +86,20 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           BUILD_TOOLS_DIR=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
-          "$BUILD_TOOLS_DIR/zipalign" -v -p 4 app-release-unsigned.apk app-release-aligned.apk
+          "$BUILD_TOOLS_DIR/zipalign" -v -p 4 app-debug.apk app-aligned.apk
           "$BUILD_TOOLS_DIR/apksigner" sign \
             --ks "$SIGNING_KEYSTORE_PATH" \
             --ks-pass "pass:$SIGNING_KEYSTORE_PASSWORD" \
             --ks-key-alias "$SIGNING_KEY_ALIAS" \
             --key-pass "pass:$SIGNING_KEY_PASSWORD" \
-            --out app-release.apk \
-            app-release-aligned.apk
+            --out app-signed.apk \
+            app-aligned.apk
 
-      - name: Upload release APK
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: app-release.apk
+          name: app-signed
+          path: app-signed.apk
 
   draft-release:
     needs: sign
@@ -109,14 +111,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download signed APK
-        uses: actions/download-artifact@v4.1.3
+        uses: actions/download-artifact@v4
         with:
-          name: app-release
+          name: app-signed
 
       - name: Rename APK
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          mv app-release.apk "aWayToGo-dev-${SHORT_SHA}.apk"
+          mv app-signed.apk "aWayToGo-dev-${SHORT_SHA}.apk"
           echo "apk_name=aWayToGo-dev-${SHORT_SHA}.apk" >> "$GITHUB_ENV"
 
       - name: Delete existing dev release
