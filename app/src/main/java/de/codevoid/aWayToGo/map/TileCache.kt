@@ -33,12 +33,14 @@ import java.io.File
  *
  * ### Usage
  *
- * Call [init] once, **before** `MapLibre.getInstance()`, so the custom client
- * is in place before any HTTP request is made.
+ * Call [init] once, **after** `MapLibre.getInstance()` but **before** any
+ * [MapView] is created or style loaded, so the custom client is in place
+ * before the first HTTP request.  `MapLibre.getInstance()` itself makes no
+ * network calls, so there is no window where the default client is used.
  *
  * ```kotlin
- * TileCache.init(this)
  * MapLibre.getInstance(this)
+ * TileCache.init(this)
  * ```
  *
  * Then close/open the gate in response to camera events:

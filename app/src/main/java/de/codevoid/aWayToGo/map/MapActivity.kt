@@ -187,10 +187,13 @@ class MapActivity : ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        // Must be called before MapLibre.getInstance so the custom OkHttp
-        // client (disk cache + tile gate) is in place before any HTTP request.
-        TileCache.init(this)
+        // MapLibre must be initialized first — HttpRequestUtil.setOkHttpClient()
+        // (called inside TileCache.init) asserts MapLibre.getInstance() has run.
+        // TileCache.init() must still be called before any MapView is created or
+        // any style is loaded, so the custom OkHttp client is in place before the
+        // first network request.  The getInstance() call itself makes no HTTP requests.
         MapLibre.getInstance(this)
+        TileCache.init(this)
         remoteControl = RemoteControlManager(this)
 
         val styleUrl =
