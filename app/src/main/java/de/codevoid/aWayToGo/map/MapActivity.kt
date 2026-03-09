@@ -15,7 +15,7 @@ import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
+import android.widget.FrameLayout  // kept for LayoutParams only
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -217,8 +217,9 @@ class MapActivity : ComponentActivity() {
         val styleUrl =
             "https://api.maptiler.com/maps/outdoor-v2/style.json?key=${BuildConfig.MAPTILER_KEY}"
 
-        // Root layout — no Compose, no View binding
-        val root = FrameLayout(this)
+        // Root layout — TwoFingerLockLayout disables map scrolling while a
+        // two-finger (zoom/rotate) gesture is in progress.
+        val root = TwoFingerLockLayout(this)
 
         // MapView fills the screen.
         // SurfaceView mode (the default — do NOT pass textureMode): gives MapLibre its own
@@ -295,6 +296,7 @@ class MapActivity : ComponentActivity() {
         // MapView lifecycle must be driven manually (no Compose lifecycle observer here).
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { m ->
+            root.attachMap(m)
             m.uiSettings.apply {
                 isRotateGesturesEnabled = true
                 isTiltGesturesEnabled   = true
