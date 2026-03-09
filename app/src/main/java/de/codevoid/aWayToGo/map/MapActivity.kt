@@ -9,11 +9,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
-import android.os.PowerManager
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
-import android.view.WindowManager
 import android.widget.FrameLayout  // kept for LayoutParams only
 import android.widget.ImageView
 import android.widget.TextView
@@ -97,11 +95,6 @@ class MapActivity : ComponentActivity() {
     // Used to compute the speed ramp-up in the Choreographer loop.
     private val panStartNs = mutableMapOf<RemoteKey, Long>()
 
-    // SCREEN_BRIGHT_WAKE_LOCK keeps the screen on at full brightness.
-    // More reliable than FLAG_KEEP_SCREEN_ON, which some device power managers
-    // override.  Acquired in onResume, released in onPause.
-    private var wakeLock: PowerManager.WakeLock? = null
-
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
     private var osdFrameCount  = 0
@@ -177,7 +170,11 @@ class MapActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // Keep the screen on — essential for a navigation device.
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // keepScreenOn is the modern replacement for FLAG_KEEP_SCREEN_ON /
+        // SCREEN_BRIGHT_WAKE_LOCK.  Setting it on the root view is sufficient;
+        // Android propagates the flag to the window automatically and clears it
+        // when the view detaches.
+        window.decorView.keepScreenOn = true
 
         // Full-screen immersive: hide status bar and navigation bar.
         // Must be called before setContentView.
@@ -530,12 +527,6 @@ class MapActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        @Suppress("DEPRECATION")
-        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
-            .newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
-                "aWayToGo:navigation",
-            ).also { it.acquire() }
         mapView.onResume()
         remoteControl.register()
         Choreographer.getInstance().postFrameCallback(frameCallback)
@@ -545,8 +536,6 @@ class MapActivity : ComponentActivity() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
         mapView.onPause()
-        wakeLock?.release()
-        wakeLock = null
         super.onPause()
     }
 
