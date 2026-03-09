@@ -81,7 +81,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var remoteControl: RemoteControlManager
     private lateinit var osdView: TextView
     private lateinit var myLocationButton: ImageView
-    private lateinit var crosshairView: ImageView
+    private lateinit var crosshairView: View
 
     private var map: MapLibreMap? = null
     private var style: Style? = null
@@ -270,15 +270,29 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, btnMargin, 0, 0) },
         )
 
-        // Crosshair — centred on screen, only visible in panning mode.
-        val crosshairSize = (48 * density).toInt()
-        crosshairView = ImageView(this).apply {
-            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_crosshair))
-            visibility = View.GONE
-        }
+        // Crosshair — two full-screen red lines (horizontal + vertical) centred on screen.
+        // Spans edge-to-edge so it remains readable at a glance from handlebar distance.
+        // Only visible in panning mode.
+        val crosshairThickness = (6 * density).toInt()
+        val crosshairContainer = FrameLayout(this).apply { visibility = View.GONE }
+        crosshairContainer.addView(
+            View(this).apply { setBackgroundColor(Color.RED) },
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, crosshairThickness, Gravity.CENTER_VERTICAL,
+            ),
+        )
+        crosshairContainer.addView(
+            View(this).apply { setBackgroundColor(Color.RED) },
+            FrameLayout.LayoutParams(
+                crosshairThickness, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL,
+            ),
+        )
+        crosshairView = crosshairContainer
         root.addView(
-            crosshairView,
-            FrameLayout.LayoutParams(crosshairSize, crosshairSize, Gravity.CENTER),
+            crosshairContainer,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
         )
 
         setContentView(root)
