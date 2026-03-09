@@ -19,6 +19,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Diagnostic activity: raw MapView + Choreographer OSD, zero Compose.
+             Launch with:
+               adb shell am start -n de.codevoid.aWayToGo/.DiagnosticActivity
+             Compare its fps/dt numbers with the OSD in MainActivity to
+             determine whether Compose is contributing to main-thread slowness. -->
+        <activity
+            android:name=".DiagnosticActivity"
+            android:exported="true" />
+
     </application>
 
 </manifest>
