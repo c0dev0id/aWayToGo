@@ -251,7 +251,9 @@ fun MapScreen(remoteEvents: SharedFlow<RemoteEvent>) {
  * requested pixel delta, then converts back to LatLng and animates there.
  */
 private fun MapLibreMap.panBy(xPixels: Float, yPixels: Float, durationMs: Int) {
-    val center = projection.toScreenLocation(cameraPosition.target)
+    // cameraPosition.target is nullable in MapLibre 11.x — bail if no camera target yet
+    val target = cameraPosition.target ?: return
+    val center = projection.toScreenLocation(target)
     val newCenter = PointF(center.x + xPixels, center.y + yPixels)
     animateCamera(
         CameraUpdateFactory.newLatLng(projection.fromScreenLocation(newCenter)),
