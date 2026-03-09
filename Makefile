@@ -1,14 +1,17 @@
 # a simple make file to start developer tools
 
-# diag-maxfps tunables — override on the command line:
+# diag-maxfps / diag-bench tunables — override on the command line:
 #   make diag-maxfps MAXFPS=45
 #   make diag-maxfps MAXFPS=0 PREFETCH=2   (0 = unlimited fps)
 #   make diag-maxfps ZOOM=15.0
+#   make diag-bench                         (10s benchmark, default params)
+#   make diag-bench MAXFPS=60 ZOOM=14.0
 MAXFPS   ?= 30
 PREFETCH ?= 4
 ZOOM     ?= 12.0
+BENCH    ?= false
 
-.PHONY: diag diag-texture diag-maxfps diag-3d install launcher restore browser remote log log-clear
+.PHONY: diag diag-texture diag-maxfps diag-bench diag-3d install launcher restore browser remote log log-clear
 
 # Dump the device logcat into log/ so Claude can read the files directly.
 #
@@ -54,7 +57,14 @@ diag-maxfps:
 	adb shell am start -S \
 	    -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
 	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH) \
-	    --ed zoom $(ZOOM)
+	    --ed zoom $(ZOOM) \
+	    --ez bench $(BENCH)
+
+# 10-second benchmark: pan right, record frames + load time, show summary.
+# Override any tunable on the command line, e.g.:
+#   make diag-bench MAXFPS=60 ZOOM=14.0 PREFETCH=2
+diag-bench:
+	$(MAKE) diag-maxfps BENCH=true MAXFPS=$(MAXFPS) PREFETCH=$(PREFETCH) ZOOM=$(ZOOM)
 
 diag-3d:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity
