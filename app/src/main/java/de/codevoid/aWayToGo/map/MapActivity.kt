@@ -342,6 +342,9 @@ class MapActivity : ComponentActivity() {
                 // deceleration, rotate deceleration).  These are touch-only — programmatic
                 // animateCamera calls (remote control) are not affected.
                 setAllVelocityAnimationsEnabled(true)
+                // Default fling duration is 150ms (ANIMATION_DURATION_FLING_BASE) — too abrupt.
+                // 500ms gives a natural coast-to-stop for pan, zoom, and rotate.
+                flingAnimationBaseTime = 500L
             }
             // Close the tile gate on ANY camera movement — touch, D-pad, or
             // programmatic (flyToLocation).  New network tile fetches are
