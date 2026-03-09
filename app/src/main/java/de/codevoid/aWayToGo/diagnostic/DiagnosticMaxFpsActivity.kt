@@ -210,7 +210,13 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         mapView.onCreate(savedInstanceState)
 
         // Capture start time before getMapAsync so load-time includes GL init.
-        if (bench) benchStartMs = SystemClock.elapsedRealtime()
+        if (bench) {
+            benchStartMs = SystemClock.elapsedRealtime()
+            val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
+            Log.i(TAG, "START maxFps=$fpsLabel prefetch=$prefetch zoom=${"%.1f".format(zoom)} " +
+                "duration=${durationMs / 1_000L}s pixelRatio=${"%.2f".format(pixelRatio)} " +
+                "crossSourceCollisions=$crossSourceCollisions")
+        }
 
         mapView.getMapAsync { map ->
             glMap = map
