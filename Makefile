@@ -3,8 +3,10 @@
 # diag-maxfps tunables — override on the command line:
 #   make diag-maxfps MAXFPS=45
 #   make diag-maxfps MAXFPS=0 PREFETCH=2   (0 = unlimited fps)
+#   make diag-maxfps ZOOM=15.0
 MAXFPS   ?= 30
 PREFETCH ?= 4
+ZOOM     ?= 12.0
 
 .PHONY: diag diag-texture diag-maxfps diag-3d install launcher restore browser remote log log-clear
 
@@ -51,7 +53,8 @@ diag-texture:
 diag-maxfps:
 	adb shell am start -S \
 	    -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
-	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH)
+	    --ei maxFps $(MAXFPS) --ei prefetchDelta $(PREFETCH) \
+	    --ed zoom $(ZOOM)
 
 diag-3d:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.Diagnostic3dStyleActivity

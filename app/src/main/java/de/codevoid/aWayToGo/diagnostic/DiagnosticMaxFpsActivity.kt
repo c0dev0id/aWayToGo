@@ -17,31 +17,35 @@ import org.maplibre.android.maps.MapView
 /**
  * Diagnostic activity: configurable [MapView.setMaximumFps] + [MapLibreMap.setPrefetchZoomDelta].
  *
- * Values are supplied as Intent integer extras so you can sweep the parameter
+ * Values are supplied as Intent extras so you can sweep the parameter
  * space without recompiling:
  *
- *   Extra key       Default   Meaning
- *   "maxFps"        30        GL render rate cap (0 = unlimited)
- *   "prefetchDelta" 4         Zoom levels to prefetch below current zoom
+ *   Extra key       Type    Default   Meaning
+ *   "maxFps"        Int     30        GL render rate cap (0 = unlimited)
+ *   "prefetchDelta" Int     4         Zoom levels to prefetch below current zoom
+ *   "zoom"          Double  12.0      Initial camera zoom level
  *
  * Launch via Makefile (override defaults with Make variables):
  *
- *   make diag-maxfps                         → maxFps=30  prefetchDelta=4
- *   make diag-maxfps MAXFPS=45               → maxFps=45  prefetchDelta=4
- *   make diag-maxfps MAXFPS=0  PREFETCH=2    → unlimited fps, delta 2
+ *   make diag-maxfps                              → maxFps=30  prefetchDelta=4  zoom=12.0
+ *   make diag-maxfps MAXFPS=45                    → maxFps=45  prefetchDelta=4  zoom=12.0
+ *   make diag-maxfps MAXFPS=0  PREFETCH=2         → unlimited fps, delta 2
+ *   make diag-maxfps ZOOM=15.0                    → zoom in close
  *
  * Or directly via adb:
  *   adb shell am start \
  *     -n de.codevoid.aWayToGo/.diagnostic.DiagnosticMaxFpsActivity \
- *     --ei maxFps 45 --ei prefetchDelta 6
+ *     --ei maxFps 45 --ei prefetchDelta 6 --ed zoom 14.0
  */
 class DiagnosticMaxFpsActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_MAX_FPS       = "maxFps"
         const val EXTRA_PREFETCH      = "prefetchDelta"
+        const val EXTRA_ZOOM          = "zoom"
         const val DEFAULT_MAX_FPS     = 30
         const val DEFAULT_PREFETCH    = 4
+        const val DEFAULT_ZOOM        = 12.0
     }
 
     private lateinit var mapView: MapView
@@ -49,6 +53,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
 
     private var maxFps      = DEFAULT_MAX_FPS
     private var prefetch    = DEFAULT_PREFETCH
+    private var zoom        = DEFAULT_ZOOM
 
     // GL-frame counters — updated from MapLibre's render callback, not Choreographer.
     // This measures actual GPU frame submissions, so setMaximumFps is reflected here.
@@ -62,7 +67,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
         override fun doFrame(frameTimeNanos: Long) {
             val fpsLabel = if (maxFps == 0) "unlimited" else maxFps.toString()
             osdView.text =
-                "MaxFPS:$fpsLabel Prefetch:$prefetch\ngl-fps $glLastFps  dt:${glLastDtMs}ms"
+                "MaxFPS:$fpsLabel Prefetch:$prefetch Zoom:${"%.1f".format(zoom)}\ngl-fps $glLastFps  dt:${glLastDtMs}ms"
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
@@ -87,8 +92,9 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        maxFps   = intent.getIntExtra(EXTRA_MAX_FPS,    DEFAULT_MAX_FPS)
-        prefetch = intent.getIntExtra(EXTRA_PREFETCH,   DEFAULT_PREFETCH)
+        maxFps   = intent.getIntExtra(EXTRA_MAX_FPS,       DEFAULT_MAX_FPS)
+        prefetch = intent.getIntExtra(EXTRA_PREFETCH,      DEFAULT_PREFETCH)
+        zoom     = intent.getDoubleExtra(EXTRA_ZOOM,       DEFAULT_ZOOM)
 
         MapLibre.getInstance(this)
 
@@ -110,7 +116,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
             typeface = android.graphics.Typeface.MONOSPACE
             setBackgroundColor(Color.argb(140, 0, 0, 0))
             setPadding(16, 8, 16, 8)
-            text = "MaxFPS:$fpsLabel Prefetch:$prefetch\nfps  --  dt:--ms"
+            text = "MaxFPS:$fpsLabel Prefetch:$prefetch Zoom:${"%.1f".format(zoom)}\nfps  --  dt:--ms"
         }
         root.addView(osdView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -129,7 +135,7 @@ class DiagnosticMaxFpsActivity : ComponentActivity() {
 
             map.setStyle(styleUrl) {
                 map.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(48.1351, 11.5820), 12.0)
+                    CameraUpdateFactory.newLatLngZoom(LatLng(48.1351, 11.5820), zoom)
                 )
             }
         }
