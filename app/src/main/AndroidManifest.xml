@@ -22,10 +22,16 @@
             </intent-filter>
         </activity>
 
-        <!-- Diagnostic: SurfaceView mode (default).
+        <!-- Diagnostic: SurfaceView FPS benchmark.
              adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticActivity -->
         <activity
             android:name=".diagnostic.DiagnosticActivity"
+            android:exported="true" />
+
+        <!-- Diagnostic: intent sniffer for com.thorkracing.wireddevices.* broadcasts.
+             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRemoteActivity -->
+        <activity
+            android:name=".diagnostic.DiagnosticRemoteActivity"
             android:exported="true" />
 
 

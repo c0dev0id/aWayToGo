@@ -126,6 +126,12 @@ class MapActivity : ComponentActivity() {
     // Used to compute the speed ramp-up in the Choreographer loop.
     private val panStartNs = mutableMapOf<RemoteKey, Long>()
 
+    // Analog joystick state: normalised [-1, 1] axes from the last JoyInput event.
+    // (0, 0) = joystick released.  Written on the main thread by handleRemoteEvent,
+    // read on the main thread by the Choreographer callback — no synchronisation needed.
+    private var joyDx = 0f
+    private var joyDy = 0f
+
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
     private var osdFrameCount  = 0
@@ -145,7 +151,7 @@ class MapActivity : ComponentActivity() {
             // ── Pan + Zoom ─────────────────────────────────────────────────────
             val currentMap = map
             var panSpeed = 0f
-            if (currentMap != null && panStartNs.isNotEmpty()) {
+            if (currentMap != null && (panStartNs.isNotEmpty() || joyDx != 0f || joyDy != 0f)) {
                 // Accumulate deltas for all held keys.  Pan and zoom are merged into
                 // a single animateCamera call so they never compete with each other.
                 var totalDx   = 0f
@@ -175,6 +181,15 @@ class MapActivity : ComponentActivity() {
                         }
                         else -> {}
                     }
+                }
+
+                // Analog joystick — no ramp, magnitude IS the speed fraction.
+                if (joyDx != 0f || joyDy != 0f) {
+                    val px = PAN_SPEED_PX_PER_SEC * PAN_LOOK_AHEAD_MS / 1000f
+                    totalDx +=  joyDx * px
+                    totalDy += -joyDy * px   // joy Y+ = screen-up = subtract from dy
+                    val joySpeed = maxOf(kotlin.math.abs(joyDx), kotlin.math.abs(joyDy)) * PAN_SPEED_PX_PER_SEC
+                    if (joySpeed > panSpeed) panSpeed = joySpeed
                 }
 
                 if (totalDx != 0f || totalDy != 0f || totalZoom != 0f) {
@@ -461,6 +476,13 @@ class MapActivity : ComponentActivity() {
     private fun handleRemoteEvent(event: RemoteEvent) {
         val m = map ?: return
         when (event) {
+
+            is RemoteEvent.JoyInput -> {
+                joyDx = event.dx
+                joyDy = event.dy
+                // Non-neutral joystick movement enters panning mode just like a D-pad press.
+                if (event.dx != 0f || event.dy != 0f) enterPanningMode()
+            }
 
             is RemoteEvent.KeyDown -> when (event.key) {
                 RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {

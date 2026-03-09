@@ -37,6 +37,11 @@ class RemoteControlManager(private val context: Context) {
             if (intent.action != ACTION) return
 
             when {
+                // Analog joystick takes priority — joy and key_press are mutually
+                // exclusive in the same broadcast; prefer analog when present.
+                intent.hasExtra("joy") -> onJoy(
+                    value = intent.getStringExtra("joy") ?: "Y0X0",
+                )
                 intent.hasExtra("key_press") -> onKeyPress(
                     keyCode = intent.getIntExtra("key_press", 0),
                 )
@@ -68,6 +73,37 @@ class RemoteControlManager(private val context: Context) {
             if (isLongPress) RemoteEvent.LongPress(key)
             else RemoteEvent.ShortPress(key)
         )
+    }
+
+    private fun onJoy(value: String) {
+        val (dx, dy) = parseJoy(value)
+        _events.tryEmit(RemoteEvent.JoyInput(dx, dy))
+    }
+
+    /**
+     * Parse a DMD joystick string into normalised (dx, dy) in [-1, 1].
+     *
+     * Format: optional vertical component (U|D + digit 2–5) followed by
+     * optional horizontal component (L|R + digit 2–5).  Neutral strings
+     * "Y0X0", "Y0", "X0" map to (0, 0).  Magnitude digit maps linearly:
+     *   2 → 0.4,  3 → 0.6,  4 → 0.8,  5 → 1.0  (i.e. digit / 5f).
+     *
+     * Positive dy = joystick pushed up (towards screen top).
+     * Positive dx = joystick pushed right.
+     */
+    private fun parseJoy(value: String): Pair<Float, Float> {
+        if (value == "Y0X0" || value == "Y0" || value == "X0") return 0f to 0f
+
+        fun magnitudeAfter(prefix: Char): Float {
+            val idx = value.indexOf(prefix)
+            if (idx < 0) return 0f
+            val digit = value.getOrNull(idx + 1)?.digitToIntOrNull() ?: return 0f
+            return digit / 5f
+        }
+
+        val dy = magnitudeAfter('U') - magnitudeAfter('D')
+        val dx = magnitudeAfter('R') - magnitudeAfter('L')
+        return dx to dy
     }
 
     fun register() {
