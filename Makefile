@@ -19,3 +19,5 @@ launcher:
 restore:
 	adb shell cmd package set-home-activity com.android.launcher3/.uioverrides.QuickstepLauncher
 
+browser:
+	adb shell am start -n org.mozilla.firefox/.App
