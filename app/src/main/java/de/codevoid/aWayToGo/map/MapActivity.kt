@@ -3,8 +3,11 @@ package de.codevoid.aWayToGo.map
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
 import android.os.PerformanceHintManager
 import android.os.Process
@@ -13,6 +16,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
@@ -22,6 +26,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import de.codevoid.aWayToGo.BuildConfig
+import de.codevoid.aWayToGo.R
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
@@ -55,6 +60,10 @@ private const val LOCATION_PERMISSION_REQUEST = 1
 // Target frame duration for the Performance Hint API: 60 fps = 16.67 ms.
 private const val TARGET_FRAME_NS = 1_000_000_000L / 60
 
+// Distance threshold (metres) below which flyToLocation animates directly.
+// Above this, it zooms out to a context level first, then zooms back in.
+private const val FLYTO_THRESHOLD_M = 10_000.0
+
 /**
  * Main map screen — zero Compose overhead.
  *
@@ -76,6 +85,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var mapView: MapView
     private lateinit var remoteControl: RemoteControlManager
     private lateinit var osdView: TextView
+    private lateinit var myLocationButton: ImageView
 
     private var map: MapLibreMap? = null
     private var style: Style? = null
@@ -230,6 +240,41 @@ class MapActivity : ComponentActivity() {
         ).apply { setMargins(0, 48, 16, 0) }
         root.addView(osdView, osdParams)
 
+        // My-location button — top-left, circular dark background with ripple.
+        val density = resources.displayMetrics.density
+        val btnSize = (48 * density).toInt()
+        val btnPad  = (12 * density).toInt()
+        val btnMargin = (16 * density).toInt()
+
+        myLocationButton = ImageView(this).apply {
+            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_my_location))
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.argb(180, 0, 0, 0))
+                },
+                GradientDrawable().apply {          // ripple mask — clips to circle
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.WHITE)
+                },
+            )
+            setPadding(btnPad, btnPad, btnPad, btnPad)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                val m   = map ?: return@setOnClickListener
+                val loc = m.locationComponent.lastKnownLocation ?: return@setOnClickListener
+                m.locationComponent.cameraMode = CameraMode.TRACKING
+                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+            }
+        }
+        root.addView(
+            myLocationButton,
+            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
+                .apply { setMargins(btnMargin, btnMargin, 0, 0) },
+        )
+
         setContentView(root)
 
         // MapView lifecycle must be driven manually (no Compose lifecycle observer here).
@@ -334,12 +379,7 @@ class MapActivity : ComponentActivity() {
                 RemoteKey.CONFIRM ->
                     m.locationComponent.lastKnownLocation?.let { loc ->
                         m.locationComponent.cameraMode = CameraMode.TRACKING
-                        m.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(
-                                LatLng(loc.latitude, loc.longitude),
-                                14.0,
-                            ),
-                        )
+                        flyToLocation(m, LatLng(loc.latitude, loc.longitude))
                     }
 
                 RemoteKey.BACK ->
@@ -380,6 +420,46 @@ class MapActivity : ComponentActivity() {
                 else -> {}
             }
         }
+    }
+
+    /**
+     * Animate the camera to [target] at [zoom].
+     *
+     * If the target is within FLYTO_THRESHOLD_M the camera eases directly.
+     * If farther away it first animates to a context zoom that shows enough
+     * geography to orient the user, then eases in to the target — the same
+     * "zoom out → pan → zoom in" pattern used by most navigation apps.
+     */
+    private fun flyToLocation(m: MapLibreMap, target: LatLng, zoom: Double = 14.0) {
+        val from     = m.cameraPosition.target ?: return
+        val distance = from.distanceTo(target)
+
+        if (distance < FLYTO_THRESHOLD_M) {
+            m.animateCamera(CameraUpdateFactory.newLatLngZoom(target, zoom), 600)
+            return
+        }
+
+        // Choose a context zoom level that gives a sense of how far away we are.
+        val contextZoom = when {
+            distance > 5_000_000 -> 2.0
+            distance > 1_000_000 -> 4.0
+            distance > 200_000   -> 6.0
+            distance > 50_000    -> 8.0
+            else                 -> 10.0
+        }
+
+        // Phase 1: zoom out and pan to target simultaneously.
+        m.animateCamera(
+            CameraUpdateFactory.newLatLngZoom(target, contextZoom),
+            600,
+            object : MapLibreMap.CancelableCallback {
+                override fun onFinish() {
+                    // Phase 2: ease into the final zoom level.
+                    m.animateCamera(CameraUpdateFactory.newLatLngZoom(target, zoom), 500)
+                }
+                override fun onCancel() {}
+            },
+        )
     }
 
     override fun onStart() {
