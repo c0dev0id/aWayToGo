@@ -88,7 +88,7 @@ class MapActivity : ComponentActivity() {
     // Performance Hint session — tells the CPU scheduler to keep clocks high
     // enough to consistently hit TARGET_FRAME_NS. Null until first doFrame call
     // (TID must be captured from the main thread itself).
-    private var hintSession: PerformanceHintManager.PerformanceHintSession? = null
+    private var hintSession: PerformanceHintManager.Session? = null
 
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
