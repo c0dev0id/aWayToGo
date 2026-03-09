@@ -34,7 +34,7 @@ log-clear:
 	adb logcat -c
 	@echo "logcat buffer cleared"
 
-install:
+install: log-clear
 	RUN_ID=$$(gh run list --repo c0dev0id/aWayToGo --workflow build.yml \
 	          --status success --limit 1 --json databaseId --jq '.[0].databaseId') && \
 	gh run download $$RUN_ID --repo c0dev0id/aWayToGo --name app-signed --dir /tmp/aWayToGo-install && \
