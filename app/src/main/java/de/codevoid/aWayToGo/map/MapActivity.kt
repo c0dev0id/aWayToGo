@@ -6,9 +6,12 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.PerformanceHintManager
+import android.os.Process
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -49,6 +52,9 @@ private const val TILT_3D = 60.0
 
 private const val LOCATION_PERMISSION_REQUEST = 1
 
+// Target frame duration for the Performance Hint API: 60 fps = 16.67 ms.
+private const val TARGET_FRAME_NS = 1_000_000_000L / 60
+
 /**
  * Main map screen — zero Compose overhead.
  *
@@ -79,6 +85,11 @@ class MapActivity : ComponentActivity() {
     // Used to compute the speed ramp-up in the Choreographer loop.
     private val panStartNs = mutableMapOf<RemoteKey, Long>()
 
+    // Performance Hint session — tells the CPU scheduler to keep clocks high
+    // enough to consistently hit TARGET_FRAME_NS. Null until first doFrame call
+    // (TID must be captured from the main thread itself).
+    private var hintSession: PerformanceHintManager.PerformanceHintSession? = null
+
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
     private var osdFrameCount  = 0
@@ -92,6 +103,15 @@ class MapActivity : ComponentActivity() {
     // This runs on the main thread at vsync rate with no Compose overhead.
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            val workStartNs = System.nanoTime()
+
+            // Lazily create the hint session on the first frame so the TID is
+            // captured on the main thread (Process.myTid() is thread-local).
+            if (hintSession == null) {
+                hintSession = getSystemService(PerformanceHintManager::class.java)
+                    ?.createHintSession(intArrayOf(Process.myTid()), TARGET_FRAME_NS)
+            }
+
             val dtNs = if (osdLastFrameNs != 0L) frameTimeNanos - osdLastFrameNs else 16_000_000L
             osdLastFrameNs = frameTimeNanos
 
@@ -146,12 +166,20 @@ class MapActivity : ComponentActivity() {
                     "fps  $osdLastFps  dt:${osdLastDtMs}ms\nzoom ${"%.1f".format(zoom)}$panLine"
             }
 
+            // Report how long this frame's main-thread work actually took.
+            // The scheduler uses this to keep CPU clocks just high enough to
+            // consistently hit TARGET_FRAME_NS without wasting power.
+            hintSession?.reportActualWorkDuration(System.nanoTime() - workStartNs)
+
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Keep the screen on — essential for a navigation device.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         // Full-screen immersive: hide status bar and navigation bar.
         // Must be called before setContentView.
@@ -368,6 +396,8 @@ class MapActivity : ComponentActivity() {
 
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
+        hintSession?.close()
+        hintSession = null
         remoteControl.unregister()
         mapView.onPause()
         super.onPause()
