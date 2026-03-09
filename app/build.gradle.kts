@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "de.codevoid.aWayToGo"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "de.codevoid.aWayToGo"
@@ -29,12 +30,42 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs(listOf("${rootDir}/rust/target/jniLibs"))
+        }
+    }
 }
 
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
     }
+}
+
+val buildRustLibs by tasks.registering(Exec::class) {
+    val isRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+    val extraArgs = if (isRelease) listOf("--release") else emptyList()
+
+    inputs.dir("${rootDir}/rust/src")
+    inputs.file("${rootDir}/rust/Cargo.toml")
+    outputs.dir("${rootDir}/rust/target/jniLibs")
+
+    commandLine(
+        listOf(
+            "cargo", "ndk",
+            "--target", "arm64-v8a",
+            "--target", "armeabi-v7a",
+            "--target", "x86_64",
+            "--output-dir", "${rootDir}/rust/target/jniLibs"
+        ) + extraArgs + listOf("build")
+    )
+    workingDir("${rootDir}/rust")
+}
+
+tasks.named("preBuild") {
+    dependsOn(buildRustLibs)
 }
 
 dependencies {

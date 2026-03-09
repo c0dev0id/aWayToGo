@@ -29,14 +29,14 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Greeting() {
+fun Greeting(text: String = RustBridge.greetFromRust()) {
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-        Text(text = "Hello, aWayToGo!")
+        Text(text = text)
     }
 }
 
 @Preview(showBackground = true)
 @Composable
 fun GreetingPreview() {
-    MaterialTheme { Greeting() }
+    MaterialTheme { Greeting(text = "Hello, aWayToGo!") }
 }
