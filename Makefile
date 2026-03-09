@@ -21,10 +21,13 @@ log:
 	    log/full.log > log/app.log || true
 	grep -E "DiagBench" \
 	    log/full.log > log/bench.log || true
-	@echo "full:  $$(wc -l < log/full.log) lines → log/full.log"
-	@echo "crash: $$(wc -l < log/crash.log) lines → log/crash.log"
-	@echo "app:   $$(wc -l < log/app.log) lines → log/app.log"
-	@echo "bench: $$(wc -l < log/bench.log) lines → log/bench.log"
+	grep -E "RemoteControl" \
+	    log/full.log > log/remote.log || true
+	@echo "full:   $$(wc -l < log/full.log) lines → log/full.log"
+	@echo "crash:  $$(wc -l < log/crash.log) lines → log/crash.log"
+	@echo "app:    $$(wc -l < log/app.log) lines → log/app.log"
+	@echo "bench:  $$(wc -l < log/bench.log) lines → log/bench.log"
+	@echo "remote: $$(wc -l < log/remote.log) lines → log/remote.log"
 
 # Clear the on-device log ring buffer so the next `make log` only shows
 # entries from the current run.

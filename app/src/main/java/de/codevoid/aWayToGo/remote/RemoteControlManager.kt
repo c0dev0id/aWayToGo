@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 class RemoteControlManager(private val context: Context) {
 
     companion object {
+        private const val TAG = "RemoteControl"
         private const val ACTION = "com.thorkracing.wireddevices.keypress"
         private const val LONG_PRESS_THRESHOLD_MS = 500L
         private val LONG_PRESS_KEYS = setOf(RemoteKey.CONFIRM, RemoteKey.BACK)
@@ -36,18 +38,28 @@ class RemoteControlManager(private val context: Context) {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != ACTION) return
 
+            val extras = intent.extras?.keySet()?.joinToString() ?: "(none)"
+            Log.d(TAG, "broadcast received — extras: $extras")
+
             when {
                 // Analog joystick takes priority — joy and key_press are mutually
                 // exclusive in the same broadcast; prefer analog when present.
-                intent.hasExtra("joy") -> onJoy(
-                    value = intent.getStringExtra("joy") ?: "Y0X0",
-                )
-                intent.hasExtra("key_press") -> onKeyPress(
-                    keyCode = intent.getIntExtra("key_press", 0),
-                )
-                intent.hasExtra("key_release") -> onKeyRelease(
-                    keyCode = intent.getIntExtra("key_release", 0),
-                )
+                intent.hasExtra("joy") -> {
+                    val value = intent.getStringExtra("joy") ?: "Y0X0"
+                    Log.d(TAG, "joy=$value")
+                    onJoy(value)
+                }
+                intent.hasExtra("key_press") -> {
+                    val code = intent.getIntExtra("key_press", 0)
+                    Log.d(TAG, "key_press=$code → ${RemoteKey.fromKeyCode(code)}")
+                    onKeyPress(code)
+                }
+                intent.hasExtra("key_release") -> {
+                    val code = intent.getIntExtra("key_release", 0)
+                    Log.d(TAG, "key_release=$code → ${RemoteKey.fromKeyCode(code)}")
+                    onKeyRelease(code)
+                }
+                else -> Log.w(TAG, "broadcast with no recognised extra — extras: $extras")
             }
         }
     }
@@ -111,11 +123,13 @@ class RemoteControlManager(private val context: Context) {
         // RECEIVER_EXPORTED is required because the DMD device sends broadcasts from a
         // separate app. ContextCompat handles the flag correctly across all API levels.
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        Log.d(TAG, "receiver registered for $ACTION")
     }
 
     fun unregister() {
         try {
             context.unregisterReceiver(receiver)
+            Log.d(TAG, "receiver unregistered")
         } catch (_: IllegalArgumentException) {
             // Receiver was not registered — harmless, treat unregister as idempotent.
         }
