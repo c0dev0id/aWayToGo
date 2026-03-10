@@ -157,7 +157,11 @@ class MapActivity : ComponentActivity() {
     private var isMenuOpen = false
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
+    private lateinit var navigateBanner: View
+    private lateinit var navigateStopBtn: View
     private lateinit var editTopBar: LinearLayout
+    // True once the first setMode() call has run; subsequent calls animate.
+    private var hasAnimatedModeSetup = false
 
     private var currentMode = AppMode.EXPLORE
 
@@ -804,30 +808,28 @@ class MapActivity : ComponentActivity() {
     // ── Mode management ───────────────────────────────────────────────────────
 
     /**
-     * Switch the app to [mode], showing the appropriate UI chrome and hiding
-     * everything else.  Safe to call from any mode, including the current one.
+     * Switch the app to [mode].
+     *
+     * The first call (during onCreate) applies visibilities instantly.
+     * Subsequent calls play a two-phase animation: outgoing chrome slides off-
+     * screen, then incoming chrome slides in from the appropriate edge.
+     *
+     * Explore elements (hamburger, locate-me, bottom bar) slide left / down.
+     * Navigate elements (banner, STOP) slide up / down respectively.
+     * Edit element (top bar) slides up.
      */
     private fun setMode(mode: AppMode) {
+        val from = currentMode
         currentMode = mode
 
-        // Dismiss the popup menu whenever the user switches away from Explore mode.
+        // Close popup menu immediately on any mode change.
         if (isMenuOpen) closeMenu()
-
-        val inExplore  = mode == AppMode.EXPLORE
-        val inNavigate = mode == AppMode.NAVIGATE
-        val inEdit     = mode == AppMode.EDIT
-
-        hamburgerButton.visibility  = if (inExplore)  View.VISIBLE else View.GONE
-        myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
-        exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
-        navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
-        editTopBar.visibility       = if (inEdit)      View.VISIBLE else View.GONE
 
         // Crosshair: always on in EDIT, otherwise mirrors panning state.
         crosshairView.visibility = when {
-            inEdit          -> View.VISIBLE
-            isInPanningMode -> View.VISIBLE
-            else            -> View.GONE
+            mode == AppMode.EDIT -> View.VISIBLE
+            isInPanningMode      -> View.VISIBLE
+            else                 -> View.GONE
         }
 
         // Camera tracking: re-engage when entering NAVIGATE, release when entering EDIT.
@@ -838,6 +840,145 @@ class MapActivity : ComponentActivity() {
                 map?.locationComponent?.cameraMode = CameraMode.NONE
             }
             AppMode.EXPLORE  -> { /* tracking state unchanged — user controls it via locate-me */ }
+        }
+
+        // First call during onCreate: instant setup, no animation.
+        if (!hasAnimatedModeSetup) {
+            hasAnimatedModeSetup = true
+            applyModeInstant(mode)
+            return
+        }
+
+        if (from == mode) return
+        animateModeTransition(from, mode)
+    }
+
+    /** Instant (no-animation) visibility setup — used only on app startup. */
+    private fun applyModeInstant(mode: AppMode) {
+        val inExplore  = mode == AppMode.EXPLORE
+        val inNavigate = mode == AppMode.NAVIGATE
+        val inEdit     = mode == AppMode.EDIT
+
+        hamburgerButton.visibility  = if (inExplore)  View.VISIBLE else View.GONE
+        myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
+        exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
+        navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
+        editTopBar.visibility       = if (inEdit)      View.VISIBLE else View.GONE
+    }
+
+    /**
+     * Two-phase animated mode transition.
+     *
+     * Phase 1 (200ms, accelerate): outgoing elements translate off-screen.
+     * Phase 2 (250ms, decelerate): incoming elements translate in from their
+     * respective edge — starts immediately when the last outgoing animation ends.
+     *
+     * Explore ←→ Navigate/Edit:
+     *   - hamburger + locate-me slide left (off screen start = -screenW)
+     *   - Ride/Search/Plan bar slides down  (off screen start = +screenH)
+     *   - Navigate banner slides up         (off screen start = -screenH)
+     *   - Navigate STOP slides down         (off screen start = +screenH)
+     *   - Edit top bar slides up            (off screen start = -screenH)
+     */
+    private fun animateModeTransition(from: AppMode, to: AppMode) {
+        val w        = resources.displayMetrics.widthPixels.toFloat()
+        val h        = resources.displayMetrics.heightPixels.toFloat()
+        val outDur   = 200L
+        val inDur    = 250L
+        val outInterp = AccelerateInterpolator()
+        val inInterp  = DecelerateInterpolator()
+
+        // ── Phase 2: slide incoming elements in ───────────────────────────────
+        fun slideIn() {
+            when (to) {
+                AppMode.EXPLORE -> {
+                    hamburgerButton.translationX  = -w
+                    myLocationButton.translationX = -w
+                    exploreBottomBar.translationY = h
+                    hamburgerButton.visibility    = View.VISIBLE
+                    myLocationButton.visibility   = View.VISIBLE
+                    exploreBottomBar.visibility   = View.VISIBLE
+                    hamburgerButton.animate().translationX(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                    myLocationButton.animate().translationX(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                    exploreBottomBar.animate().translationY(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                }
+                AppMode.NAVIGATE -> {
+                    navigateBanner.translationY  = -h
+                    navigateStopBtn.translationY = h
+                    navigateOverlay.visibility   = View.VISIBLE
+                    navigateBanner.animate().translationY(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                    navigateStopBtn.animate().translationY(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                }
+                AppMode.EDIT -> {
+                    editTopBar.translationY = -h
+                    editTopBar.visibility   = View.VISIBLE
+                    editTopBar.animate().translationY(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                }
+            }
+        }
+
+        // ── Phase 1: slide outgoing elements out, then fire slideIn() ─────────
+        when (from) {
+            AppMode.EXPLORE -> {
+                // Three views leave simultaneously; fire slideIn() when all three finish.
+                val latch = intArrayOf(3)
+                fun check() { if (--latch[0] == 0) slideIn() }
+
+                hamburgerButton.animate().translationX(-w)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction {
+                        hamburgerButton.visibility   = View.GONE
+                        hamburgerButton.translationX = 0f
+                        check()
+                    }.start()
+                myLocationButton.animate().translationX(-w)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction {
+                        myLocationButton.visibility   = View.GONE
+                        myLocationButton.translationX = 0f
+                        check()
+                    }.start()
+                exploreBottomBar.animate().translationY(h)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction {
+                        exploreBottomBar.visibility   = View.GONE
+                        exploreBottomBar.translationY = 0f
+                        check()
+                    }.start()
+            }
+
+            AppMode.NAVIGATE -> {
+                // Banner and STOP leave simultaneously; hide the overlay container when done.
+                val latch = intArrayOf(2)
+                fun check() {
+                    if (--latch[0] == 0) {
+                        navigateOverlay.visibility = View.GONE
+                        slideIn()
+                    }
+                }
+                navigateBanner.animate().translationY(-h)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction { navigateBanner.translationY = 0f; check() }.start()
+                navigateStopBtn.animate().translationY(h)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction { navigateStopBtn.translationY = 0f; check() }.start()
+            }
+
+            AppMode.EDIT -> {
+                editTopBar.animate().translationY(-h)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction {
+                        editTopBar.visibility   = View.GONE
+                        editTopBar.translationY = 0f
+                        slideIn()
+                    }.start()
+            }
         }
     }
 
@@ -1058,7 +1199,10 @@ class MapActivity : ComponentActivity() {
             setBackgroundColor(Color.argb(220, 0, 140, 60))
             setPadding(hPad, vPad, hPad, vPad)
         }
+        // Capture as instance fields so animateModeTransition() can address them directly.
+        navigateBanner = banner
         val stopBtn = makePillButton("■  STOP") { setMode(AppMode.EXPLORE) }
+        navigateStopBtn = stopBtn
 
         return FrameLayout(this).apply {
             addView(banner, FrameLayout.LayoutParams(

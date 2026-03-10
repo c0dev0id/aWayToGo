@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Animated mode transitions: switching between Explore, Navigate (Ride), and Edit (Plan) now plays a two-phase slide animation. Outgoing Explore elements (hamburger button, locate-me button) slide off to the left, and the Ride/Search/Plan bar slides off to the bottom (200ms, accelerate). Incoming elements slide in from their respective edge (250ms, decelerate). Navigate banner arrives from the top and STOP from the bottom; Edit top bar arrives from the top.
 - Hamburger button opens a popup menu that folds out to the right and downward from the button's top-left corner, using a 220ms decelerate scale animation originating from `pivotX=0, pivotY=0`. Tapping anywhere outside the menu collapses it with a 180ms accelerate animation. The menu closes automatically when switching to Navigate or Edit mode.
 - Menu panel: circular profile image placeholder at the top, followed by six entries (My Locations, My Trips, My Recordings, My POI Groups, Offline Maps, Settings), each with a dedicated icon and 20sp label. Panel background uses 32dp corner radius on all corners, matching the circular hamburger button exactly.
 - Six new vector drawables: `ic_menu_locations`, `ic_menu_trips`, `ic_menu_recordings`, `ic_menu_poi_groups`, `ic_menu_offline_maps`, `ic_menu_settings`.
