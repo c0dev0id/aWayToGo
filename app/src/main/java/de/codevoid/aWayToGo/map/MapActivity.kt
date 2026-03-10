@@ -1438,15 +1438,9 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // Thin separator + 6 menu items, scrollable.
-        val separator = View(this).apply {
-            setBackgroundColor(Color.argb(60, 255, 255, 255))
-        }
-        val sepH = (1 * d).toInt().coerceAtLeast(1)
-
+        // 6 menu items, scrollable.
         val contentList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(separator,       LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, sepH))
             addView(menuItem(R.drawable.ic_menu_locations,    "My Locations"),  LinearLayout.LayoutParams(panelW, itemH))
             addView(menuItem(R.drawable.ic_menu_trips,        "My Trips"),      LinearLayout.LayoutParams(panelW, itemH))
             addView(menuItem(R.drawable.ic_menu_recordings,   "My Recordings"), LinearLayout.LayoutParams(panelW, itemH))
@@ -1472,19 +1466,19 @@ class MapActivity : ComponentActivity() {
                 topMargin = itemH
             })
 
-            // Hamburger button pinned to top-left — no background fill, no header band.
-            addView(hamburgerBtn, FrameLayout.LayoutParams(itemH, itemH).apply {
-                gravity = Gravity.TOP or Gravity.START
+            // Profile avatar added first (lower z) so hamburger bars render on top.
+            // Centre the avatar at the panel's top-right corner-arc centre (radius, radius)
+            // by setting margin = cornerRadius − avatarRadius = 32 − 28 = 4 dp on both
+            // top and right.  clipToOutline clips it cleanly to the rounded corner.
+            addView(profileAvatar, FrameLayout.LayoutParams(avatarSz, avatarSz).apply {
+                gravity   = Gravity.TOP or Gravity.END
+                topMargin = (radius - avatarSz / 2f).toInt()   // = 4 dp
+                marginEnd = (radius - avatarSz / 2f).toInt()   // = 4 dp
             })
 
-            // Profile avatar pinned to top-right, vertically centred in the header row.
-            // gravity=END means its x = parentWidth − avatarSz − marginEnd, so it is
-            // naturally invisible while the panel is narrower than ~208dp and slides in
-            // as the panel expands to full width.
-            addView(profileAvatar, FrameLayout.LayoutParams(avatarSz, avatarSz).apply {
-                gravity = Gravity.TOP or Gravity.END
-                topMargin = (itemH - avatarSz) / 2
-                marginEnd = hPad
+            // Hamburger button on top (higher z) so bars are visible over the avatar.
+            addView(hamburgerBtn, FrameLayout.LayoutParams(itemH, itemH).apply {
+                gravity = Gravity.TOP or Gravity.START
             })
             // Starts VISIBLE at button size (64×64dp set by addView LayoutParams in onCreate).
             // setMode() manages VISIBLE/GONE; openMenu/closeMenu animate the size.
