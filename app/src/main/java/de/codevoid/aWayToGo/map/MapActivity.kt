@@ -142,7 +142,7 @@ class MapActivity : ComponentActivity() {
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
     private lateinit var hamburgerButton: ImageView
-    private lateinit var exploreBottomBar: LinearLayout
+    private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var editTopBar: LinearLayout
 
@@ -840,24 +840,110 @@ class MapActivity : ComponentActivity() {
         }
     }
 
-    /** Bottom action bar for Explore mode: [RIDE] [🔍] [EDIT]. */
-    private fun buildExploreBottomBar(): LinearLayout {
-        val d        = resources.displayMetrics.density
-        val gap      = (8  * d).toInt()
-        val btnW     = (96 * d).toInt()
-        val btnH     = (52 * d).toInt()
-        val searchSz = (60 * d).toInt()
+    /**
+     * Explore mode action bar: two half-pill buttons tucked behind a large central
+     * search circle, creating a single fused control.
+     *
+     * Layout (z-order: row behind, circle on top):
+     *
+     *         ┌──────────────────────────────────────┐
+     *         │  RIDE  │   [hidden gap]   │   Plan   │  ← half-pill row (btnH tall)
+     *         └──────────────────────────────────────┘
+     *                     ╔════════╗
+     *                     ║  🔍   ║  ← circle (circleSize tall, overlaps inner edges)
+     *                     ║ Search ║
+     *                     ╚════════╝
+     *
+     * The inner edges of both buttons are square (radius=0) so they slide cleanly
+     * behind the circle. Outer edges are fully rounded (radius = btnH/2 → pill).
+     */
+    private fun buildExploreBottomBar(): FrameLayout {
+        val d          = resources.displayMetrics.density
+        val circleSize = (72 * d).toInt()
+        val btnH       = (48 * d).toInt()
+        val btnW       = (108 * d).toInt()
+        val overlap    = (22 * d).toInt()    // how far each button slides under the circle
+        val spacerW    = (circleSize - overlap * 2).coerceAtLeast(0)
+        val outerR     = btnH / 2f
 
-        val rideBtn   = makePillButton("RIDE")   { setMode(AppMode.NAVIGATE) }
-        val searchBtn = makeCircleButton(R.drawable.ic_search) { /* stub */ }
-        val editBtn   = makePillButton("EDIT")   { setMode(AppMode.EDIT) }
+        fun halfPillDrawable(roundLeft: Boolean, color: Int): GradientDrawable {
+            val radii = if (roundLeft)
+                floatArrayOf(outerR, outerR, 0f, 0f, 0f, 0f, outerR, outerR)
+            else
+                floatArrayOf(0f, 0f, outerR, outerR, outerR, outerR, 0f, 0f)
+            return GradientDrawable().apply { cornerRadii = radii; setColor(color) }
+        }
 
-        return LinearLayout(this).apply {
+        fun makeHalfPill(label: String, roundLeft: Boolean, onClick: () -> Unit): TextView {
+            return TextView(this).apply {
+                text = label
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                background = RippleDrawable(
+                    ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                    halfPillDrawable(roundLeft, Color.argb(180, 0, 0, 0)),
+                    halfPillDrawable(roundLeft, Color.WHITE),
+                )
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { onClick() }
+            }
+        }
+
+        val rideBtn = makeHalfPill("Ride", roundLeft = true)  { setMode(AppMode.NAVIGATE) }
+        val planBtn = makeHalfPill("Plan", roundLeft = false) { setMode(AppMode.EDIT) }
+
+        // Search circle: icon above label, larger than the side buttons.
+        val iconPad  = (8  * d).toInt()
+        val iconSize = (22 * d).toInt()
+        val searchBtn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity     = Gravity.CENTER
+            background  = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(210, 0, 0, 0)) },
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
+            )
+            setPadding(iconPad, iconPad, iconPad, iconPad)
+            addView(
+                ImageView(this@MapActivity).apply {
+                    setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_search))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                },
+                LinearLayout.LayoutParams(iconSize, iconSize),
+            )
+            addView(TextView(this@MapActivity).apply {
+                text = "Search"
+                setTextColor(Color.WHITE)
+                textSize = 10f
+                gravity = Gravity.CENTER
+            })
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { /* stub */ }
+        }
+
+        // Row sits behind the circle (added first → lower z-order).
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity     = Gravity.CENTER_VERTICAL
-            addView(rideBtn,   LinearLayout.LayoutParams(btnW, btnH).apply { marginEnd = gap })
-            addView(searchBtn, LinearLayout.LayoutParams(searchSz, searchSz).apply { marginEnd = gap })
-            addView(editBtn,   LinearLayout.LayoutParams(btnW, btnH))
+            addView(rideBtn, LinearLayout.LayoutParams(btnW, btnH))
+            addView(View(this@MapActivity), LinearLayout.LayoutParams(spacerW, btnH))
+            addView(planBtn, LinearLayout.LayoutParams(btnW, btnH))
+        }
+
+        return FrameLayout(this).apply {
+            addView(row, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+            // Circle added second → drawn on top, covers inner edges of both buttons.
+            addView(searchBtn, FrameLayout.LayoutParams(
+                circleSize, circleSize, Gravity.CENTER,
+            ))
         }
     }
 

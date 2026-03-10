@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Three-mode UI skeleton: Explore, Navigate, and Edit modes are now distinct UI states managed by `AppMode` and `setMode()`. Each mode shows its own chrome and hides the others. Buttons are wired for mode transitions; no business logic is attached yet.
-- Explore mode: hamburger button (top-left), locate-me button (bottom-left), and a bottom-center action bar with RIDE, Search (magnifying glass), and EDIT buttons.
+- Explore mode: hamburger button (top-left), locate-me button (bottom-left), and a fused bottom-center action bar — Ride and Plan half-pill buttons tuck behind a larger circular Search button, creating one cohesive control. Button renamed Edit → Plan.
 - Navigate mode (stub): green top banner and a STOP button at bottom-center.
 - Edit mode (stub): blue top bar with DISCARD, trip title, and SAVE.
 - `ic_menu` and `ic_search` vector drawables.
