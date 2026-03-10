@@ -190,6 +190,24 @@ GPS is a single source of truth in NavigationRepository. Both NavigationDomain a
 
 Room owns all structured app data. Key tables: `trips`, `ride_metric_samples`, `locations`, `location_tags`, `poi_groups`, `poi_points`, `downloaded_areas`. MBTiles files are stored as raw SQLite files on disk; Room tracks their metadata only. `PoiPoint` rows use plain lat/lng columns; viewport queries use `BETWEEN` range predicates, which are adequate for datasets up to tens of thousands of points per group.
 
+### Canonical UI Sizes (MapActivity)
+
+These values were arrived at through visual iteration on the target device and are the baseline for all on-map UI going forward. No UI element should deviate from these without a documented reason.
+
+| Element | Value |
+|---|---|
+| Icon buttons (hamburger, locate-me) | 64 × 64 dp |
+| Half-pill buttons (Ride, Plan) | 172 × 64 dp |
+| Search circle | 144 dp diameter, transparent background |
+| Explore bar bottom margin | 16 dp |
+| Icon button margins (left / top or bottom) | 16 dp |
+| Primary button text (Ride, Plan) | 26 sp bold |
+| Minimum text size (enforced app-wide) | 20 sp |
+
+**Minimum text size rationale:** The app is used on a motorcycle mount, often with gloves. 20 sp was validated as the smallest text that remains readable at arm's length while riding. All text in the app — including secondary labels, overlays, and debug info — must be ≥ 20 sp.
+
+**Search circle transparency:** The search circle has a transparent background so it does not occlude the half-pill buttons behind it. The ripple mask is still a circle, so the tap feedback is correctly contained within the circle boundary.
+
 ## Core Features (Planned)
 
 - Offline map display with MBTiles tile cache

@@ -376,7 +376,7 @@ class MapActivity : ComponentActivity() {
         // OSD overlay — plain TextView, no Compose recomposition.
         osdView = TextView(this).apply {
             setTextColor(Color.WHITE)
-            textSize = 11f
+            textSize = 20f
             typeface = Typeface.MONOSPACE
             setBackgroundColor(Color.argb(140, 0, 0, 0))
             setPadding(16, 8, 16, 8)
@@ -391,7 +391,7 @@ class MapActivity : ComponentActivity() {
 
         // My-location button — top-left, circular dark background with ripple.
         val density = resources.displayMetrics.density
-        val btnSize = (48 * density).toInt()
+        val btnSize = (64 * density).toInt()
         val btnPad  = (12 * density).toInt()
         val btnMargin = (16 * density).toInt()
 
@@ -474,7 +474,7 @@ class MapActivity : ComponentActivity() {
         versionCardView = TextView(this).apply {
             text = BuildConfig.GIT_COMMIT
             setTextColor(Color.WHITE)
-            textSize = 11f
+            textSize = 20f
             typeface = Typeface.MONOSPACE
             setBackgroundColor(Color.argb(160, 0, 0, 0))
             setPadding(
@@ -817,7 +817,7 @@ class MapActivity : ComponentActivity() {
         return TextView(this).apply {
             text = label
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             background = RippleDrawable(
@@ -903,7 +903,7 @@ class MapActivity : ComponentActivity() {
             gravity     = Gravity.CENTER
             background  = RippleDrawable(
                 ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(210, 0, 0, 0)) },
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT) },
                 GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
             )
             setPadding(iconPad, iconPad, iconPad, iconPad)
@@ -957,7 +957,7 @@ class MapActivity : ComponentActivity() {
         val banner = TextView(this).apply {
             text = "▶  NAVIGATION"
             setTextColor(Color.WHITE)
-            textSize = 15f
+            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             setBackgroundColor(Color.argb(220, 0, 140, 60))
             setPadding(hPad, vPad, hPad, vPad)
@@ -989,7 +989,7 @@ class MapActivity : ComponentActivity() {
         val titleView  = TextView(this).apply {
             text = "New Trip"
             setTextColor(Color.WHITE)
-            textSize = 14f
+            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
@@ -1115,7 +1115,7 @@ class MapActivity : ComponentActivity() {
         val label = TextView(this).apply {
             text = "Downloading update…"
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 20f
             setPadding(0, 0, 0, (8 * d).toInt())
         }
 
