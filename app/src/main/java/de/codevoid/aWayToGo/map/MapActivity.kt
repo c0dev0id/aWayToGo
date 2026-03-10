@@ -154,7 +154,10 @@ class MapActivity : ComponentActivity() {
     private lateinit var versionCardView: TextView
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
-    private lateinit var hamburgerIcon: ImageView   // icon inside the panel's top-left button area
+    // Three horizontal bar views that make up the hamburger icon.
+    // Stored separately so each can be rotated at a different speed during open/close.
+    // All three share the same rotation pivot: the centre of the 64×64dp button area.
+    private lateinit var hamburgerBars: Array<View>
     private lateinit var menuPanel: View
     private lateinit var menuDismissOverlay: View
     private var isMenuOpen = false
@@ -916,7 +919,7 @@ class MapActivity : ComponentActivity() {
                 lp.width = btnSz; lp.height = btnSz
                 menuPanel.layoutParams = lp
             }
-            hamburgerIcon.rotation = 0f
+            hamburgerBars.forEach { it.rotation = 0f }
         }
     }
 
@@ -1316,7 +1319,7 @@ class MapActivity : ComponentActivity() {
      * Design: the panel IS the hamburger button.  At rest it is 64×64dp with
      * cornerRadius=32dp — identical to a circle.  [openMenu] / [closeMenu]
      * animate the LayoutParams width+height from button size to full panel size
-     * and back, while [hamburgerIcon] rotates 90° during open.
+     * and back, while [hamburgerBars] rotate 90° in a staggered cascade during open.
      *
      * Because the view is never scaled (only sized), the cornerRadius is always
      * visually correct: 32dp on a 64×64dp view = circle; 32dp on the expanded
@@ -1377,19 +1380,53 @@ class MapActivity : ComponentActivity() {
 
         val avatarSz = (56 * d).toInt()
 
-        // Hamburger icon — overlay at top-left of the panel, no fill background so the
-        // panel's uniform dark surface shows through without a contrasting header band.
-        // Oval ripple mask gives circular press feedback matching the button-mode circle shape.
-        val hamburgerBtn = FrameLayout(this).apply {
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { toggleMenu() }
-            hamburgerIcon = ImageView(this@MapActivity).apply {
-                setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_menu))
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                setPadding(btnPad, btnPad, btnPad, btnPad)
+        // Three-bar hamburger icon: each bar is a separate View so they can be rotated
+        // individually during open/close.  All pivots point to the icon centre (32dp, 32dp)
+        // so they rotate as if they were one unit — but at different speeds.
+        //
+        // Layout inside the 64×64dp button area (btnPad=12dp, contentArea=40×40dp):
+        //   bar 0 centre at ¼ of content height = 22dp from top
+        //   bar 1 centre at ½ of content height = 32dp from top  (= icon centre)
+        //   bar 2 centre at ¾ of content height = 42dp from top
+        //
+        // pivotY for each bar = iconCY − barTop, so the rotation axis is always the
+        // icon centre (32dp) in parent coordinates.  pivotX = iconCX − btnPad = 20dp.
+        val barH      = (3 * d).toInt().coerceAtLeast(2)
+        val barW      = itemH - 2 * btnPad          // 40dp
+        val contentH  = itemH - 2 * btnPad          // 40dp
+        val iconCX    = itemH / 2f                  // 32dp in px
+        val iconCY    = itemH / 2f
+
+        hamburgerBars = Array(3) { i ->
+            val barCY  = btnPad + contentH * (i + 1f) / 4f   // 22, 32, 42 dp
+            val barTop = (barCY - barH / 2f).toInt()
+            View(this).apply {
+                background = GradientDrawable().apply {
+                    shape        = GradientDrawable.RECTANGLE
+                    cornerRadius = barH / 2f
+                    setColor(Color.WHITE)
+                }
+                pivotX = iconCX - btnPad          // 20dp from bar's left = icon centre X
+                pivotY = iconCY - barTop          // distance from bar's top to icon centre Y
             }
-            addView(hamburgerIcon, FrameLayout.LayoutParams(itemH, itemH))
+        }
+
+        // Hamburger button container — clipChildren=false lets the bars draw outside their
+        // own 40×3dp layout rectangles during rotation without being clipped.
+        val hamburgerBtn = FrameLayout(this).apply {
+            clipChildren = false
+            isClickable  = true
+            isFocusable  = true
+            setOnClickListener { toggleMenu() }
+            hamburgerBars.forEachIndexed { i, bar ->
+                val barCY  = btnPad + contentH * (i + 1f) / 4f
+                val barTop = (barCY - barH / 2f).toInt()
+                addView(bar, FrameLayout.LayoutParams(barW, barH).apply {
+                    gravity    = Gravity.TOP or Gravity.START
+                    topMargin  = barTop
+                    leftMargin = btnPad
+                })
+            }
         }
 
         // Profile avatar — overlay at top-right, vertically centred in the 64dp header area.
@@ -1474,9 +1511,14 @@ class MapActivity : ComponentActivity() {
         val panelW = (280 * d).toInt()
         val panelH = getOrMeasurePanelHeight()
         val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
-        val startW = lp.width
-        val startH = lp.height
-        val startR = hamburgerIcon.rotation
+        val startW    = lp.width
+        val startH    = lp.height
+        // Capture each bar's current rotation so the animator can interpolate from
+        // wherever the animation was interrupted (e.g. rapid open→close→open).
+        val barStartR = FloatArray(3) { hamburgerBars[it].rotation }
+        // Top bar is fastest: it reaches 90° at ~65% of the animation, giving a
+        // staggered cascade where bar 0 leads and bar 2 trails.
+        val openSpeeds = floatArrayOf(1.4f, 1.2f, 1.0f)
 
         menuAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 220
@@ -1486,7 +1528,10 @@ class MapActivity : ComponentActivity() {
                 lp.width  = (startW + (panelW - startW) * t).toInt()
                 lp.height = (startH + (panelH - startH) * t).toInt()
                 menuPanel.layoutParams = lp
-                hamburgerIcon.rotation = startR + (90f - startR) * t
+                hamburgerBars.forEachIndexed { i, bar ->
+                    val p = (t * openSpeeds[i]).coerceAtMost(1f)
+                    bar.rotation = barStartR[i] + (90f - barStartR[i]) * p
+                }
             }
             start()
         }
@@ -1510,14 +1555,16 @@ class MapActivity : ComponentActivity() {
             lp.width  = btnSz
             lp.height = btnSz
             menuPanel.layoutParams = lp
-            hamburgerIcon.rotation = 0f
+            hamburgerBars.forEach { it.rotation = 0f }
             menuDismissOverlay.visibility = View.GONE
             return
         }
 
-        val startW = lp.width
-        val startH = lp.height
-        val startR = hamburgerIcon.rotation
+        val startW    = lp.width
+        val startH    = lp.height
+        val barStartR = FloatArray(3) { hamburgerBars[it].rotation }
+        // Reverse of open: bottom bar now fastest, top bar slowest.
+        val closeSpeeds = floatArrayOf(1.0f, 1.2f, 1.4f)
 
         menuAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 180
@@ -1527,7 +1574,10 @@ class MapActivity : ComponentActivity() {
                 lp.width  = (startW + (btnSz - startW) * t).toInt()
                 lp.height = (startH + (btnSz - startH) * t).toInt()
                 menuPanel.layoutParams = lp
-                hamburgerIcon.rotation = startR + (0f - startR) * t
+                hamburgerBars.forEachIndexed { i, bar ->
+                    val p = (t * closeSpeeds[i]).coerceAtMost(1f)
+                    bar.rotation = barStartR[i] + (0f - barStartR[i]) * p
+                }
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
