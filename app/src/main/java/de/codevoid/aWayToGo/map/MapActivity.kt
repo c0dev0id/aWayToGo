@@ -825,8 +825,8 @@ class MapActivity : ComponentActivity() {
         val topPad: Double
         when (mode) {
             AppMode.NAVIGATE -> {
-                targetTilt = 30.0
-                topPad     = screenH * 0.6   // GPS dot at ~80 % from top
+                targetTilt = 45.0
+                topPad     = screenH * 0.8   // GPS dot at ~90 % from top = 40 % below centre
             }
             else -> {
                 targetTilt = 0.0
@@ -1186,8 +1186,8 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        val rideBtn = makeHalfPill("Ride", roundLeft = true)  { setMode(AppMode.NAVIGATE) }
-        val planBtn = makeHalfPill("Plan", roundLeft = false) { setMode(AppMode.EDIT) }
+        val rideBtn = makeHalfPill("Ride", roundLeft = true)  { flyToCurrentLocationThen { setMode(AppMode.NAVIGATE) } }
+        val planBtn = makeHalfPill("Plan", roundLeft = false) { flyToCurrentLocationThen { setMode(AppMode.EDIT) } }
 
         // Search circle: icon above label, larger than the side buttons.
         val iconPad  = (16 * d).toInt()
@@ -1760,17 +1760,35 @@ class MapActivity : ComponentActivity() {
     /**
      * Animate the camera to [target] at [zoom].
      *
+     * [zoom] defaults to the current camera zoom — callers that want a specific
+     * level (e.g. re-centering from a cold state) must pass one explicitly.
+     *
+     * [onFinish] is invoked when the animation completes (or is cancelled).
+     * Used by [flyToCurrentLocationThen] to chain a mode transition after the fly.
+     *
      * If the target is within FLYTO_THRESHOLD_M the camera eases directly.
      * If farther away it first animates to a context zoom that shows enough
      * geography to orient the user, then eases in to the target — the same
      * "zoom out → pan → zoom in" pattern used by most navigation apps.
      */
-    private fun flyToLocation(m: MapLibreMap, target: LatLng, zoom: Double = 14.0) {
-        val from     = m.cameraPosition.target ?: return
+    private fun flyToLocation(
+        m: MapLibreMap,
+        target: LatLng,
+        zoom: Double = m.cameraPosition.zoom,
+        onFinish: (() -> Unit)? = null,
+    ) {
+        val from     = m.cameraPosition.target ?: run { onFinish?.invoke(); return }
         val distance = from.distanceTo(target)
 
         if (distance < FLYTO_THRESHOLD_M) {
-            m.animateCamera(CameraUpdateFactory.newLatLngZoom(target, zoom), 600)
+            m.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(target, zoom),
+                600,
+                object : MapLibreMap.CancelableCallback {
+                    override fun onFinish() { onFinish?.invoke() }
+                    override fun onCancel() { onFinish?.invoke() }
+                },
+            )
             return
         }
 
@@ -1790,11 +1808,35 @@ class MapActivity : ComponentActivity() {
             object : MapLibreMap.CancelableCallback {
                 override fun onFinish() {
                     // Phase 2: ease into the final zoom level.
-                    m.animateCamera(CameraUpdateFactory.newLatLngZoom(target, zoom), 500)
+                    m.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(target, zoom),
+                        500,
+                        object : MapLibreMap.CancelableCallback {
+                            override fun onFinish() { onFinish?.invoke() }
+                            override fun onCancel() { onFinish?.invoke() }
+                        },
+                    )
                 }
-                override fun onCancel() {}
+                override fun onCancel() { onFinish?.invoke() }
             },
         )
+    }
+
+    /**
+     * Fly to the user's current GPS position (preserving zoom), then invoke [onComplete].
+     *
+     * Used by the Ride and Plan buttons to centre the map before the mode transition
+     * so the incoming mode's camera adjustments (tilt, focal offset) animate from a
+     * known position rather than from wherever the user was panning.
+     *
+     * Calls [onComplete] immediately if no map or last-known location is available,
+     * so the mode switch always proceeds regardless of GPS state.
+     */
+    private fun flyToCurrentLocationThen(onComplete: () -> Unit) {
+        val m   = map
+        val loc = m?.locationComponent?.lastKnownLocation
+        if (m == null || loc == null) { onComplete(); return }
+        flyToLocation(m, LatLng(loc.latitude, loc.longitude), onFinish = onComplete)
     }
 
     /**
