@@ -157,6 +157,7 @@ class MapActivity : ComponentActivity() {
     private var drawerPanelWidth = 0    // screen width / 4, set in onCreate
     private var drawerPadWidth   = 0    // 52dp — the tab that sticks out
     private var isDrawerOpen     = false
+    private var drawerAnimator: ValueAnimator? = null
 
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
@@ -919,6 +920,7 @@ class MapActivity : ComponentActivity() {
         val touchListener = View.OnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    drawerAnimator?.cancel()
                     dragStartRawX        = event.rawX
                     dragStartTranslation = drawerPanel.translationX
                 }
@@ -990,9 +992,10 @@ class MapActivity : ComponentActivity() {
 
     private fun openDrawer(animate: Boolean = true) {
         isDrawerOpen = true
+        drawerAnimator?.cancel()
         if (!animate) { setDrawerTranslation(0f); return }
         val from = drawerPanel.translationX
-        ValueAnimator.ofFloat(from, 0f).apply {
+        drawerAnimator = ValueAnimator.ofFloat(from, 0f).apply {
             duration = 260
             interpolator = DecelerateInterpolator()
             addUpdateListener { setDrawerTranslation(it.animatedValue as Float) }
@@ -1003,9 +1006,10 @@ class MapActivity : ComponentActivity() {
     private fun closeDrawer(animate: Boolean = true) {
         isDrawerOpen = false
         val closedT = -(drawerPanelWidth - drawerPadWidth).toFloat()
+        drawerAnimator?.cancel()
         if (!animate) { setDrawerTranslation(closedT); return }
         val from = drawerPanel.translationX
-        ValueAnimator.ofFloat(from, closedT).apply {
+        drawerAnimator = ValueAnimator.ofFloat(from, closedT).apply {
             duration = 260
             interpolator = DecelerateInterpolator()
             addUpdateListener { setDrawerTranslation(it.animatedValue as Float) }
