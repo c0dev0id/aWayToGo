@@ -984,7 +984,7 @@ class MapActivity : ComponentActivity() {
         val contentWidth  = (drawerPanelWidth - drawerPadWidth).toFloat()
         val openFraction  = 1f + t / contentWidth   // 0 = closed, 1 = fully open
         exploreBottomBar.translationX = openFraction * drawerPanelWidth / 2f
-        myLocationButton.translationX = drawerPadWidth + openFraction * contentWidth
+        myLocationButton.translationX = openFraction * contentWidth
         map?.setPadding((openFraction * drawerPanelWidth).toInt(), 0, 0, 0)
     }
 
