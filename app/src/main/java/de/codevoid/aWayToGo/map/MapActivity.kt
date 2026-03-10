@@ -149,6 +149,7 @@ class MapActivity : ComponentActivity() {
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
     private lateinit var hamburgerButton: ImageView
+    private lateinit var layersButton: ImageView
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var editTopBar: LinearLayout
@@ -426,12 +427,20 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, 0, 0, btnMargin) },
         )
 
-        // Hamburger — top-left, opens library / layers / settings (stub).
+        // Hamburger — top-left, opens library / settings (stub).
         hamburgerButton = makeCircleButton(R.drawable.ic_menu) { /* stub */ }
         root.addView(
             hamburgerButton,
             FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
                 .apply { setMargins(btnMargin, btnMargin, 0, 0) },
+        )
+
+        // Layers button — directly below hamburger, same left margin.
+        layersButton = makeCircleButton(R.drawable.ic_layers) { /* stub — map layer config */ }
+        root.addView(
+            layersButton,
+            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
+                .apply { setMargins(btnMargin, btnMargin + btnSize + btnMargin, 0, 0) },
         )
 
         // Crosshair — gradient arms fading to transparent + circular reticle at centre.
@@ -766,6 +775,7 @@ class MapActivity : ComponentActivity() {
         val inEdit     = mode == AppMode.EDIT
 
         hamburgerButton.visibility  = if (inExplore)  View.VISIBLE else View.GONE
+        layersButton.visibility     = if (inExplore)  View.VISIBLE else View.GONE
         myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
         exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
         navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
