@@ -436,7 +436,7 @@ class MapActivity : ComponentActivity() {
         )
 
         // Left-edge drawer — hamburger + layers pads that slide out to reveal a menu panel.
-        drawerPanelWidth = resources.displayMetrics.widthPixels / 4
+        drawerPanelWidth = resources.displayMetrics.widthPixels / 3
         drawerPadWidth   = (52 * density).toInt()
         drawerPanel = buildDrawerPanel()
         root.addView(
