@@ -699,8 +699,13 @@ class MapActivity : ComponentActivity() {
 
     /**
      * Fetches the GitHub releases list and returns the download URL of the APK
-     * asset from the latest pre-release that is newer than this build.
-     * Returns null if no such release exists or on any network/parse error.
+     * asset from the most recent pre-release.
+     * Returns null if already on that release or on any network/parse error.
+     *
+     * "Already on that release" is determined by checking whether the APK filename
+     * of the latest pre-release contains [BuildConfig.GIT_COMMIT] — the short hash
+     * embedded in the filename by the CI pipeline (e.g. "aWayToGo-abc1234.apk").
+     * No timestamp comparison needed: if the hash matches we are up to date.
      */
     private suspend fun fetchLatestPreReleaseApkUrl(): String? = withContext(Dispatchers.IO) {
         try {
@@ -715,28 +720,34 @@ class MapActivity : ComponentActivity() {
                 timeZone = TimeZone.getTimeZone("UTC")
             }
 
+            // Find the most recent pre-release that has an APK asset.
             var bestTime = 0L
             var bestUrl: String? = null
+            var isCurrentBuild = false
 
             val releases = JSONArray(body)
             for (i in 0 until releases.length()) {
                 val rel = releases.getJSONObject(i)
                 if (!rel.optBoolean("prerelease")) continue
                 val published = fmt.parse(rel.optString("published_at"))?.time ?: continue
-                if (published <= BuildConfig.BUILD_TIME) continue   // not newer than this build
-                if (published <= bestTime) continue                  // not the best candidate
+                if (published <= bestTime) continue
 
                 val assets = rel.optJSONArray("assets") ?: continue
                 for (j in 0 until assets.length()) {
                     val asset = assets.getJSONObject(j)
-                    if (asset.optString("name").endsWith(".apk")) {
-                        bestUrl  = asset.optString("browser_download_url")
-                        bestTime = published
+                    val name  = asset.optString("name")
+                    if (name.endsWith(".apk")) {
+                        bestUrl        = asset.optString("browser_download_url")
+                        bestTime       = published
+                        // If the filename contains our commit hash this release was
+                        // built from the same commit — nothing to update.
+                        isCurrentBuild = name.contains(BuildConfig.GIT_COMMIT)
                         break
                     }
                 }
             }
-            bestUrl
+
+            if (isCurrentBuild) null else bestUrl
         } catch (_: Exception) { null }
     }
 
