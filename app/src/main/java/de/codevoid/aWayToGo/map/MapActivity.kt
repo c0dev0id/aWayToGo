@@ -859,10 +859,10 @@ class MapActivity : ComponentActivity() {
      */
     private fun buildExploreBottomBar(): FrameLayout {
         val d          = resources.displayMetrics.density
-        val circleSize = (72 * d).toInt()
-        val btnH       = (48 * d).toInt()
-        val btnW       = (108 * d).toInt()
-        val overlap    = (22 * d).toInt()    // how far each button slides under the circle
+        val circleSize = (144 * d).toInt()
+        val btnH       = (96 * d).toInt()
+        val btnW       = (216 * d).toInt()
+        val overlap    = (44 * d).toInt()    // how far each button slides under the circle
         val spacerW    = (circleSize - overlap * 2).coerceAtLeast(0)
         val outerR     = btnH / 2f
 
@@ -878,7 +878,7 @@ class MapActivity : ComponentActivity() {
             return TextView(this).apply {
                 text = label
                 setTextColor(Color.WHITE)
-                textSize = 13f
+                textSize = 26f
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 background = RippleDrawable(
@@ -896,8 +896,8 @@ class MapActivity : ComponentActivity() {
         val planBtn = makeHalfPill("Plan", roundLeft = false) { setMode(AppMode.EDIT) }
 
         // Search circle: icon above label, larger than the side buttons.
-        val iconPad  = (8  * d).toInt()
-        val iconSize = (22 * d).toInt()
+        val iconPad  = (16 * d).toInt()
+        val iconSize = (44 * d).toInt()
         val searchBtn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity     = Gravity.CENTER
@@ -917,7 +917,7 @@ class MapActivity : ComponentActivity() {
             addView(TextView(this@MapActivity).apply {
                 text = "Search"
                 setTextColor(Color.WHITE)
-                textSize = 10f
+                textSize = 20f
                 gravity = Gravity.CENTER
             })
             isClickable = true
