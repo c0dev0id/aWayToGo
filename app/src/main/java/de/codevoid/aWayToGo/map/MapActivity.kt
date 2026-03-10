@@ -28,6 +28,9 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import androidx.activity.ComponentActivity
@@ -151,10 +154,12 @@ class MapActivity : ComponentActivity() {
     private lateinit var versionCardView: TextView
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
-    private lateinit var hamburgerButton: ImageView
+    private lateinit var hamburgerIcon: ImageView   // icon inside the panel's top-left button area
     private lateinit var menuPanel: View
     private lateinit var menuDismissOverlay: View
     private var isMenuOpen = false
+    private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
+    private var menuAnimator: ValueAnimator? = null
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var navigateBanner: View
@@ -450,14 +455,6 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, 0, 0, btnMargin) },
         )
 
-        // Hamburger — top-left, opens popup menu.
-        hamburgerButton = makeCircleButton(R.drawable.ic_menu) { toggleMenu() }
-        root.addView(
-            hamburgerButton,
-            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
-                .apply { setMargins(btnMargin, btnMargin, 0, 0) },
-        )
-
         // Crosshair — gradient arms fading to transparent + circular reticle at centre.
         // Only visible in panning mode.
         crosshairView = CrosshairView(this).apply { visibility = View.GONE }
@@ -541,15 +538,14 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
-        // Popup menu panel — anchored at the same top-left corner as the hamburger button.
+        // Popup menu panel — the hamburger button IS this panel's top-left corner.
+        // Starts at button size (64×64dp); openMenu/closeMenu animate the layout params
+        // to expand/collapse it. cornerRadius=32dp gives a perfect circle at button size.
         menuPanel = buildMenuPanel()
         root.addView(
             menuPanel,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START,
-            ).apply { setMargins(btnMargin, btnMargin, 0, 0) },
+            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
+                .apply { setMargins(btnMargin, btnMargin, 0, 0) },
         )
 
         setContentView(root)
@@ -822,8 +818,9 @@ class MapActivity : ComponentActivity() {
         val from = currentMode
         currentMode = mode
 
-        // Close popup menu immediately on any mode change.
-        if (isMenuOpen) closeMenu()
+        // Close popup menu immediately (no animation) on any mode change so it
+        // does not fight with the mode transition animation.
+        if (isMenuOpen) closeMenu(instant = true)
 
         // Crosshair: always on in EDIT, otherwise mirrors panning state.
         crosshairView.visibility = when {
@@ -859,11 +856,21 @@ class MapActivity : ComponentActivity() {
         val inNavigate = mode == AppMode.NAVIGATE
         val inEdit     = mode == AppMode.EDIT
 
-        hamburgerButton.visibility  = if (inExplore)  View.VISIBLE else View.GONE
+        menuPanel.visibility        = if (inExplore)  View.VISIBLE else View.GONE
         myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
         exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
         navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
         editTopBar.visibility       = if (inEdit)      View.VISIBLE else View.GONE
+
+        // Ensure panel is at button size when not in Explore (so it looks correct on return).
+        if (!inExplore) {
+            val btnSz = (64 * resources.displayMetrics.density).toInt()
+            (menuPanel.layoutParams as FrameLayout.LayoutParams).also { lp ->
+                lp.width = btnSz; lp.height = btnSz
+                menuPanel.layoutParams = lp
+            }
+            hamburgerIcon.rotation = 0f
+        }
     }
 
     /**
@@ -892,13 +899,13 @@ class MapActivity : ComponentActivity() {
         fun slideIn() {
             when (to) {
                 AppMode.EXPLORE -> {
-                    hamburgerButton.translationX  = -w
+                    menuPanel.translationX        = -w
                     myLocationButton.translationX = -w
                     exploreBottomBar.translationY = h
-                    hamburgerButton.visibility    = View.VISIBLE
+                    menuPanel.visibility          = View.VISIBLE
                     myLocationButton.visibility   = View.VISIBLE
                     exploreBottomBar.visibility   = View.VISIBLE
-                    hamburgerButton.animate().translationX(0f)
+                    menuPanel.animate().translationX(0f)
                         .setDuration(inDur).setInterpolator(inInterp).start()
                     myLocationButton.animate().translationX(0f)
                         .setDuration(inDur).setInterpolator(inInterp).start()
@@ -930,11 +937,11 @@ class MapActivity : ComponentActivity() {
                 val latch = intArrayOf(3)
                 fun check() { if (--latch[0] == 0) slideIn() }
 
-                hamburgerButton.animate().translationX(-w)
+                menuPanel.animate().translationX(-w)
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction {
-                        hamburgerButton.visibility   = View.GONE
-                        hamburgerButton.translationX = 0f
+                        menuPanel.visibility   = View.GONE
+                        menuPanel.translationX = 0f
                         check()
                     }.start()
                 myLocationButton.animate().translationX(-w)
@@ -1254,27 +1261,33 @@ class MapActivity : ComponentActivity() {
     // ── Hamburger popup menu ──────────────────────────────────────────────────
 
     /**
-     * Builds the popup menu panel that folds out from the hamburger button.
+     * Builds the popup menu panel.
      *
-     * The panel is anchored at the same (16dp, 16dp) top-left as the hamburger
-     * button.  Its corner radius (32dp = half the 64dp button diameter) matches
-     * the button's circular shape exactly on all four corners.
+     * Design: the panel IS the hamburger button.  At rest it is 64×64dp with
+     * cornerRadius=32dp — identical to a circle.  [openMenu] / [closeMenu]
+     * animate the LayoutParams width+height from button size to full panel size
+     * and back, while [hamburgerIcon] rotates 90° during open.
      *
-     * Contents: circular profile placeholder at the top, followed by six menu
-     * rows at 64dp each.  A ScrollView wraps the content so the panel remains
-     * usable if the screen is unexpectedly short.
+     * Because the view is never scaled (only sized), the cornerRadius is always
+     * visually correct: 32dp on a 64×64dp view = circle; 32dp on the expanded
+     * 280×fullH view = rounded rectangle.
      *
-     * The view is returned GONE; [openMenu] / [closeMenu] manage visibility and
-     * the scale animation that produces the "fold out from top-left" effect.
+     * Structure (outer FrameLayout → inner LinearLayout wrapper):
+     *   ├── hamburgerRow (64dp, fixed above scroll — always the topmost element)
+     *   └── ScrollView
+     *         └── profileRow + separator + 6 menu items
+     *
+     * Visibility is managed by [setMode]: VISIBLE in EXPLORE, GONE otherwise.
      */
     private fun buildMenuPanel(): View {
         val d       = resources.displayMetrics.density
-        val radius  = 32 * d         // matches the circle button's corner radius
+        val radius  = 32 * d         // cornerRadius=32dp → circle at 64dp, rounded-rect when expanded
         val panelW  = (280 * d).toInt()
         val itemH   = (64 * d).toInt()
         val iconSz  = (28 * d).toInt()
         val hPad    = (16 * d).toInt()
         val iconGap = (12 * d).toInt()
+        val btnPad  = (12 * d).toInt()
 
         // Single menu row: icon + label, full-width ripple.
         fun menuItem(iconRes: Int, label: String): LinearLayout {
@@ -1299,7 +1312,6 @@ class MapActivity : ComponentActivity() {
                     },
                     LinearLayout.LayoutParams(iconSz, iconSz),
                 )
-                // Gap between icon and text.
                 addView(View(this@MapActivity), LinearLayout.LayoutParams(iconGap, 0))
                 addView(
                     TextView(this@MapActivity).apply {
@@ -1313,12 +1325,36 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // Profile placeholder row.
+        // Hamburger icon row — the "button" face of the panel.
+        // Always sits at the top, outside the scroll view.
+        val hamburgerRow = FrameLayout(this).apply {
+            isClickable = true
+            isFocusable = true
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+                null,
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    setColor(Color.WHITE)
+                },
+            )
+            setOnClickListener { toggleMenu() }
+            hamburgerIcon = ImageView(this@MapActivity).apply {
+                setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_menu))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setPadding(btnPad, btnPad, btnPad, btnPad)
+            }
+            addView(hamburgerIcon, FrameLayout.LayoutParams(itemH, itemH))
+        }
+
+        // Profile placeholder row — avatar on the right, no label text.
         val avatarSz = (56 * d).toInt()
         val profileRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity     = Gravity.CENTER_VERTICAL
             setPadding(hPad, hPad, hPad, hPad)
+            // Weight-1 spacer pushes the avatar circle to the right edge.
+            addView(View(this@MapActivity), LinearLayout.LayoutParams(0, avatarSz, 1f))
             addView(
                 View(this@MapActivity).apply {
                     background = GradientDrawable().apply {
@@ -1327,14 +1363,6 @@ class MapActivity : ComponentActivity() {
                     }
                 },
                 LinearLayout.LayoutParams(avatarSz, avatarSz),
-            )
-            addView(View(this@MapActivity), LinearLayout.LayoutParams(iconGap, 0))
-            addView(
-                TextView(this@MapActivity).apply {
-                    text = "Profile"
-                    setTextColor(Color.argb(180, 255, 255, 255))
-                    textSize = 20f
-                },
             )
         }
 
@@ -1358,17 +1386,25 @@ class MapActivity : ComponentActivity() {
 
         val scroll = ScrollView(this).apply { addView(contentList) }
 
+        // Outer wrapper: hamburger row fixed above the scrollable content.
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(hamburgerRow, LinearLayout.LayoutParams(panelW, itemH))
+            addView(scroll, LinearLayout.LayoutParams(panelW, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+
         return FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 shape        = GradientDrawable.RECTANGLE
                 cornerRadius = radius
                 setColor(Color.argb(220, 20, 20, 20))
             }
-            // Clip children to the rounded-rect outline so rows don't bleed
-            // through corners during the scale animation.
+            // Clip content to the rounded-rect outline so children don't bleed
+            // through corners as the panel grows beyond the button-sized initial rect.
             clipToOutline = true
-            addView(scroll, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT))
-            visibility = View.GONE
+            addView(wrapper, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT))
+            // Starts VISIBLE at button size (64×64dp set by addView LayoutParams in onCreate).
+            // setMode() manages VISIBLE/GONE; openMenu/closeMenu animate the size.
         }
     }
 
@@ -1377,41 +1413,102 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Show the menu panel with a scale-out animation that originates from the
-     * top-left corner (pivotX=0, pivotY=0), making it appear to fold out from
-     * the hamburger button toward the right and downward.
+     * Expand the panel from button size (64×64dp) to its full content size.
+     *
+     * Animates the LayoutParams width+height so the cornerRadius (32dp) stays
+     * visually constant — the shape smoothly transforms from circle → rounded rect.
+     * The hamburger icon rotates 90° during the expansion.
      */
     private fun openMenu() {
         isMenuOpen = true
         menuDismissOverlay.visibility = View.VISIBLE
-        menuPanel.visibility = View.VISIBLE
-        menuPanel.pivotX = 0f
-        menuPanel.pivotY = 0f
-        menuPanel.scaleX = 0f
-        menuPanel.scaleY = 0f
-        menuPanel.animate()
-            .scaleX(1f)
-            .scaleY(1f)
-            .setDuration(220)
-            .setInterpolator(DecelerateInterpolator())
-            .start()
+        menuAnimator?.cancel()
+
+        val d      = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+        val panelH = getOrMeasurePanelHeight()
+        val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width
+        val startH = lp.height
+        val startR = hamburgerIcon.rotation
+
+        menuAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = 220
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (panelW - startW) * t).toInt()
+                lp.height = (startH + (panelH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                hamburgerIcon.rotation = startR + (90f - startR) * t
+            }
+            start()
+        }
     }
 
-    /** Collapse the menu panel back toward the top-left corner, then hide it. */
-    private fun closeMenu() {
+    /**
+     * Collapse the panel back to button size (64×64dp).
+     *
+     * @param instant  When true (called from [setMode]), collapses immediately
+     *                 with no animation — avoids fighting with the mode transition.
+     */
+    private fun closeMenu(instant: Boolean = false) {
         isMenuOpen = false
-        menuPanel.pivotX = 0f
-        menuPanel.pivotY = 0f
-        menuPanel.animate()
-            .scaleX(0f)
-            .scaleY(0f)
-            .setDuration(180)
-            .setInterpolator(AccelerateInterpolator())
-            .withEndAction {
-                menuPanel.visibility = View.GONE
-                menuDismissOverlay.visibility = View.GONE
+        menuAnimator?.cancel()
+
+        val d     = resources.displayMetrics.density
+        val btnSz = (64 * d).toInt()
+        val lp    = menuPanel.layoutParams as FrameLayout.LayoutParams
+
+        if (instant) {
+            lp.width  = btnSz
+            lp.height = btnSz
+            menuPanel.layoutParams = lp
+            hamburgerIcon.rotation = 0f
+            menuDismissOverlay.visibility = View.GONE
+            return
+        }
+
+        val startW = lp.width
+        val startH = lp.height
+        val startR = hamburgerIcon.rotation
+
+        menuAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = 180
+            interpolator = AccelerateInterpolator()
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (btnSz - startW) * t).toInt()
+                lp.height = (startH + (btnSz - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                hamburgerIcon.rotation = startR + (0f - startR) * t
             }
-            .start()
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    menuDismissOverlay.visibility = View.GONE
+                }
+            })
+            start()
+        }
+    }
+
+    /**
+     * Returns the panel's full expanded height in pixels.
+     *
+     * Measured on the first call by forcing a measure pass at full panel width.
+     * Cached thereafter so subsequent open/close animations avoid re-measuring.
+     */
+    private fun getOrMeasurePanelHeight(): Int {
+        if (panelFullHeight > 0) return panelFullHeight
+        val d      = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec  = View.MeasureSpec.makeMeasureSpec(
+            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
+        )
+        menuPanel.measure(wSpec, hSpec)
+        panelFullHeight = menuPanel.measuredHeight
+        return panelFullHeight
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────

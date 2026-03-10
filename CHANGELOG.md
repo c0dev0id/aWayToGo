@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- The hamburger button and menu panel are now a single unified view. The panel starts at 64×64dp (identical appearance to the previous circular button) and expands to full size when opened, using a `ValueAnimator` on the layout params width and height. This eliminates two visual artifacts from the old scale-based approach: the top-left corner radius was visually wrong at small scales, and the separate button showed through the semi-transparent panel.
+- The hamburger icon rotates 90° as the menu opens and reverses on close, driven by the same animator as the size expansion.
+- Profile image placeholder moved to the right side of the profile row; the "Profile" label is removed.
+- Menu now closes instantly (without its own animation) when a mode switch is triggered, to avoid competing with the mode transition animation.
+
 ### Added
 - Animated mode transitions: switching between Explore, Navigate (Ride), and Edit (Plan) now plays a two-phase slide animation. Outgoing Explore elements (hamburger button, locate-me button) slide off to the left, and the Ride/Search/Plan bar slides off to the bottom (200ms, accelerate). Incoming elements slide in from their respective edge (250ms, decelerate). Navigate banner arrives from the top and STOP from the bottom; Edit top bar arrives from the top.
 - Hamburger button opens a popup menu that folds out to the right and downward from the button's top-left corner, using a 220ms decelerate scale animation originating from `pivotX=0, pivotY=0`. Tapping anywhere outside the menu collapses it with a 180ms accelerate animation. The menu closes automatically when switching to Navigate or Edit mode.
