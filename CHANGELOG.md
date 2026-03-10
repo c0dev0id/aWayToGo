@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Drag line visual: width reduced by 25% (casing 7.5dp, fill 4.5dp) and opacity set to 60% for less visual clutter while navigating.
-- Analog joystick sensitivity reduced to 50% (`JOY_SENSITIVITY = 0.5f`) for more precise map adjustments.
+- Analog joystick now follows an exponential speed curve: magnitude 2 → 15 px/s, 3 → 30 px/s, 4 → 60 px/s, 5 → 120 px/s; adjacent levels ramp in 300 ms both up and down. Replaces the flat `JOY_SENSITIVITY` multiplier.
 
 ### Added
 - Drag line: long-pressing CONFIRM while in panning mode draws a red line (6dp fill, 2dp darkred casing) from the current GPS position to the crosshair, with a distance label along the line.

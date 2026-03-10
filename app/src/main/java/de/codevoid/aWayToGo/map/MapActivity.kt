@@ -67,6 +67,7 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 // ── Drag line style layer / source IDs ───────────────────────────────────────
 // Two LineLayer instances (casing behind, fill in front) produce the outlined
@@ -86,10 +87,15 @@ private const val METERS_PER_DEGREE_LAT  = 111320.0
 // Desired pan speed in screen pixels per second.
 private const val PAN_SPEED_PX_PER_SEC = 120f
 
-// Analog joystick sensitivity multiplier (0.0–1.0).
-// 1.0 = full PAN_SPEED_PX_PER_SEC at maximum deflection.
-// 0.5 = half speed — easier to make small adjustments.
-private const val JOY_SENSITIVITY = 0.5f
+// Joystick speed table: discrete magnitude → px/s.
+// Hardware sends magnitudes 2–5 (dead zone swallows 0–1).
+// Piecewise-linear interpolation in joyMagnitudeToSpeed().
+//   mag 2 →  15 px/s
+//   mag 3 →  30 px/s
+//   mag 4 →  60 px/s
+//   mag 5 → 120 px/s
+// Adjacent levels ramp in 300 ms (JOY_RAMP_RATE = 1/0.3 ≈ 3.33 mag-units/s).
+private const val JOY_RAMP_RATE = 1f / 0.3f  // magnitude units per second
 
 // Desired zoom speed in MapLibre zoom levels per second.
 private const val ZOOM_SPEED_PER_SEC = 1.5f
@@ -157,6 +163,16 @@ class MapActivity : ComponentActivity() {
     private var joyDx = 0f
     private var joyDy = 0f
 
+    // Smoothed joystick magnitude (0–5), ramped toward the target at JOY_RAMP_RATE.
+    // Decouples the speed ramp from instantaneous stick input so acceleration and
+    // deceleration take ~300ms per adjacent magnitude level.
+    private var joyEffectiveMag = 0f
+
+    // Last non-zero normalised direction: preserved so the ramp-down still applies
+    // movement in the same direction after the stick is released.
+    private var joyLastDirX = 0f
+    private var joyLastDirY = 0f
+
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
     private var osdFrameCount  = 0
@@ -176,7 +192,7 @@ class MapActivity : ComponentActivity() {
             // ── Pan + Zoom ─────────────────────────────────────────────────────
             val currentMap = map
             var panSpeed = 0f
-            if (currentMap != null && (panStartNs.isNotEmpty() || joyDx != 0f || joyDy != 0f)) {
+            if (currentMap != null && (panStartNs.isNotEmpty() || joyDx != 0f || joyDy != 0f || joyEffectiveMag > 0.001f)) {
                 // Accumulate deltas for all held keys.  Pan and zoom are merged into
                 // a single animateCamera call so they never compete with each other.
                 var totalDx   = 0f
@@ -208,15 +224,31 @@ class MapActivity : ComponentActivity() {
                     }
                 }
 
-                // Analog joystick — no ramp, magnitude IS the speed fraction.
-                // JOY_SENSITIVITY scales down the effective pan speed for finer control.
-                if (joyDx != 0f || joyDy != 0f) {
-                    val px = PAN_SPEED_PX_PER_SEC * JOY_SENSITIVITY * PAN_LOOK_AHEAD_MS / 1000f
-                    totalDx +=  joyDx * px
-                    totalDy += -joyDy * px   // joy Y+ = screen-up = subtract from dy
-                    val joySpeed = maxOf(kotlin.math.abs(joyDx), kotlin.math.abs(joyDy)) *
-                        PAN_SPEED_PX_PER_SEC * JOY_SENSITIVITY
-                    if (joySpeed > panSpeed) panSpeed = joySpeed
+                // Analog joystick — ramped speed curve.
+                // targetMag: hardware sends 0.4–1.0, multiply by 5 to get 2–5.
+                val inputMag  = maxOf(kotlin.math.abs(joyDx), kotlin.math.abs(joyDy)) * 5f
+                val dtS       = dtNs / 1_000_000_000f
+                val rampDelta = JOY_RAMP_RATE * dtS
+                joyEffectiveMag = when {
+                    joyEffectiveMag < inputMag ->
+                        (joyEffectiveMag + rampDelta).coerceAtMost(inputMag)
+                    joyEffectiveMag > inputMag ->
+                        (joyEffectiveMag - rampDelta).coerceAtLeast(inputMag)
+                    else -> joyEffectiveMag
+                }
+
+                if (joyEffectiveMag > 0.001f) {
+                    // Update last known direction while stick is active.
+                    val len = sqrt(joyDx * joyDx + joyDy * joyDy)
+                    if (len > 0.001f) {
+                        joyLastDirX = joyDx / len
+                        joyLastDirY = joyDy / len
+                    }
+                    val speedPxS = joyMagnitudeToSpeed(joyEffectiveMag)
+                    val px = speedPxS * PAN_LOOK_AHEAD_MS / 1000f
+                    totalDx +=  joyLastDirX * px
+                    totalDy += -joyLastDirY * px   // joy Y+ = screen-up = subtract from dy
+                    if (speedPxS > panSpeed) panSpeed = speedPxS
                 }
 
                 if (totalDx != 0f || totalDy != 0f || totalZoom != 0f) {
@@ -890,6 +922,28 @@ class MapActivity : ComponentActivity() {
                 override fun onCancel() {}
             },
         )
+    }
+
+    /**
+     * Piecewise-linear speed lookup for the analog joystick.
+     *
+     * Maps a smoothed magnitude (0–5) to a pan speed in px/s:
+     *   0 →   0 px/s
+     *   2 →  15 px/s
+     *   3 →  30 px/s
+     *   4 →  60 px/s
+     *   5 → 120 px/s
+     *
+     * Values between integer levels are linearly interpolated; values outside
+     * [0, 5] are clamped to the nearest endpoint.
+     */
+    private fun joyMagnitudeToSpeed(mag: Float): Float = when {
+        mag <= 0f -> 0f
+        mag < 2f  -> mag / 2f * 15f           // 0 → 0, 2 → 15
+        mag < 3f  -> 15f + (mag - 2f) * 15f   // 2 → 15, 3 → 30
+        mag < 4f  -> 30f + (mag - 3f) * 30f   // 3 → 30, 4 → 60
+        mag < 5f  -> 60f + (mag - 4f) * 60f   // 4 → 60, 5 → 120
+        else      -> 120f
     }
 
     /**
