@@ -26,7 +26,10 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -149,6 +152,9 @@ class MapActivity : ComponentActivity() {
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
     private lateinit var hamburgerButton: ImageView
+    private lateinit var menuPanel: View
+    private lateinit var menuDismissOverlay: View
+    private var isMenuOpen = false
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var editTopBar: LinearLayout
@@ -440,8 +446,8 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, 0, 0, btnMargin) },
         )
 
-        // Hamburger — top-left, opens library / layers / settings (stub).
-        hamburgerButton = makeCircleButton(R.drawable.ic_menu) { /* stub */ }
+        // Hamburger — top-left, opens popup menu.
+        hamburgerButton = makeCircleButton(R.drawable.ic_menu) { toggleMenu() }
         root.addView(
             hamburgerButton,
             FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
@@ -513,6 +519,33 @@ class MapActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.END,
             ).apply { setMargins(0, 0, btnMargin, btnMargin) },
+        )
+
+        // Dismiss overlay — full-screen transparent tap target that closes the menu.
+        // Added last so it sits above all other views when visible.
+        menuDismissOverlay = View(this).apply {
+            isClickable = true
+            isFocusable = false
+            visibility = View.GONE
+            setOnClickListener { closeMenu() }
+        }
+        root.addView(
+            menuDismissOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        // Popup menu panel — anchored at the same top-left corner as the hamburger button.
+        menuPanel = buildMenuPanel()
+        root.addView(
+            menuPanel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START,
+            ).apply { setMargins(btnMargin, btnMargin, 0, 0) },
         )
 
         setContentView(root)
@@ -776,6 +809,9 @@ class MapActivity : ComponentActivity() {
      */
     private fun setMode(mode: AppMode) {
         currentMode = mode
+
+        // Dismiss the popup menu whenever the user switches away from Explore mode.
+        if (isMenuOpen) closeMenu()
 
         val inExplore  = mode == AppMode.EXPLORE
         val inNavigate = mode == AppMode.NAVIGATE
@@ -1069,6 +1105,169 @@ class MapActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ))
         }
+    }
+
+    // ── Hamburger popup menu ──────────────────────────────────────────────────
+
+    /**
+     * Builds the popup menu panel that folds out from the hamburger button.
+     *
+     * The panel is anchored at the same (16dp, 16dp) top-left as the hamburger
+     * button.  Its corner radius (32dp = half the 64dp button diameter) matches
+     * the button's circular shape exactly on all four corners.
+     *
+     * Contents: circular profile placeholder at the top, followed by six menu
+     * rows at 64dp each.  A ScrollView wraps the content so the panel remains
+     * usable if the screen is unexpectedly short.
+     *
+     * The view is returned GONE; [openMenu] / [closeMenu] manage visibility and
+     * the scale animation that produces the "fold out from top-left" effect.
+     */
+    private fun buildMenuPanel(): View {
+        val d       = resources.displayMetrics.density
+        val radius  = 32 * d         // matches the circle button's corner radius
+        val panelW  = (280 * d).toInt()
+        val itemH   = (64 * d).toInt()
+        val iconSz  = (28 * d).toInt()
+        val hPad    = (16 * d).toInt()
+        val iconGap = (12 * d).toInt()
+
+        // Single menu row: icon + label, full-width ripple.
+        fun menuItem(iconRes: Int, label: String): LinearLayout {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity     = Gravity.CENTER_VERTICAL
+                setPadding(hPad, 0, hPad, 0)
+                isClickable = true
+                isFocusable = true
+                background  = RippleDrawable(
+                    ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+                    null,
+                    GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        setColor(Color.WHITE)
+                    },
+                )
+                addView(
+                    ImageView(this@MapActivity).apply {
+                        setImageDrawable(ContextCompat.getDrawable(this@MapActivity, iconRes))
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                    },
+                    LinearLayout.LayoutParams(iconSz, iconSz),
+                )
+                // Gap between icon and text.
+                addView(View(this@MapActivity), LinearLayout.LayoutParams(iconGap, 0))
+                addView(
+                    TextView(this@MapActivity).apply {
+                        text = label
+                        setTextColor(Color.WHITE)
+                        textSize = 20f
+                        gravity = Gravity.CENTER_VERTICAL
+                    },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+            }
+        }
+
+        // Profile placeholder row.
+        val avatarSz = (56 * d).toInt()
+        val profileRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity     = Gravity.CENTER_VERTICAL
+            setPadding(hPad, hPad, hPad, hPad)
+            addView(
+                View(this@MapActivity).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(Color.argb(120, 150, 150, 150))
+                    }
+                },
+                LinearLayout.LayoutParams(avatarSz, avatarSz),
+            )
+            addView(View(this@MapActivity), LinearLayout.LayoutParams(iconGap, 0))
+            addView(
+                TextView(this@MapActivity).apply {
+                    text = "Profile"
+                    setTextColor(Color.argb(180, 255, 255, 255))
+                    textSize = 20f
+                },
+            )
+        }
+
+        // Thin separator line.
+        val separator = View(this).apply {
+            setBackgroundColor(Color.argb(60, 255, 255, 255))
+        }
+        val sepH = (1 * d).toInt().coerceAtLeast(1)
+
+        val contentList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(profileRow,      LinearLayout.LayoutParams(panelW, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(separator,       LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, sepH))
+            addView(menuItem(R.drawable.ic_menu_locations,    "My Locations"),  LinearLayout.LayoutParams(panelW, itemH))
+            addView(menuItem(R.drawable.ic_menu_trips,        "My Trips"),      LinearLayout.LayoutParams(panelW, itemH))
+            addView(menuItem(R.drawable.ic_menu_recordings,   "My Recordings"), LinearLayout.LayoutParams(panelW, itemH))
+            addView(menuItem(R.drawable.ic_menu_poi_groups,   "My POI Groups"), LinearLayout.LayoutParams(panelW, itemH))
+            addView(menuItem(R.drawable.ic_menu_offline_maps, "Offline Maps"),  LinearLayout.LayoutParams(panelW, itemH))
+            addView(menuItem(R.drawable.ic_menu_settings,     "Settings"),      LinearLayout.LayoutParams(panelW, itemH))
+        }
+
+        val scroll = ScrollView(this).apply { addView(contentList) }
+
+        return FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape        = GradientDrawable.RECTANGLE
+                cornerRadius = radius
+                setColor(Color.argb(220, 20, 20, 20))
+            }
+            // Clip children to the rounded-rect outline so rows don't bleed
+            // through corners during the scale animation.
+            clipToOutline = true
+            addView(scroll, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT))
+            visibility = View.GONE
+        }
+    }
+
+    private fun toggleMenu() {
+        if (isMenuOpen) closeMenu() else openMenu()
+    }
+
+    /**
+     * Show the menu panel with a scale-out animation that originates from the
+     * top-left corner (pivotX=0, pivotY=0), making it appear to fold out from
+     * the hamburger button toward the right and downward.
+     */
+    private fun openMenu() {
+        isMenuOpen = true
+        menuDismissOverlay.visibility = View.VISIBLE
+        menuPanel.visibility = View.VISIBLE
+        menuPanel.pivotX = 0f
+        menuPanel.pivotY = 0f
+        menuPanel.scaleX = 0f
+        menuPanel.scaleY = 0f
+        menuPanel.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(220)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    /** Collapse the menu panel back toward the top-left corner, then hide it. */
+    private fun closeMenu() {
+        isMenuOpen = false
+        menuPanel.pivotX = 0f
+        menuPanel.pivotY = 0f
+        menuPanel.animate()
+            .scaleX(0f)
+            .scaleY(0f)
+            .setDuration(180)
+            .setInterpolator(AccelerateInterpolator())
+            .withEndAction {
+                menuPanel.visibility = View.GONE
+                menuDismissOverlay.visibility = View.GONE
+            }
+            .start()
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────

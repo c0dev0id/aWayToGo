@@ -7,7 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Three-mode UI skeleton: Explore, Navigate, and Edit modes are now distinct UI states managed by `AppMode` and `setMode()`. Each mode shows its own chrome and hides the others. Buttons are wired for mode transitions; no business logic is attached yet.
+- Hamburger button opens a popup menu that folds out to the right and downward from the button's top-left corner, using a 220ms decelerate scale animation originating from `pivotX=0, pivotY=0`. Tapping anywhere outside the menu collapses it with a 180ms accelerate animation. The menu closes automatically when switching to Navigate or Edit mode.
+- Menu panel: circular profile image placeholder at the top, followed by six entries (My Locations, My Trips, My Recordings, My POI Groups, Offline Maps, Settings), each with a dedicated icon and 20sp label. Panel background uses 32dp corner radius on all corners, matching the circular hamburger button exactly.
+- Six new vector drawables: `ic_menu_locations`, `ic_menu_trips`, `ic_menu_recordings`, `ic_menu_poi_groups`, `ic_menu_offline_maps`, `ic_menu_settings`.
+
+### Three-mode UI skeleton: Explore, Navigate, and Edit modes are now distinct UI states managed by `AppMode` and `setMode()`. Each mode shows its own chrome and hides the others. Buttons are wired for mode transitions; no business logic is attached yet.
 - Explore mode: hamburger button (top-left), locate-me button (bottom-left), and a fused bottom-center action bar — Ride and Plan half-pill buttons tuck behind a larger circular Search button, creating one cohesive control. Button renamed Edit → Plan.
 - Navigate mode (stub): green top banner and a STOP button at bottom-center.
 - Edit mode (stub): blue top bar with DISCARD, trip title, and SAVE.
