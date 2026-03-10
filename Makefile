@@ -1,6 +1,6 @@
 # a simple make file to start developer tools
 
-.PHONY: diag diag-remote install launcher restore browser remote log log-clear
+.PHONY: diag diag-remote diag-rotate install launcher restore browser remote log log-clear
 
 # Dump the device logcat into log/ so Claude can read the files directly.
 #
@@ -48,6 +48,9 @@ diag:
 
 diag-remote:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRemoteActivity
+
+diag-rotate:
+	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRotateActivity
 
 launcher:
 	adb shell cmd package set-home-activity de.codevoid.aWayToGo/.map.MapActivity

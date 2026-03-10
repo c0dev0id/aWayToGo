@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Screen rotation no longer recreates the Activity. `MapActivity` declares `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"` so the MapLibre GL surface is kept alive across orientation changes. `onConfigurationChanged()` lays a black overlay over the window before the layout reflow to cover the SurfaceView's brief GL viewport-resize frame, then fades it out (300ms) for a smooth cross-fade into the new orientation. After the reflow, system bars are re-hidden, the panel-height cache is invalidated, and the camera padding is re-applied for the new screen dimensions.
+
 ### Changed
 - Menu header bar removed. The hamburger button and profile avatar are now independent overlays inside the panel's `FrameLayout`, so the panel has a single uniform dark surface with no contrasting header band. The hamburger button has no fill background (the panel's dark surface shows through uniformly) and uses a circular ripple mask. The profile avatar is pinned to the top-right of the header area and slides in naturally as the panel expands to full width, since `clipToOutline` hides it until the panel is wide enough.
 - Navigate mode camera: tilt increased to 45° and the GPS focal point now sits 40 % below screen centre (90 % from top), giving a deeper perspective view with more of the road ahead visible.

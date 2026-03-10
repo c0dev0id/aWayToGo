@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
@@ -176,6 +177,10 @@ class MapActivity : ComponentActivity() {
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
     private var downloadProgressBar: ProgressBar? = null
+
+    // Overlay used to animate screen rotation — covers the SurfaceView's brief
+    // black resize frame, then fades out to reveal the re-laid-out UI.
+    private var rotationOverlay: View? = null
 
     private var map: MapLibreMap? = null
     private var style: Style? = null
@@ -2015,6 +2020,73 @@ class MapActivity : ComponentActivity() {
     override fun onLowMemory() {
         super.onLowMemory()
         mapView.onLowMemory()
+    }
+
+    /**
+     * Called instead of recreating the Activity when the device is rotated.
+     *
+     * Declared in AndroidManifest via configChanges="orientation|screenSize|...".
+     * The Activity (and MapLibre's GL surface) are kept alive; only screen-dependent
+     * state needs updating.
+     *
+     * Rotation transition:
+     *   1. A black overlay is placed over the window before the layout reflow, hiding
+     *      the brief black frame emitted by SurfaceView while its GL viewport resizes.
+     *   2. super.onConfigurationChanged() triggers the reflow synchronously.
+     *   3. The overlay fades out over 300 ms, cross-fading from the old orientation
+     *      into the new one without any jarring flash or redraw artefact.
+     *
+     * Additional bookkeeping:
+     *   - System bars: re-hidden in case Android briefly restores them during rotation.
+     *   - panelFullHeight: invalidated — it was measured against the old screen height.
+     *   - Camera padding: re-applied with the new screen height (Navigate mode uses
+     *     screenH * 0.8 for the focal-point offset).
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        // ── 1. Add the black overlay BEFORE the reflow so the resize is hidden. ──
+        val decorView = window.decorView as ViewGroup
+        rotationOverlay?.let { decorView.removeView(it) }
+        val overlay = View(this).apply { setBackgroundColor(Color.BLACK) }
+        rotationOverlay = overlay
+        decorView.addView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        // ── 2. Trigger the layout reflow. ─────────────────────────────────────
+        super.onConfigurationChanged(newConfig)
+
+        // ── 3. Post-reflow bookkeeping. ───────────────────────────────────────
+
+        // Re-hide system bars (rotation can cause them to flash back for one frame).
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
+        // Invalidate the panel height cache — screen height (the AT_MOST bound) changed.
+        panelFullHeight = -1
+
+        // Re-apply camera padding with the new screen height, no animation so the
+        // map does not sweep during the transition.
+        applyCameraForMode(currentMode, animated = false)
+
+        // ── 4. Fade the overlay out, revealing the re-laid-out UI. ───────────
+        // A 50 ms start-delay lets the first re-drawn frame settle before we
+        // begin fading, so there is no partial-black-frame visible at the edges.
+        overlay.animate()
+            .alpha(0f)
+            .setDuration(300)
+            .setStartDelay(50)
+            .withEndAction {
+                decorView.removeView(overlay)
+                if (rotationOverlay === overlay) rotationOverlay = null
+            }
+            .start()
     }
 }
 

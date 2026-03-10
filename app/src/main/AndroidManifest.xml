@@ -15,7 +15,8 @@
         <activity
             android:name=".map.MapActivity"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -35,6 +36,15 @@
         <activity
             android:name=".diagnostic.DiagnosticRemoteActivity"
             android:exported="true" />
+
+        <!-- Diagnostic: screen rotation lifecycle test.
+             Shows onCreate / onConfigurationChanged counters to verify that
+             configChanges is preventing Activity recreation on rotate.
+             adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRotateActivity -->
+        <activity
+            android:name=".diagnostic.DiagnosticRotateActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
 
         <!-- FileProvider used to share the downloaded update APK with the
              package installer (required on API 24+ for ACTION_VIEW on files). -->
