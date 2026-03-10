@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Version card: small overlay in the bottom-right corner of the map shows the installed build's short commit hash. Tapping checks GitHub for a newer pre-release; if one exists, it downloads the APK (with a progress overlay) and opens the system package installer.
+- Drag line now appears as soon as the long-press threshold is reached (500 ms into the hold) — no longer waits for key release.
+
+### Changed
+- Drag line visual: width reduced by 25% (casing 7.5dp, fill 4.5dp) and opacity set to 60% for less visual clutter while navigating.
+- Analog joystick sensitivity reduced to 50% (`JOY_SENSITIVITY = 0.5f`) for more precise map adjustments.
+
+### Added
 - Drag line: long-pressing CONFIRM while in panning mode draws a red line (6dp fill, 2dp darkred casing) from the current GPS position to the crosshair, with a distance label along the line.
 - Analog joystick support: the remote's analog stick sends `joy` string broadcasts (e.g. `"U5L3"`); the map now pans continuously in the indicated direction with proportional speed, integrated via the existing Choreographer loop.
 - `DiagnosticRemoteActivity`: intent sniffer that registers for all confirmed `com.thorkracing.wireddevices.*` actions and displays every received broadcast with its extras on screen. Launched via `make diag-remote`.
