@@ -987,7 +987,7 @@ class MapActivity : ComponentActivity() {
         val openFraction  = 1f + t / contentWidth   // 0 = closed, 1 = fully open
         exploreBottomBar.translationX = openFraction * drawerPanelWidth / 2f
         myLocationButton.translationX = openFraction * contentWidth
-        map?.setPadding((openFraction * drawerPanelWidth / 2f).toInt(), 0, 0, 0)
+        map?.setPadding((openFraction * drawerPanelWidth).toInt(), 0, 0, 0)
     }
 
     private fun openDrawer(animate: Boolean = true) {
