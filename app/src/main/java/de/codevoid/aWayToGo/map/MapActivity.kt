@@ -903,7 +903,7 @@ class MapActivity : ComponentActivity() {
             gravity     = Gravity.CENTER
             background  = RippleDrawable(
                 ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT) },
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(210, 0, 0, 0)) },
                 GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
             )
             setPadding(iconPad, iconPad, iconPad, iconPad)

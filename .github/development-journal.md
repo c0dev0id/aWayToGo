@@ -198,7 +198,7 @@ These values were arrived at through visual iteration on the target device and a
 |---|---|
 | Icon buttons (hamburger, locate-me) | 64 × 64 dp |
 | Half-pill buttons (Ride, Plan) | 172 × 64 dp |
-| Search circle | 144 dp diameter, transparent background |
+| Search circle | 144 dp diameter, `argb(210, 0, 0, 0)` background |
 | Explore bar bottom margin | 16 dp |
 | Icon button margins (left / top or bottom) | 16 dp |
 | Primary button text (Ride, Plan) | 26 sp bold |
@@ -206,7 +206,7 @@ These values were arrived at through visual iteration on the target device and a
 
 **Minimum text size rationale:** The app is used on a motorcycle mount, often with gloves. 20 sp was validated as the smallest text that remains readable at arm's length while riding. All text in the app — including secondary labels, overlays, and debug info — must be ≥ 20 sp.
 
-**Search circle transparency:** The search circle has a transparent background so it does not occlude the half-pill buttons behind it. The ripple mask is still a circle, so the tap feedback is correctly contained within the circle boundary.
+**Search circle background:** The search circle uses `argb(210, 0, 0, 0)` — nearly opaque dark — so it visually sits on top of and cleanly covers the inner edges of the half-pill buttons behind it. The ripple mask is a circle, so tap feedback is correctly contained within the circle boundary.
 
 ## Core Features (Planned)
 
