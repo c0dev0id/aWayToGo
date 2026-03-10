@@ -1375,16 +1375,19 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // Hamburger icon row — the "button" face of the panel.
-        // Always sits at the top, outside the scroll view.
-        val hamburgerRow = FrameLayout(this).apply {
+        val avatarSz = (56 * d).toInt()
+
+        // Hamburger icon — overlay at top-left of the panel, no fill background so the
+        // panel's uniform dark surface shows through without a contrasting header band.
+        // Oval ripple mask gives circular press feedback matching the button-mode circle shape.
+        val hamburgerBtn = FrameLayout(this).apply {
             isClickable = true
             isFocusable = true
             background = RippleDrawable(
                 ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
                 null,
                 GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
+                    shape = GradientDrawable.OVAL
                     setColor(Color.WHITE)
                 },
             )
@@ -1397,26 +1400,16 @@ class MapActivity : ComponentActivity() {
             addView(hamburgerIcon, FrameLayout.LayoutParams(itemH, itemH))
         }
 
-        // Profile placeholder row — avatar on the right, no label text.
-        val avatarSz = (56 * d).toInt()
-        val profileRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity     = Gravity.CENTER_VERTICAL
-            setPadding(hPad, hPad, hPad, hPad)
-            // Weight-1 spacer pushes the avatar circle to the right edge.
-            addView(View(this@MapActivity), LinearLayout.LayoutParams(0, avatarSz, 1f))
-            addView(
-                View(this@MapActivity).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.argb(120, 150, 150, 150))
-                    }
-                },
-                LinearLayout.LayoutParams(avatarSz, avatarSz),
-            )
+        // Profile avatar — overlay at top-right, vertically centred in the 64dp header area.
+        // clipToOutline on the panel hides it while the panel is in 64×64 button state.
+        val profileAvatar = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(120, 150, 150, 150))
+            }
         }
 
-        // Thin separator line.
+        // Thin separator + 6 menu items, scrollable.
         val separator = View(this).apply {
             setBackgroundColor(Color.argb(60, 255, 255, 255))
         }
@@ -1424,7 +1417,6 @@ class MapActivity : ComponentActivity() {
 
         val contentList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(profileRow,      LinearLayout.LayoutParams(panelW, LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(separator,       LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, sepH))
             addView(menuItem(R.drawable.ic_menu_locations,    "My Locations"),  LinearLayout.LayoutParams(panelW, itemH))
             addView(menuItem(R.drawable.ic_menu_trips,        "My Trips"),      LinearLayout.LayoutParams(panelW, itemH))
@@ -1436,13 +1428,6 @@ class MapActivity : ComponentActivity() {
 
         val scroll = ScrollView(this).apply { addView(contentList) }
 
-        // Outer wrapper: hamburger row fixed above the scrollable content.
-        val wrapper = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(hamburgerRow, LinearLayout.LayoutParams(panelW, itemH))
-            addView(scroll, LinearLayout.LayoutParams(panelW, LinearLayout.LayoutParams.WRAP_CONTENT))
-        }
-
         return FrameLayout(this).apply {
             background = GradientDrawable().apply {
                 shape        = GradientDrawable.RECTANGLE
@@ -1452,7 +1437,26 @@ class MapActivity : ComponentActivity() {
             // Clip content to the rounded-rect outline so children don't bleed
             // through corners as the panel grows beyond the button-sized initial rect.
             clipToOutline = true
-            addView(wrapper, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT))
+
+            // Scroll content pushed below the 64dp header area.
+            addView(scroll, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = itemH
+            })
+
+            // Hamburger button pinned to top-left — no background fill, no header band.
+            addView(hamburgerBtn, FrameLayout.LayoutParams(itemH, itemH).apply {
+                gravity = Gravity.TOP or Gravity.START
+            })
+
+            // Profile avatar pinned to top-right, vertically centred in the header row.
+            // gravity=END means its x = parentWidth − avatarSz − marginEnd, so it is
+            // naturally invisible while the panel is narrower than ~208dp and slides in
+            // as the panel expands to full width.
+            addView(profileAvatar, FrameLayout.LayoutParams(avatarSz, avatarSz).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = (itemH - avatarSz) / 2
+                marginEnd = hPad
+            })
             // Starts VISIBLE at button size (64×64dp set by addView LayoutParams in onCreate).
             // setMode() manages VISIBLE/GONE; openMenu/closeMenu animate the size.
         }
