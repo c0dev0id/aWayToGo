@@ -140,6 +140,14 @@ class MapActivity : ComponentActivity() {
     private lateinit var crosshairView: View
     private lateinit var versionCardView: TextView
 
+    // ── Mode UI views ─────────────────────────────────────────────────────────
+    private lateinit var hamburgerButton: ImageView
+    private lateinit var exploreBottomBar: LinearLayout
+    private lateinit var navigateOverlay: FrameLayout
+    private lateinit var editTopBar: LinearLayout
+
+    private var currentMode = AppMode.EXPLORE
+
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
     private var downloadProgressBar: ProgressBar? = null
@@ -407,6 +415,14 @@ class MapActivity : ComponentActivity() {
         }
         root.addView(
             myLocationButton,
+            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.BOTTOM or Gravity.START)
+                .apply { setMargins(btnMargin, 0, 0, btnMargin) },
+        )
+
+        // Hamburger — top-left, opens library / layers / settings (stub).
+        hamburgerButton = makeCircleButton(R.drawable.ic_menu) { /* stub */ }
+        root.addView(
+            hamburgerButton,
             FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
                 .apply { setMargins(btnMargin, btnMargin, 0, 0) },
         )
@@ -418,6 +434,38 @@ class MapActivity : ComponentActivity() {
             crosshairView,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        // ── Mode overlays ─────────────────────────────────────────────────────
+        // Only one set is visible at a time; setMode() manages visibility.
+
+        exploreBottomBar = buildExploreBottomBar()
+        root.addView(
+            exploreBottomBar,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+            ).apply { setMargins(0, 0, 0, btnMargin) },
+        )
+
+        navigateOverlay = buildNavigateOverlay()
+        root.addView(
+            navigateOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        editTopBar = buildEditTopBar()
+        root.addView(
+            editTopBar,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP,
             ),
         )
 
@@ -447,6 +495,9 @@ class MapActivity : ComponentActivity() {
         )
 
         setContentView(root)
+
+        // Apply initial visibility for all mode views.
+        setMode(AppMode.EXPLORE)
 
         // MapView lifecycle must be driven manually (no Compose lifecycle observer here).
         mapView.onCreate(savedInstanceState)
@@ -672,7 +723,8 @@ class MapActivity : ComponentActivity() {
         if (isInPanningMode) return
         isInPanningMode = true
         map?.locationComponent?.cameraMode = CameraMode.NONE
-        crosshairView.visibility = View.VISIBLE
+        // In EDIT mode the crosshair is already pinned visible; no change needed.
+        if (currentMode != AppMode.EDIT) crosshairView.visibility = View.VISIBLE
     }
 
     /**
@@ -685,11 +737,192 @@ class MapActivity : ComponentActivity() {
      */
     private fun exitPanningMode() {
         isInPanningMode = false
-        crosshairView.visibility = View.GONE
+        // In EDIT mode the crosshair stays pinned visible.
+        if (currentMode != AppMode.EDIT) crosshairView.visibility = View.GONE
         val m   = map ?: return
         val loc = m.locationComponent.lastKnownLocation ?: return
         m.locationComponent.cameraMode = CameraMode.TRACKING
         flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+    }
+
+    // ── Mode management ───────────────────────────────────────────────────────
+
+    /**
+     * Switch the app to [mode], showing the appropriate UI chrome and hiding
+     * everything else.  Safe to call from any mode, including the current one.
+     */
+    private fun setMode(mode: AppMode) {
+        currentMode = mode
+
+        val inExplore  = mode == AppMode.EXPLORE
+        val inNavigate = mode == AppMode.NAVIGATE
+        val inEdit     = mode == AppMode.EDIT
+
+        hamburgerButton.visibility  = if (inExplore)  View.VISIBLE else View.GONE
+        myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
+        exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
+        navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
+        editTopBar.visibility       = if (inEdit)      View.VISIBLE else View.GONE
+
+        // Crosshair: always on in EDIT, otherwise mirrors panning state.
+        crosshairView.visibility = when {
+            inEdit          -> View.VISIBLE
+            isInPanningMode -> View.VISIBLE
+            else            -> View.GONE
+        }
+
+        // Camera tracking: re-engage when entering NAVIGATE, release when entering EDIT.
+        when (mode) {
+            AppMode.NAVIGATE -> map?.locationComponent?.cameraMode = CameraMode.TRACKING
+            AppMode.EDIT     -> {
+                isInPanningMode = false
+                map?.locationComponent?.cameraMode = CameraMode.NONE
+            }
+            AppMode.EXPLORE  -> { /* tracking state unchanged — user controls it via locate-me */ }
+        }
+    }
+
+    // ── View builders ─────────────────────────────────────────────────────────
+
+    /**
+     * Circular icon button with dark semi-transparent background and ripple.
+     * Matches the visual style of [myLocationButton].
+     */
+    private fun makeCircleButton(iconRes: Int, onClick: () -> Unit): ImageView {
+        val d   = resources.displayMetrics.density
+        val pad = (12 * d).toInt()
+        return ImageView(this).apply {
+            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, iconRes))
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(180, 0, 0, 0)) },
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
+            )
+            setPadding(pad, pad, pad, pad)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+        }
+    }
+
+    /**
+     * Pill-shaped text button with dark semi-transparent background and ripple.
+     * Width and height are set by the caller via LayoutParams.
+     */
+    private fun makePillButton(label: String, onClick: () -> Unit): TextView {
+        val d      = resources.displayMetrics.density
+        val hPad   = (20 * d).toInt()
+        val vPad   = (10 * d).toInt()
+        val radius = 24 * d
+        return TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = radius
+                    setColor(Color.argb(180, 0, 0, 0))
+                },
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = radius
+                    setColor(Color.WHITE)
+                },
+            )
+            setPadding(hPad, vPad, hPad, vPad)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+        }
+    }
+
+    /** Bottom action bar for Explore mode: [RIDE] [🔍] [EDIT]. */
+    private fun buildExploreBottomBar(): LinearLayout {
+        val d        = resources.displayMetrics.density
+        val gap      = (8  * d).toInt()
+        val btnW     = (96 * d).toInt()
+        val btnH     = (52 * d).toInt()
+        val searchSz = (60 * d).toInt()
+
+        val rideBtn   = makePillButton("RIDE")   { setMode(AppMode.NAVIGATE) }
+        val searchBtn = makeCircleButton(R.drawable.ic_search) { /* stub */ }
+        val editBtn   = makePillButton("EDIT")   { setMode(AppMode.EDIT) }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity     = Gravity.CENTER_VERTICAL
+            addView(rideBtn,   LinearLayout.LayoutParams(btnW, btnH).apply { marginEnd = gap })
+            addView(searchBtn, LinearLayout.LayoutParams(searchSz, searchSz).apply { marginEnd = gap })
+            addView(editBtn,   LinearLayout.LayoutParams(btnW, btnH))
+        }
+    }
+
+    /** Full-screen overlay for Navigate mode: green top banner + STOP at bottom. */
+    private fun buildNavigateOverlay(): FrameLayout {
+        val d      = resources.displayMetrics.density
+        val hPad   = (16 * d).toInt()
+        val vPad   = (12 * d).toInt()
+        val margin = (16 * d).toInt()
+
+        val banner = TextView(this).apply {
+            text = "▶  NAVIGATION"
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setBackgroundColor(Color.argb(220, 0, 140, 60))
+            setPadding(hPad, vPad, hPad, vPad)
+        }
+        val stopBtn = makePillButton("■  STOP") { setMode(AppMode.EXPLORE) }
+
+        return FrameLayout(this).apply {
+            addView(banner, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP,
+            ))
+            addView(stopBtn, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+            ).apply { setMargins(0, 0, 0, margin) })
+        }
+    }
+
+    /** Top bar for Edit mode: [✕ DISCARD] [trip title] [✓ SAVE]. */
+    private fun buildEditTopBar(): LinearLayout {
+        val d    = resources.displayMetrics.density
+        val hPad = (16 * d).toInt()
+        val vPad = (8  * d).toInt()
+
+        val discardBtn = makePillButton("✕  DISCARD") { setMode(AppMode.EXPLORE) }
+        val saveBtn    = makePillButton("✓  SAVE")    { setMode(AppMode.EXPLORE) }
+        val titleView  = TextView(this).apply {
+            text = "New Trip"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.argb(220, 0, 80, 160))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(hPad, vPad, hPad, vPad)
+            addView(discardBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+            addView(titleView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(saveBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+        }
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────

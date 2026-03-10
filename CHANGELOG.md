@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Three-mode UI skeleton: Explore, Navigate, and Edit modes are now distinct UI states managed by `AppMode` and `setMode()`. Each mode shows its own chrome and hides the others. Buttons are wired for mode transitions; no business logic is attached yet.
+- Explore mode: hamburger button (top-left), locate-me button (bottom-left), and a bottom-center action bar with RIDE, Search (magnifying glass), and EDIT buttons.
+- Navigate mode (stub): green top banner and a STOP button at bottom-center.
+- Edit mode (stub): blue top bar with DISCARD, trip title, and SAVE.
+- `ic_menu` and `ic_search` vector drawables.
+
+### Changed
+- Locate-me button moved from top-left to bottom-left to make room for the hamburger.
+- Crosshair visibility is now mode-aware: always visible in Edit mode, otherwise follows panning state as before.
+
+### Added
 - Version card: small overlay in the bottom-right corner of the map shows the installed build's short commit hash. Tapping checks GitHub for a newer pre-release; if one exists, it downloads the APK (with a progress overlay) and opens the system package installer.
 - Drag line now appears as soon as the long-press threshold is reached (500 ms into the hold) — no longer waits for key release.
 
