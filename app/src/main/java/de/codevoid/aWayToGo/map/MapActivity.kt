@@ -5,9 +5,16 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
 import android.graphics.PointF
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
@@ -841,40 +848,77 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Explore mode action bar: two half-pill buttons tucked behind a large central
-     * search circle, creating a single fused control.
+     * Explore mode action bar: two half-pill buttons flanking a large central search
+     * circle, with a clean 2dp gap. Each button's inner edge is a concave arc that
+     * follows the circle outline exactly.
      *
      * Layout (z-order: row behind, circle on top):
      *
-     *         ┌──────────────────────────────────────┐
-     *         │  RIDE  │   [hidden gap]   │   Plan   │  ← half-pill row (btnH tall)
-     *         └──────────────────────────────────────┘
-     *                     ╔════════╗
-     *                     ║  🔍   ║  ← circle (circleSize tall, overlaps inner edges)
-     *                     ║ Search ║
-     *                     ╚════════╝
+     *       ╭──────╮           ╭──────╮
+     *       │ RIDE )           ( Plan │  ← concave inner edge, 2dp gap from circle
+     *       ╰──────╯           ╰──────╯
+     *                ╔══════╗
+     *                ║  🔍  ║  ← circle, sits cleanly between the two buttons
+     *                ║Search║
+     *                ╚══════╝
      *
-     * The inner edges of both buttons are square (radius=0) so they slide cleanly
-     * behind the circle. Outer edges are fully rounded (radius = btnH/2 → pill).
+     * Implemented via Path.Op.DIFFERENCE: half-pill base shape (addRoundRect) minus
+     * a circle enlarged by 2dp (the gap) punched out of the inner edge.
+     *
+     * Geometry: circle centre in row-local coords = (rowWidth/2, btnH/2).
+     * In rideBtn-local coords that is (+200dp, +32dp); in planBtn-local it is
+     * (−28dp, +32dp). The cutout radius of 74dp (72 + 2dp gap) produces a constant
+     * 2dp radial separation between button edge and circle edge at every point.
      */
     private fun buildExploreBottomBar(): FrameLayout {
         val d          = resources.displayMetrics.density
         val circleSize = (144 * d).toInt()
         val btnH       = (64 * d).toInt()
         val btnW       = (172 * d).toInt()
-        val overlap    = (44 * d).toInt()    // how far each button slides under the circle
+        val overlap    = (44 * d).toInt()
         val spacerW    = (circleSize - overlap * 2).coerceAtLeast(0)
         val outerR     = btnH / 2f
+        val cutoutR    = circleSize / 2f + (2 * d)   // circle radius + 2dp gap
 
-        fun halfPillDrawable(roundLeft: Boolean, color: Int): GradientDrawable {
+        // Circle centre in row-local coordinates.
+        // Both the row and the circle are centred (Gravity.CENTER) in the FrameLayout,
+        // so the circle centre x = rowWidth / 2.
+        val rowWidth     = 2f * btnW + spacerW
+        val circleCX_row = rowWidth / 2f
+        val circleCY     = btnH / 2f   // circle and buttons share the same vertical centre
+
+        // Minimal path-backed solid-colour Drawable (GradientDrawable can't do concave arcs).
+        fun pathDrawable(path: Path, color: Int): Drawable = object : Drawable() {
+            private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.color = color; style = Paint.Style.FILL
+            }
+            override fun draw(canvas: Canvas) = canvas.drawPath(path, paint)
+            override fun setAlpha(a: Int) { paint.alpha = a }
+            override fun setColorFilter(cf: ColorFilter?) { paint.colorFilter = cf }
+            @Suppress("OVERRIDE_DEPRECATION")
+            override fun getOpacity() = PixelFormat.TRANSLUCENT
+        }
+
+        // Half-pill outline with a circular notch on the inner edge (Path.Op.DIFFERENCE).
+        fun makeButtonPath(roundLeft: Boolean): Path {
+            // planBtn starts further right in the row, so its circle centre is negative in local x.
+            val btnLeft = if (roundLeft) 0f else (btnW + spacerW).toFloat()
+            val cx = circleCX_row - btnLeft   // circle centre x in button-local coords
+            val cy = circleCY
             val radii = if (roundLeft)
                 floatArrayOf(outerR, outerR, 0f, 0f, 0f, 0f, outerR, outerR)
             else
                 floatArrayOf(0f, 0f, outerR, outerR, outerR, outerR, 0f, 0f)
-            return GradientDrawable().apply { cornerRadii = radii; setColor(color) }
+            return Path().apply {
+                addRoundRect(RectF(0f, 0f, btnW.toFloat(), btnH.toFloat()), radii, Path.Direction.CW)
+                val circle = Path()
+                circle.addCircle(cx, cy, cutoutR, Path.Direction.CW)
+                op(circle, Path.Op.DIFFERENCE)
+            }
         }
 
         fun makeHalfPill(label: String, roundLeft: Boolean, onClick: () -> Unit): TextView {
+            val path = makeButtonPath(roundLeft)
             return TextView(this).apply {
                 text = label
                 setTextColor(Color.WHITE)
@@ -883,8 +927,8 @@ class MapActivity : ComponentActivity() {
                 gravity = Gravity.CENTER
                 background = RippleDrawable(
                     ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                    halfPillDrawable(roundLeft, Color.argb(180, 0, 0, 0)),
-                    halfPillDrawable(roundLeft, Color.WHITE),
+                    pathDrawable(path, Color.argb(180, 0, 0, 0)),
+                    pathDrawable(path, Color.WHITE),
                 )
                 isClickable = true
                 isFocusable = true
