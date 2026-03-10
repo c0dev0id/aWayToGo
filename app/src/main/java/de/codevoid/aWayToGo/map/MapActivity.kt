@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.map
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -13,12 +14,16 @@ import android.os.Bundle
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -28,7 +33,17 @@ import de.codevoid.aWayToGo.R
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -71,6 +86,11 @@ private const val METERS_PER_DEGREE_LAT  = 111320.0
 // Desired pan speed in screen pixels per second.
 private const val PAN_SPEED_PX_PER_SEC = 120f
 
+// Analog joystick sensitivity multiplier (0.0–1.0).
+// 1.0 = full PAN_SPEED_PX_PER_SEC at maximum deflection.
+// 0.5 = half speed — easier to make small adjustments.
+private const val JOY_SENSITIVITY = 0.5f
+
 // Desired zoom speed in MapLibre zoom levels per second.
 private const val ZOOM_SPEED_PER_SEC = 1.5f
 
@@ -112,6 +132,11 @@ class MapActivity : ComponentActivity() {
     private lateinit var osdView: TextView
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: View
+    private lateinit var versionCardView: TextView
+
+    // Progress overlay shown during APK download (null when not downloading).
+    private var downloadOverlay: View? = null
+    private var downloadProgressBar: ProgressBar? = null
 
     private var map: MapLibreMap? = null
     private var style: Style? = null
@@ -184,11 +209,13 @@ class MapActivity : ComponentActivity() {
                 }
 
                 // Analog joystick — no ramp, magnitude IS the speed fraction.
+                // JOY_SENSITIVITY scales down the effective pan speed for finer control.
                 if (joyDx != 0f || joyDy != 0f) {
-                    val px = PAN_SPEED_PX_PER_SEC * PAN_LOOK_AHEAD_MS / 1000f
+                    val px = PAN_SPEED_PX_PER_SEC * JOY_SENSITIVITY * PAN_LOOK_AHEAD_MS / 1000f
                     totalDx +=  joyDx * px
                     totalDy += -joyDy * px   // joy Y+ = screen-up = subtract from dy
-                    val joySpeed = maxOf(kotlin.math.abs(joyDx), kotlin.math.abs(joyDy)) * PAN_SPEED_PX_PER_SEC
+                    val joySpeed = maxOf(kotlin.math.abs(joyDx), kotlin.math.abs(joyDy)) *
+                        PAN_SPEED_PX_PER_SEC * JOY_SENSITIVITY
                     if (joySpeed > panSpeed) panSpeed = joySpeed
                 }
 
@@ -360,6 +387,31 @@ class MapActivity : ComponentActivity() {
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
             ),
+        )
+
+        // Version card — bottom-right corner.  Shows the installed build's short
+        // commit hash.  Tap to check GitHub for a newer pre-release and install it.
+        versionCardView = TextView(this).apply {
+            text = BuildConfig.GIT_COMMIT
+            setTextColor(Color.WHITE)
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            setPadding(
+                (8 * density).toInt(), (4 * density).toInt(),
+                (8 * density).toInt(), (4 * density).toInt(),
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onVersionCardTapped() }
+        }
+        root.addView(
+            versionCardView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END,
+            ).apply { setMargins(0, 0, btnMargin, btnMargin) },
         )
 
         setContentView(root)
@@ -608,6 +660,187 @@ class MapActivity : ComponentActivity() {
         flyToLocation(m, LatLng(loc.latitude, loc.longitude))
     }
 
+    // ── Self-update ───────────────────────────────────────────────────────────
+
+    /**
+     * Tap handler for the version card.
+     *
+     * Checks GitHub for a pre-release newer than the current build, then
+     * downloads and opens it with the package installer if one is found.
+     * The card text reflects the current state (checking / up to date / error).
+     */
+    private fun onVersionCardTapped() {
+        // Ignore taps while already busy (text is not the commit hash).
+        if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
+        versionCardView.text = "checking…"
+
+        lifecycleScope.launch {
+            val apkUrl = fetchLatestPreReleaseApkUrl()
+            if (apkUrl == null) {
+                versionCardView.text = "up to date"
+                delay(2_000)
+                versionCardView.text = BuildConfig.GIT_COMMIT
+                return@launch
+            }
+
+            showDownloadOverlay()
+            try {
+                val apk = downloadApk(apkUrl) { pct -> downloadProgressBar?.progress = pct }
+                hideDownloadOverlay()
+                installApk(apk)
+            } catch (_: Exception) {
+                hideDownloadOverlay()
+                versionCardView.text = "error"
+                delay(2_000)
+                versionCardView.text = BuildConfig.GIT_COMMIT
+            }
+        }
+    }
+
+    /**
+     * Fetches the GitHub releases list and returns the download URL of the APK
+     * asset from the latest pre-release that is newer than this build.
+     * Returns null if no such release exists or on any network/parse error.
+     */
+    private suspend fun fetchLatestPreReleaseApkUrl(): String? = withContext(Dispatchers.IO) {
+        try {
+            val conn = URL("https://api.github.com/repos/c0dev0id/aWayToGo/releases")
+                .openConnection() as HttpURLConnection
+            conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            conn.connect()
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+
+            val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+
+            var bestTime = 0L
+            var bestUrl: String? = null
+
+            val releases = JSONArray(body)
+            for (i in 0 until releases.length()) {
+                val rel = releases.getJSONObject(i)
+                if (!rel.optBoolean("prerelease")) continue
+                val published = fmt.parse(rel.optString("published_at"))?.time ?: continue
+                if (published <= BuildConfig.BUILD_TIME) continue   // not newer than this build
+                if (published <= bestTime) continue                  // not the best candidate
+
+                val assets = rel.optJSONArray("assets") ?: continue
+                for (j in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(j)
+                    if (asset.optString("name").endsWith(".apk")) {
+                        bestUrl  = asset.optString("browser_download_url")
+                        bestTime = published
+                        break
+                    }
+                }
+            }
+            bestUrl
+        } catch (_: Exception) { null }
+    }
+
+    /** Shows a semi-transparent overlay with a horizontal progress bar. */
+    private fun showDownloadOverlay() {
+        val d = resources.displayMetrics.density
+
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max      = 100
+            progress = 0
+        }
+        downloadProgressBar = bar
+
+        val label = TextView(this).apply {
+            text = "Downloading update…"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setPadding(0, 0, 0, (8 * d).toInt())
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.argb(230, 24, 24, 24))
+            setPadding((24 * d).toInt(), (20 * d).toInt(), (24 * d).toInt(), (20 * d).toInt())
+            addView(label)
+            addView(bar, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
+        }
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            isClickable = true   // consume touches so nothing behind is tapped
+            addView(container, FrameLayout.LayoutParams(
+                (280 * d).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+        downloadOverlay = overlay
+
+        (window.decorView as ViewGroup).addView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+    }
+
+    private fun hideDownloadOverlay() {
+        downloadOverlay?.let { (window.decorView as? ViewGroup)?.removeView(it) }
+        downloadOverlay    = null
+        downloadProgressBar = null
+    }
+
+    /**
+     * Downloads the APK at [url] to externalCacheDir/update.apk.
+     * Calls [onProgress] (0–100) on the main thread as data arrives.
+     * Must be called from a coroutine; suspends on IO.
+     */
+    private suspend fun downloadApk(url: String, onProgress: (Int) -> Unit): File =
+        withContext(Dispatchers.IO) {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn.connect()
+            val total = conn.contentLengthLong
+            val dest  = File(externalCacheDir, "update.apk")
+            var lastPct = -1
+
+            conn.inputStream.use { input ->
+                dest.outputStream().use { output ->
+                    val buf = ByteArray(65_536)
+                    var downloaded = 0L
+                    var read: Int
+                    while (input.read(buf).also { read = it } != -1) {
+                        output.write(buf, 0, read)
+                        downloaded += read
+                        if (total > 0) {
+                            val pct = (downloaded * 100 / total).toInt()
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                withContext(Dispatchers.Main) { onProgress(pct) }
+                            }
+                        }
+                    }
+                }
+            }
+            dest
+        }
+
+    /** Opens the downloaded APK with the system package installer. */
+    private fun installApk(file: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        startActivity(
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+    }
+
     /**
      * Animate the camera to [target] at [zoom].
      *
@@ -651,9 +884,9 @@ class MapActivity : ComponentActivity() {
     /**
      * Draw (or update) the navigation drag line from [from] to [to].
      *
-     * Visual spec: 6dp red fill with 2dp dark-red casing (= 10dp casing layer
-     * drawn first, 6dp fill layer drawn on top), plus a distance label placed
-     * at the midpoint of the line and rotated to follow it.
+     * Visual spec: 4.5dp red fill with 1.5dp dark-red casing on each side
+     * (= 7.5dp casing drawn first, 4.5dp fill on top), both at 60% opacity,
+     * plus a distance label placed at the midpoint and rotated to follow it.
      *
      * On the first call the GeoJSON source and three style layers are created.
      * On subsequent calls only the source data is updated — the layers stay.
@@ -685,12 +918,14 @@ class MapActivity : ComponentActivity() {
 
         s.addSource(GeoJsonSource(SOURCE_DRAG_LINE, collection))
 
-        // Casing — dark-red, wider than the fill so 2dp sticks out on each side.
+        // Casing — dark-red, wider than the fill so 1.5dp sticks out on each side.
+        // Original: 10dp.  Reduced by 25%: 7.5dp.
         s.addLayer(
             LineLayer(LAYER_DRAG_LINE_CASING, SOURCE_DRAG_LINE).apply {
                 setProperties(
                     PropertyFactory.lineColor("#8B0000"),
-                    PropertyFactory.lineWidth(10f),
+                    PropertyFactory.lineWidth(7.5f),
+                    PropertyFactory.lineOpacity(0.6f),
                     PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
@@ -698,11 +933,13 @@ class MapActivity : ComponentActivity() {
         )
 
         // Fill — red, drawn on top of the casing.
+        // Original: 6dp.  Reduced by 25%: 4.5dp.
         s.addLayer(
             LineLayer(LAYER_DRAG_LINE_FILL, SOURCE_DRAG_LINE).apply {
                 setProperties(
                     PropertyFactory.lineColor("#FF0000"),
-                    PropertyFactory.lineWidth(6f),
+                    PropertyFactory.lineWidth(4.5f),
+                    PropertyFactory.lineOpacity(0.6f),
                     PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )

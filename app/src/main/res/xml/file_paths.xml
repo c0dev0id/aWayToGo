@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider path configuration for self-update downloads.
+    The downloaded APK is saved to externalCacheDir ("update.apk") and shared
+    with the package installer via a content:// URI so no storage permissions
+    are required.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-cache-path name="update" path="." />
+</paths>

@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -31,8 +33,14 @@ class RemoteControlManager(private val context: Context) {
     private val _events = MutableSharedFlow<RemoteEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<RemoteEvent> = _events.asSharedFlow()
 
-    // Tracks the timestamp of key_press for long-press candidates
-    private val pressTimestamps = mutableMapOf<RemoteKey, Long>()
+    // Handler for scheduling the eager long-press timer on the main thread.
+    private val handler = Handler(Looper.getMainLooper())
+
+    // Per-key pending long-press Runnables (cancelled on key-up if not yet fired).
+    private val pendingLongPress = mutableMapOf<RemoteKey, Runnable>()
+
+    // Keys for which the long-press timer has already fired this press cycle.
+    private val longPressEmitted = mutableSetOf<RemoteKey>()
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -66,25 +74,35 @@ class RemoteControlManager(private val context: Context) {
 
     private fun onKeyPress(keyCode: Int) {
         val key = RemoteKey.fromKeyCode(keyCode) ?: return
-        if (key in LONG_PRESS_KEYS) {
-            pressTimestamps[key] = System.currentTimeMillis()
-        }
+        Log.d(TAG, "key_press=$keyCode → $key")
         _events.tryEmit(RemoteEvent.KeyDown(key))
+        if (key in LONG_PRESS_KEYS) {
+            // Schedule the LongPress event to fire after the threshold while the
+            // key is still held — no need to wait for key_release.
+            val runnable = Runnable {
+                Log.d(TAG, "long_press fired for $key (held >= ${LONG_PRESS_THRESHOLD_MS}ms)")
+                longPressEmitted += key
+                _events.tryEmit(RemoteEvent.LongPress(key))
+            }
+            pendingLongPress[key] = runnable
+            handler.postDelayed(runnable, LONG_PRESS_THRESHOLD_MS)
+        }
     }
 
     private fun onKeyRelease(keyCode: Int) {
         val key = RemoteKey.fromKeyCode(keyCode) ?: return
+        Log.d(TAG, "key_release=$keyCode → $key")
         _events.tryEmit(RemoteEvent.KeyUp(key))
 
-        val pressTime = pressTimestamps.remove(key)
-        val isLongPress = pressTime != null &&
-            key in LONG_PRESS_KEYS &&
-            (System.currentTimeMillis() - pressTime) >= LONG_PRESS_THRESHOLD_MS
+        // Cancel the pending timer if the key was released before it fired.
+        pendingLongPress.remove(key)?.let { handler.removeCallbacks(it) }
 
-        _events.tryEmit(
-            if (isLongPress) RemoteEvent.LongPress(key)
-            else RemoteEvent.ShortPress(key)
-        )
+        // Emit ShortPress only if the long-press timer did NOT already fire.
+        if (key !in longPressEmitted) {
+            _events.tryEmit(RemoteEvent.ShortPress(key))
+        } else {
+            longPressEmitted -= key
+        }
     }
 
     private fun onJoy(value: String) {
@@ -127,6 +145,10 @@ class RemoteControlManager(private val context: Context) {
     }
 
     fun unregister() {
+        // Cancel any in-flight long-press timers so they don't fire after unregister.
+        for ((_, runnable) in pendingLongPress) handler.removeCallbacks(runnable)
+        pendingLongPress.clear()
+        longPressEmitted.clear()
         try {
             context.unregisterReceiver(receiver)
             Log.d(TAG, "receiver unregistered")

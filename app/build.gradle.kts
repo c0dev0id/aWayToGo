@@ -2,6 +2,16 @@ plugins {
     id("com.android.application")
 }
 
+// Injects the short git commit hash at build time so the version card in
+// MapActivity can display the installed build and the update checker can
+// compare it against GitHub releases.
+fun getGitCommit(): String = try {
+    val proc = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+        .directory(rootProject.projectDir)
+        .start()
+    proc.inputStream.bufferedReader().readText().trim().also { proc.waitFor() }
+} catch (_: Exception) { "unknown" }
+
 android {
     namespace = "de.codevoid.aWayToGo"
     compileSdk = 36
@@ -13,6 +23,8 @@ android {
         versionCode = 1
         versionName = "1.0"
         buildConfigField("String", "MAPTILER_KEY", "\"${System.getenv("MAPTILER_KEY") ?: ""}\"")
+        buildConfigField("String", "GIT_COMMIT",   "\"${getGitCommit()}\"")
+        buildConfigField("Long",   "BUILD_TIME",   "${System.currentTimeMillis()}L")
 
         // Only include device ABIs — drops x86/x86_64 emulator libs (~30–40 MB)
         ndk {
