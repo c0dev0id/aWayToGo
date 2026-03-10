@@ -1383,14 +1383,6 @@ class MapActivity : ComponentActivity() {
         val hamburgerBtn = FrameLayout(this).apply {
             isClickable = true
             isFocusable = true
-            background = RippleDrawable(
-                ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
-                null,
-                GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.WHITE)
-                },
-            )
             setOnClickListener { toggleMenu() }
             hamburgerIcon = ImageView(this@MapActivity).apply {
                 setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_menu))
