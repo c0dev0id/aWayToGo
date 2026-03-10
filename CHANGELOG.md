@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Hamburger and layers buttons replaced by an edge-attached drawer panel. The panel is 1/4 of the screen width; only a 52dp pad column (rounded on the right, square on the left) sticks out from the left edge when closed. Tapping a pad toggles the drawer open/closed with a 260ms animated slide. Dragging a pad progressively reveals the panel and snaps open or closed on release depending on travel distance. When the drawer opens, the MapLibre camera focal point and the explore bar both shift right so the map stays centred in the remaining 3/4 of the screen.
+
 ### Added
 - Three-mode UI skeleton: Explore, Navigate, and Edit modes are now distinct UI states managed by `AppMode` and `setMode()`. Each mode shows its own chrome and hides the others. Buttons are wired for mode transitions; no business logic is attached yet.
 - Explore mode: hamburger button (top-left), locate-me button (bottom-left), and a fused bottom-center action bar — Ride and Plan half-pill buttons tuck behind a larger circular Search button, creating one cohesive control. Button renamed Edit → Plan.

@@ -18,10 +18,13 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.animation.ValueAnimator
 import android.view.Choreographer
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -148,8 +151,13 @@ class MapActivity : ComponentActivity() {
     private lateinit var versionCardView: TextView
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
-    private lateinit var hamburgerButton: ImageView
-    private lateinit var layersButton: ImageView
+    // Left-edge drawer: a panel (1/4 screen) that slides in from the left.
+    // Only the "pad" column (drawerPadWidth) is visible when closed.
+    private lateinit var drawerPanel: FrameLayout
+    private var drawerPanelWidth = 0    // screen width / 4, set in onCreate
+    private var drawerPadWidth   = 0    // 52dp — the tab that sticks out
+    private var isDrawerOpen     = false
+
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var editTopBar: LinearLayout
@@ -427,21 +435,16 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, 0, 0, btnMargin) },
         )
 
-        // Hamburger — top-left, opens library / settings (stub).
-        hamburgerButton = makeCircleButton(R.drawable.ic_menu) { /* stub */ }
+        // Left-edge drawer — hamburger + layers pads that slide out to reveal a menu panel.
+        drawerPanelWidth = resources.displayMetrics.widthPixels / 4
+        drawerPadWidth   = (52 * density).toInt()
+        drawerPanel = buildDrawerPanel()
         root.addView(
-            hamburgerButton,
-            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
-                .apply { setMargins(btnMargin, btnMargin, 0, 0) },
+            drawerPanel,
+            FrameLayout.LayoutParams(drawerPanelWidth, FrameLayout.LayoutParams.MATCH_PARENT),
         )
-
-        // Layers button — directly below hamburger, same left margin.
-        layersButton = makeCircleButton(R.drawable.ic_layers) { /* stub — map layer config */ }
-        root.addView(
-            layersButton,
-            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
-                .apply { setMargins(btnMargin, btnMargin + btnSize + btnMargin, 0, 0) },
-        )
+        // Start with only the pads visible at the left screen edge.
+        drawerPanel.translationX = -(drawerPanelWidth - drawerPadWidth).toFloat()
 
         // Crosshair — gradient arms fading to transparent + circular reticle at centre.
         // Only visible in panning mode.
@@ -774,8 +777,9 @@ class MapActivity : ComponentActivity() {
         val inNavigate = mode == AppMode.NAVIGATE
         val inEdit     = mode == AppMode.EDIT
 
-        hamburgerButton.visibility  = if (inExplore)  View.VISIBLE else View.GONE
-        layersButton.visibility     = if (inExplore)  View.VISIBLE else View.GONE
+        // Close and hide the drawer when leaving Explore mode.
+        if (!inExplore && isDrawerOpen) closeDrawer(animate = false)
+        drawerPanel.visibility      = if (inExplore)  View.VISIBLE else View.GONE
         myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
         exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
         navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
@@ -854,6 +858,157 @@ class MapActivity : ComponentActivity() {
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
+        }
+    }
+
+    // ── Drawer ────────────────────────────────────────────────────────────────
+
+    /**
+     * Builds the left-edge drawer panel (width = [drawerPanelWidth]).
+     *
+     * Structure (viewed left-to-right when fully open):
+     *
+     *   ┌───────────────────────┬────────┐
+     *   │   content area        │ pads   │  ← drawerPanel (full height)
+     *   │   (menu stubs)        │  ☰     │
+     *   │                       │  ⊞     │
+     *   └───────────────────────┴────────┘
+     *    ← contentWidth ────────→ padWidth
+     *
+     * When closed: translationX = -contentWidth → only the pads column is on-screen.
+     * When open:   translationX = 0             → full panel visible.
+     *
+     * Drag gesture on either pad slides the panel; releasing past the 50% point
+     * snaps open, before 50% snaps closed.  A short tap (< 8dp travel) toggles.
+     */
+    private fun buildDrawerPanel(): FrameLayout {
+        val d           = resources.displayMetrics.density
+        val padH        = (64 * d).toInt()
+        val padGap      = (16 * d).toInt()
+        val iconPad     = (12 * d).toInt()
+        val contentWidth = drawerPanelWidth - drawerPadWidth
+
+        // Pad shape: right side rounded (pill), left side square (flush with panel edge).
+        fun padBg(color: Int): GradientDrawable = GradientDrawable().apply {
+            val r = padH / 2f
+            cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+            setColor(color)
+        }
+
+        fun makePad(iconRes: Int): ImageView = ImageView(this).apply {
+            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, iconRes))
+            setPadding(iconPad, iconPad, iconPad, iconPad)
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                padBg(Color.argb(200, 0, 0, 0)),
+                padBg(Color.WHITE),
+            )
+            isClickable = true
+            isFocusable = true
+        }
+
+        val menuPad   = makePad(R.drawable.ic_menu)
+        val layersPad = makePad(R.drawable.ic_layers)
+
+        // Shared touch: drag to reveal, short tap to toggle.
+        var dragStartRawX        = 0f
+        var dragStartTranslation = 0f
+        val tapSlop              = 8 * d
+        val closedT              = -contentWidth.toFloat()
+
+        val touchListener = View.OnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartRawX        = event.rawX
+                    dragStartTranslation = drawerPanel.translationX
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val newT = (dragStartTranslation + event.rawX - dragStartRawX)
+                        .coerceIn(closedT, 0f)
+                    setDrawerTranslation(newT)
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (kotlin.math.abs(event.rawX - dragStartRawX) < tapSlop) {
+                        if (isDrawerOpen) closeDrawer() else openDrawer()
+                    } else {
+                        if (drawerPanel.translationX > closedT / 2f) openDrawer()
+                        else closeDrawer()
+                    }
+                }
+            }
+            true
+        }
+        menuPad.setOnTouchListener(touchListener)
+        layersPad.setOnTouchListener(touchListener)
+
+        // Content placeholder (revealed when drawer opens).
+        val content = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(230, 24, 24, 24))
+            addView(
+                TextView(this@MapActivity).apply {
+                    text = "Menu"   // stub
+                    setTextColor(Color.WHITE)
+                    textSize = 20f
+                    gravity = Gravity.CENTER
+                },
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER,
+                ),
+            )
+        }
+
+        // Pads column at the right edge of the panel.
+        val padsCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, padGap, 0, 0)
+            addView(menuPad,   LinearLayout.LayoutParams(drawerPadWidth, padH))
+            addView(View(this@MapActivity), LinearLayout.LayoutParams(drawerPadWidth, padGap))
+            addView(layersPad, LinearLayout.LayoutParams(drawerPadWidth, padH))
+        }
+
+        return FrameLayout(this).apply {
+            addView(content, FrameLayout.LayoutParams(contentWidth, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(padsCol, FrameLayout.LayoutParams(drawerPadWidth, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.TOP))
+        }
+    }
+
+    /**
+     * Moves the drawer to translation [t] and synchronises dependents:
+     * - [exploreBottomBar] shifts right so it stays centred in the non-drawer area.
+     * - The MapLibre camera focal point shifts via content padding.
+     */
+    private fun setDrawerTranslation(t: Float) {
+        drawerPanel.translationX = t
+        val contentWidth  = (drawerPanelWidth - drawerPadWidth).toFloat()
+        val openFraction  = 1f + t / contentWidth   // 0 = closed, 1 = fully open
+        exploreBottomBar.translationX = openFraction * drawerPanelWidth / 2f
+        map?.setPadding((openFraction * drawerPanelWidth).toInt(), 0, 0, 0)
+    }
+
+    private fun openDrawer(animate: Boolean = true) {
+        isDrawerOpen = true
+        if (!animate) { setDrawerTranslation(0f); return }
+        val from = drawerPanel.translationX
+        ValueAnimator.ofFloat(from, 0f).apply {
+            duration = 260
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { setDrawerTranslation(it.animatedValue as Float) }
+            start()
+        }
+    }
+
+    private fun closeDrawer(animate: Boolean = true) {
+        isDrawerOpen = false
+        val closedT = -(drawerPanelWidth - drawerPadWidth).toFloat()
+        if (!animate) { setDrawerTranslation(closedT); return }
+        val from = drawerPanel.translationX
+        ValueAnimator.ofFloat(from, closedT).apply {
+            duration = 260
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { setDrawerTranslation(it.animatedValue as Float) }
+            start()
         }
     }
 
