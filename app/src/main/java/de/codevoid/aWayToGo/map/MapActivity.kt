@@ -381,14 +381,15 @@ class MapActivity : ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        // Seamless rotation: suppress the OS freeze-and-rotate animation.
-        // The default ROTATION_ANIMATION_ROTATE captures a screenshot of the window,
-        // plays a rotate/crossfade transition, then reveals the new layout — this is
-        // what looks like "everything redraws" even when configChanges prevents
-        // Activity recreation.  SEAMLESS tells the compositor to skip that animation
-        // and let the window resize in place, which is invisible to the user.
+        // Suppress the OS rotation animation entirely.
+        // ROTATION_ANIMATION_SEAMLESS is ideal but silently falls back to CROSSFADE
+        // when the GL SurfaceView cannot be composited seamlessly — and CROSSFADE
+        // fades through black, which is worse than no animation.
+        // JUMPCUT skips the animation entirely: the window resizes in place with no
+        // freeze frame, no fade, and no black flash.  For a full-screen map that
+        // handles its own configChanges this is the cleanest result.
         window.attributes = window.attributes.apply {
-            rotationAnimation = android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_SEAMLESS
+            rotationAnimation = android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_JUMPCUT
         }
 
         // MapLibre must be initialized first — HttpRequestUtil.setOkHttpClient()
@@ -1393,7 +1394,7 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        val avatarSz = (56 * d).toInt()
+        val avatarSz = itemH   // 64dp — fills the entire button circle when collapsed
 
         // Three-bar hamburger icon: each bar is a separate View so they can be rotated
         // individually during open/close.  All pivots point to the icon centre (32dp, 32dp)
@@ -1405,12 +1406,15 @@ class MapActivity : ComponentActivity() {
         //   bar 2 centre at ¾ of content height = 42dp from top
         //
         // pivotY for each bar = iconCY − barTop, so the rotation axis is always the
-        // icon centre (32dp) in parent coordinates.  pivotX = iconCX − btnPad = 20dp.
-        val barH      = (3 * d).toInt().coerceAtLeast(2)
-        val barW      = ((itemH - 2 * btnPad) * 0.9f).toInt()  // 36dp (90% of 40dp)
-        val contentH  = itemH - 2 * btnPad          // 40dp
-        val iconCX    = itemH / 2f                  // 32dp in px
-        val iconCY    = itemH / 2f
+        // icon centre (32dp) in parent coordinates.
+        // pivotX = barW/2 because the bar is centred on iconCX, so bar.left = iconCX − barW/2
+        // and bar.left + pivotX = iconCX − barW/2 + barW/2 = iconCX.
+        val barH         = (3 * d).toInt().coerceAtLeast(2)
+        val barW         = (32 * d).toInt()                      // 32dp, centred on icon
+        val contentH     = itemH - 2 * btnPad                    // 40dp
+        val iconCX       = itemH / 2f                            // 32dp in px
+        val iconCY       = itemH / 2f
+        val barLeftMargin = (iconCX - barW / 2f).toInt()         // 16dp — centres bar on icon
 
         hamburgerBars = Array(3) { i ->
             val barCY  = btnPad + contentH * (i + 1f) / 4f   // 22, 32, 42 dp
@@ -1421,13 +1425,13 @@ class MapActivity : ComponentActivity() {
                     cornerRadius = barH / 2f
                     setColor(Color.WHITE)
                 }
-                pivotX = iconCX - btnPad          // 20dp from bar's left = icon centre X
+                pivotX = barW / 2f                // centre of bar = iconCX in parent coords
                 pivotY = iconCY - barTop          // distance from bar's top to icon centre Y
             }
         }
 
         // Hamburger button container — clipChildren=false lets the bars draw outside their
-        // own 40×3dp layout rectangles during rotation without being clipped.
+        // own 32×3dp layout rectangles during rotation without being clipped.
         val hamburgerBtn = FrameLayout(this).apply {
             clipChildren = false
             isClickable  = true
@@ -1439,7 +1443,7 @@ class MapActivity : ComponentActivity() {
                 addView(bar, FrameLayout.LayoutParams(barW, barH).apply {
                     gravity    = Gravity.TOP or Gravity.START
                     topMargin  = barTop
-                    leftMargin = btnPad
+                    leftMargin = barLeftMargin
                 })
             }
         }
@@ -1482,13 +1486,14 @@ class MapActivity : ComponentActivity() {
             })
 
             // Profile avatar added first (lower z) so hamburger bars render on top.
-            // Centre the avatar at the panel's top-right corner-arc centre (radius, radius)
-            // by setting margin = cornerRadius − avatarRadius = 32 − 28 = 4 dp on both
-            // top and right.  clipToOutline clips it cleanly to the rounded corner.
+            // avatarSz == itemH (64dp): when collapsed, the avatar exactly fills the
+            // 64×64dp panel and clipToOutline clips it to the same circle as the button.
+            // 0 margins place it flush at the top-right corner; when expanded the panel's
+            // cornerRadius clips it naturally to the rounded corner arc.
             addView(profileAvatar, FrameLayout.LayoutParams(avatarSz, avatarSz).apply {
                 gravity   = Gravity.TOP or Gravity.END
-                topMargin = (radius - avatarSz / 2f).toInt()   // = 4 dp
-                marginEnd = (radius - avatarSz / 2f).toInt()   // = 4 dp
+                topMargin = 0
+                marginEnd = 0
             })
 
             // Hamburger button on top (higher z) so bars are visible over the avatar.
