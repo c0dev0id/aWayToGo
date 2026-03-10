@@ -115,23 +115,53 @@ As UI panels are added, each ViewModel will consume `remoteEvents` and handle di
 
 Each domain has its own Repository and UseCases. The rest of the app never talks to infrastructure directly — always through the Repository.
 
-**MapDomain** — tile source, MBTiles management, camera state, offline area tracking.
+**MapDomain** — tile source, MBTiles management, camera state, offline area tracking. Observes `PoiGroup.isVisible` from LibraryDomain and maintains corresponding GeoJSON sources and SymbolLayers in MapLibre.
 
 **RoutingDomain** — BRouter integration and profile management. BRouter runs as a bounded service inside the app process; a Kotlin wrapper isolates it so no other module touches BRouter directly.
 
-**NavigationDomain** — active navigation session, GPS tracking, off-route detection, TTS instructions. Runs as a Foreground Service to continue in the background. Publishes state as a `StateFlow` that the UI layer observes.
+**NavigationDomain** — active navigation session, GPS tracking, off-route detection, TTS instructions. Runs as a Foreground Service to continue in the background. Publishes state as a `StateFlow` that the UI layer observes. GPS is the single source of truth here — both LibraryDomain (RecorderDomain path) and MapDomain observe it.
 
-**GpxDomain** — GPX import, export, storage, and display. Triggers tile download suggestions via bounding box computation.
+**LibraryDomain** — the central data hub for all geographic data at rest. Owns four entity types (see below). All other domains that need geographic input (RoutingDomain, NavigationDomain, MapDomain overlays) read from the Library. All domains that produce geographic data (RecorderDomain, GpxImporter) write to it. The editor and RemoteDomain do both.
+
+**RecorderDomain** — ride recording session. Samples GPS + sensor data at a configurable rate, stores `RideMetricSample` rows in Room, and on session end creates a `RecordedRide` (a `Trip` with `type=RECORDED`) in LibraryDomain. Runs as part of the NavigationDomain Foreground Service (or a separate Foreground Service if recording without active navigation).
+
+**RemoteDomain** — backend API client, authentication, sync queue, and live position upload. All network backend concerns are isolated here. Other domains call `RemoteRepository` interfaces; they have no knowledge of the backend protocol.
 
 **SettingsDomain** — user preferences, backed by DataStore.
+
+### LibraryDomain — Entity Model
+
+GPX is a serialisation format, not the domain model. `GpxParser` and `GpxSerializer` are infrastructure classes that convert between GPX files and Library entities. The Library's internal representation is richer than GPX (typed Kotlin data, not freeform XML), and it is GPX-format-agnostic at the domain level.
+
+**`Trip`** — a named, stored journey. Fields: `id`, `name`, `description`, `type: TripType (PLANNED | RECORDED)`, `createdAt`, `updatedAt`, `distanceM`, `durationMs`, `elevationGainM`. Contains track geometry (list of `TrackPoint`) and optional waypoints. A `PLANNED` trip is user-created or imported. A `RECORDED` trip is produced by RecorderDomain and also carries a list of `RideMetricSample` rows in a joined Room table.
+
+**`RideMetricSample`** — one timestamped sensor snapshot belonging to a `RECORDED` Trip. Fields: `tripId` (FK), `timestamp`, `lat`, `lng`, `altM`, `speedKmh`, `leanAngleDeg`, `signalStrength`, and reserved columns for future sensors. Serialises to a GPX `<trkpt>` with `<extensions>` on export (custom namespace for lean angle and signal; Garmin TrackPointExtension for speed and altitude).
+
+**`Location`** — a hand-picked, curated place. Richer than a GPX waypoint — metadata that doesn't fit in GPX is stored natively. Fields: `id`, `name`, `description`, `address`, `lat`, `lng`, `category: LocationCategory`, `tags` (separate join table), `personalNotes`, `isFavourite`, `visitCount`, `lastVisitedAt`, `createdAt`, `updatedAt`, `syncId`. Optional future fields: phone, website, opening hours. The user maintains a small, curated list — not bulk data.
+
+**`PoiGroup`** — a named collection of bulk geographic points, used as a toggleable map layer. Fields: `id`, `name`, `description`, `iconId`, `sourceUrl` (optional — the URL the group was populated from, for manual re-fetch), `lastUpdatedAt`, `pointCount` (cached), `isVisible`, `syncId`. Points within a group are stored as `PoiPoint` rows.
+
+**`PoiPoint`** — a single point belonging to a `PoiGroup`. Fields: `id`, `groupId` (FK), `name`, `lat`, `lng`. Intentionally minimal — these are bulk data, not individually managed entities. Queried spatially via `WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?` for viewport-based map rendering.
+
+**Semantics that differ between `Location` and `PoiPoint`:**
+- A `Location` is individually created, edited, and deleted by the user.
+- `PoiPoint` rows are always managed as a group: the whole group is imported at once and replaced wholesale on re-fetch. Individual points are never edited.
+- A `PoiPoint` can be promoted to a `Location` via `PromotePoiToLocationUseCase` — copies coordinates and name, opens the Location editor pre-filled, creates a new `Location`. The `PoiPoint` is unchanged.
+
+**POI Group population:** The user can populate a group by (a) pasting text into an edit control, or (b) triggering a fetch from `sourceUrl`. The canonical line format is `lat,lng,name` (name optional; comma or tab separated; blank lines and `#`-prefixed lines ignored). The URL fetcher supports at minimum GPX `<wpt>` elements and the same CSV-like format. The UI for editing large groups (virtualized list vs. capped text area) is deferred — the data model is the same either way. Raw text is never stored; it is parsed to `PoiPoint` rows on save and re-serialised to text on open.
+
+**`isVisible` on `PoiGroup` is persisted, not transient UI state.** The map layer activation state survives app restarts. MapDomain observes `PoiGroup.isVisible` and maintains the corresponding GeoJSON source and SymbolLayer.
 
 ### Cross-Domain Workflows
 
 Domains do not depend on each other directly. Cross-domain workflows are orchestrated by UseCases that sit above the repositories:
 
 - **StartNavigationUseCase** — takes a `Route` from RoutingDomain, hands it to NavigationDomain, starts the foreground service.
-- **ImportGpxUseCase** — parses GPX via GpxDomain, computes bounding box, triggers MapDomain tile download suggestion.
+- **ImportGpxUseCase** — calls `GpxParser` (infrastructure), routes `<trk>` data to LibraryDomain as a `Trip(PLANNED)`, routes `<wpt>` data to LibraryDomain as `Location` or `PoiGroup` depending on count and user intent, computes bounding box and triggers MapDomain tile download suggestion.
 - **RerouteUseCase** — triggered by NavigationDomain off-route event, calls RoutingDomain with current GPS position, updates NavigationDomain with new route.
+- **PromotePoiToLocationUseCase** — copies a `PoiPoint`'s coordinates and name into a new `Location`, opens the Location editor pre-filled.
+- **SyncLibraryUseCase** — pushes/pulls Trips, Locations, and PoiGroups between LibraryDomain and RemoteDomain. Offline-first: works fully without a connection, syncs opportunistically when online.
+- **LiveTrackingUseCase** — wires NavigationDomain's GPS stream to `RemoteDomain.TrackingRepository.reportPosition()`. The repository decides whether to send immediately, batch, or queue for later. NavigationDomain has no knowledge of the backend.
 
 ### UI State Management
 
@@ -156,14 +186,20 @@ GPS is a single source of truth in NavigationRepository. Both NavigationDomain a
 
 ### Persistence
 
-Room owns all structured app data — GPX files, route history, downloaded area metadata. MBTiles files are stored as raw SQLite files on disk; Room tracks their metadata only.
+Room owns all structured app data. Key tables: `trips`, `ride_metric_samples`, `locations`, `location_tags`, `poi_groups`, `poi_points`, `downloaded_areas`. MBTiles files are stored as raw SQLite files on disk; Room tracks their metadata only. `PoiPoint` rows use plain lat/lng columns; viewport queries use `BETWEEN` range predicates, which are adequate for datasets up to tens of thousands of points per group.
 
 ## Core Features (Planned)
 
 - Offline map display with MBTiles tile cache
-- GPX track import, display, and export
+- GPX track import, display, and export (`GpxParser`/`GpxSerializer` in infrastructure layer)
 - Offline tile download — GPX bounding box mode and manual tile picker mode
 - Offline routing via BRouter with configurable profiles
 - Turn-by-turn navigation with TTS via foreground service
 - Off-route detection and automatic re-routing
 - Background navigation (continues when app is in background)
+- Ride recorder — samples GPS + sensors (speed, altitude, lean angle, signal) into `RideMetricSample` rows; saves as `Trip(RECORDED)`; exports to GPX with `<extensions>`
+- Library — user-managed Trips (planned + recorded), Locations (rich curated places), POI Groups (bulk toggleable map layers)
+- POI Group editor — populate from URL fetch or paste; `lat,lng,name` line format; stored as Room rows, not raw text
+- Location manager — individual curated places with rich metadata
+- Remote backend sync — offline-first; syncs Trips, Locations, POI Groups when online
+- Live position reporting to backend during a ride
