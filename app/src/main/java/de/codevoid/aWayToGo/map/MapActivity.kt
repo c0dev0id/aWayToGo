@@ -804,6 +804,53 @@ class MapActivity : ComponentActivity() {
     // ── Mode management ───────────────────────────────────────────────────────
 
     /**
+     * Apply (or animate) camera tilt and vertical focal-point offset for [mode].
+     *
+     * Navigate mode:
+     *   - 30° tilt — gives a perspective view of the road ahead.
+     *   - Top padding = 60 % of screen height — moves the GPS anchor point to
+     *     80 % from the top (30 % lower than the default screen centre), so
+     *     more of the road ahead is visible above the user's position.
+     *
+     * All other modes: flat (0° tilt), no padding.
+     *
+     * Both tilt and padding are delivered as a single [CameraPosition] update
+     * so MapLibre interpolates them together in one smooth 400 ms animation.
+     */
+    private fun applyCameraForMode(mode: AppMode, animated: Boolean) {
+        val m = map ?: return
+        val screenH = resources.displayMetrics.heightPixels
+
+        val targetTilt: Double
+        val topPad: Double
+        when (mode) {
+            AppMode.NAVIGATE -> {
+                targetTilt = 30.0
+                topPad     = screenH * 0.6   // GPS dot at ~80 % from top
+            }
+            else -> {
+                targetTilt = 0.0
+                topPad     = 0.0
+            }
+        }
+
+        val cur    = m.cameraPosition
+        val newPos = CameraPosition.Builder()
+            .target(cur.target)
+            .zoom(cur.zoom)
+            .bearing(cur.bearing)
+            .tilt(targetTilt)
+            .padding(doubleArrayOf(0.0, topPad, 0.0, 0.0))
+            .build()
+
+        if (animated) {
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(newPos), 400)
+        } else {
+            m.moveCamera(CameraUpdateFactory.newCameraPosition(newPos))
+        }
+    }
+
+    /**
      * Switch the app to [mode].
      *
      * The first call (during onCreate) applies visibilities instantly.
@@ -897,6 +944,9 @@ class MapActivity : ComponentActivity() {
 
         // ── Phase 2: slide incoming elements in ───────────────────────────────
         fun slideIn() {
+            // Animate camera tilt / focal-point offset in sync with the incoming UI.
+            applyCameraForMode(to, animated = true)
+
             when (to) {
                 AppMode.EXPLORE -> {
                     menuPanel.translationX        = -w

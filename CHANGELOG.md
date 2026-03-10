@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- Switching to Navigate (Ride) mode now applies a 30° camera tilt and shifts the GPS focal point to 30 % lower than screen centre (80 % from top), so more of the road ahead is visible above the user's position. Both tilt and focal offset animate together in 400 ms, starting in sync with the Navigate UI slide-in. Returning to Explore or Edit reverts to flat view with centred focal point.
 - The hamburger button and menu panel are now a single unified view. The panel starts at 64×64dp (identical appearance to the previous circular button) and expands to full size when opened, using a `ValueAnimator` on the layout params width and height. This eliminates two visual artifacts from the old scale-based approach: the top-left corner radius was visually wrong at small scales, and the separate button showed through the semi-transparent panel.
 - The hamburger icon rotates 90° as the menu opens and reverses on close, driven by the same animator as the size expansion.
 - Profile image placeholder moved to the right side of the profile row; the "Profile" label is removed.
