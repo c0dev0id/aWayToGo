@@ -1186,8 +1186,8 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        val rideBtn = makeHalfPill("Ride", roundLeft = true)  { flyToCurrentLocationThen { setMode(AppMode.NAVIGATE) } }
-        val planBtn = makeHalfPill("Plan", roundLeft = false) { flyToCurrentLocationThen { setMode(AppMode.EDIT) } }
+        val rideBtn = makeHalfPill("Ride", roundLeft = true)  { flyToCurrentLocationThen {}; setMode(AppMode.NAVIGATE) }
+        val planBtn = makeHalfPill("Plan", roundLeft = false) { flyToCurrentLocationThen {}; setMode(AppMode.EDIT) }
 
         // Search circle: icon above label, larger than the side buttons.
         val iconPad  = (16 * d).toInt()
