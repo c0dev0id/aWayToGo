@@ -381,6 +381,16 @@ class MapActivity : ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
+        // Seamless rotation: suppress the OS freeze-and-rotate animation.
+        // The default ROTATION_ANIMATION_ROTATE captures a screenshot of the window,
+        // plays a rotate/crossfade transition, then reveals the new layout — this is
+        // what looks like "everything redraws" even when configChanges prevents
+        // Activity recreation.  SEAMLESS tells the compositor to skip that animation
+        // and let the window resize in place, which is invisible to the user.
+        window.attributes = window.attributes.apply {
+            rotationAnimation = android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_SEAMLESS
+        }
+
         // MapLibre must be initialized first — HttpRequestUtil.setOkHttpClient()
         // (called inside TileCache.init) asserts MapLibre.getInstance() has run.
         // TileCache.init() must still be called before any MapView is created or
