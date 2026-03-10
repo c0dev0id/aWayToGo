@@ -1407,7 +1407,7 @@ class MapActivity : ComponentActivity() {
         // pivotY for each bar = iconCY − barTop, so the rotation axis is always the
         // icon centre (32dp) in parent coordinates.  pivotX = iconCX − btnPad = 20dp.
         val barH      = (3 * d).toInt().coerceAtLeast(2)
-        val barW      = itemH - 2 * btnPad          // 40dp
+        val barW      = ((itemH - 2 * btnPad) * 0.9f).toInt()  // 36dp (90% of 40dp)
         val contentH  = itemH - 2 * btnPad          // 40dp
         val iconCX    = itemH / 2f                  // 32dp in px
         val iconCY    = itemH / 2f
