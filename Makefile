@@ -50,7 +50,7 @@ diag-remote:
 	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRemoteActivity
 
 diag-rotate:
-	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRotateActivity
+	adb shell am start -n de.codevoid.aWayToGo/.diagnostic.DiagnosticRotateActivity 
 
 launcher:
 	adb shell cmd package set-home-activity de.codevoid.aWayToGo/.map.MapActivity
