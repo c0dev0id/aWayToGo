@@ -139,7 +139,9 @@ GPX is a serialisation format, not the domain model. `GpxParser` and `GpxSeriali
 
 **`Location`** — a hand-picked, curated place. Richer than a GPX waypoint — metadata that doesn't fit in GPX is stored natively. Fields: `id`, `name`, `description`, `address`, `lat`, `lng`, `category: LocationCategory`, `tags` (separate join table), `personalNotes`, `isFavourite`, `visitCount`, `lastVisitedAt`, `createdAt`, `updatedAt`, `syncId`. Optional future fields: phone, website, opening hours. The user maintains a small, curated list — not bulk data.
 
-**`PoiGroup`** — a named collection of bulk geographic points, used as a toggleable map layer. Fields: `id`, `name`, `description`, `iconId`, `sourceUrl` (optional — the URL the group was populated from, for manual re-fetch), `lastUpdatedAt`, `pointCount` (cached), `isVisible`, `syncId`. Points within a group are stored as `PoiPoint` rows.
+**`PoiGroup`** — a named collection of bulk geographic points, used as a toggleable map layer. Fields: `id`, `name`, `description`, `iconId`, `sourceUrl` (optional — the URL the group was populated from, for manual re-fetch), `lastUpdatedAt`, `pointCount` (cached), `isVisible`, `alertMode: PoiAlertMode`, `syncId`. Points within a group are stored as `PoiPoint` rows.
+
+`PoiAlertMode` is an enum: `NONE` (display only — point appears on the map, no alert), `INFORM` (soft notification when a point is nearby), `WARN` (prominent alert when a point is nearby — intended for safety-critical groups such as speed cameras). The proximity detection logic lives in NavigationDomain, which already has access to GPS position and heading. For `WARN` groups, alerts should be bearing-aware — fire when the user is *approaching* a point, not after passing it. `alertMode` is a group-level setting; individual `PoiPoint` rows carry no alert state.
 
 **`PoiPoint`** — a single point belonging to a `PoiGroup`. Fields: `id`, `groupId` (FK), `name`, `lat`, `lng`. Intentionally minimal — these are bulk data, not individually managed entities. Queried spatially via `WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?` for viewport-based map rendering.
 
