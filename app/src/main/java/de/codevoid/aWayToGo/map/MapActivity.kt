@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
@@ -943,22 +944,134 @@ class MapActivity : ComponentActivity() {
         menuPad.setOnTouchListener(touchListener)
         layersPad.setOnTouchListener(touchListener)
 
-        // Content placeholder (revealed when drawer opens).
-        val content = FrameLayout(this).apply {
-            setBackgroundColor(Color.argb(230, 24, 24, 24))
-            addView(
-                TextView(this@MapActivity).apply {
-                    text = "Menu"   // stub
-                    setTextColor(Color.WHITE)
-                    textSize = 20f
-                    gravity = Gravity.CENTER
+        // Content area (revealed when drawer opens).
+        val itemH   = (48 * d).toInt()
+        val hPad    = (16 * d).toInt()
+        val iconSz  = (20 * d).toInt()
+        val iconGap = (12 * d).toInt()
+
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        fun divider() {
+            inner.addView(
+                View(this).apply {
+                    setBackgroundColor(Color.argb(60, 255, 255, 255))
                 },
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.CENTER,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, (1 * d + 0.5f).toInt()
+                ).apply { setMargins(hPad, (4 * d).toInt(), hPad, (4 * d).toInt()) },
+            )
+        }
+
+        fun sectionHeader(label: String) {
+            inner.addView(
+                TextView(this).apply {
+                    text = label
+                    setTextColor(Color.argb(160, 255, 255, 255))
+                    textSize = 10f
+                    letterSpacing = 0.12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(hPad, (12 * d).toInt(), hPad, (4 * d).toInt())
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
                 ),
             )
+        }
+
+        fun menuItem(iconRes: Int, label: String) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(hPad, 0, hPad, 0)
+                background = RippleDrawable(
+                    ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+                    null, null,
+                )
+                isClickable = true
+                isFocusable = true
+            }
+            val icon = ImageView(this).apply {
+                setImageDrawable(ContextCompat.getDrawable(this@MapActivity, iconRes))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }
+            row.addView(icon, LinearLayout.LayoutParams(iconSz, iconSz))
+            row.addView(View(this), LinearLayout.LayoutParams(iconGap, 0))
+            row.addView(
+                TextView(this).apply {
+                    text = label
+                    setTextColor(Color.WHITE)
+                    textSize = 14f
+                    isSingleLine = true
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            inner.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, itemH,
+            ))
+        }
+
+        // ── Profile picture placeholder ──────────────────────────────────────
+        val avatarSz = (56 * d).toInt()
+        val avatarContainer = FrameLayout(this).apply {
+            setPadding(0, (24 * d).toInt(), 0, (16 * d).toInt())
+        }
+        avatarContainer.addView(
+            View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.argb(255, 55, 55, 65))
+                    setStroke((2 * d).toInt(), Color.argb(100, 255, 255, 255))
+                }
+            },
+            FrameLayout.LayoutParams(avatarSz, avatarSz, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
+        )
+        avatarContainer.addView(
+            ImageView(this).apply {
+                setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_account))
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                val inset = (12 * d).toInt()
+                setPadding(inset, inset, inset, inset)
+                alpha = 0.6f
+            },
+            FrameLayout.LayoutParams(avatarSz, avatarSz, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
+        )
+        inner.addView(
+            avatarContainer,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
+        // ── Navigation entries ───────────────────────────────────────────────
+        sectionHeader("NAVIGATION")
+        menuItem(R.drawable.ic_account,  "Account")
+        menuItem(R.drawable.ic_pin,      "My Locations")
+        menuItem(R.drawable.ic_route,    "My Trips")
+        menuItem(R.drawable.ic_record,   "My Recordings")
+        menuItem(R.drawable.ic_star,     "POI Groups")
+        menuItem(R.drawable.ic_settings, "Settings")
+
+        // ── Map configuration entries ────────────────────────────────────────
+        divider()
+        sectionHeader("MAP")
+        menuItem(R.drawable.ic_map_type, "Map Types")
+        menuItem(R.drawable.ic_palette,  "Map Styles")
+        menuItem(R.drawable.ic_layers,   "Overlays")
+        menuItem(R.drawable.ic_tune,     "Presets")
+
+        val content = ScrollView(this).apply {
+            setBackgroundColor(Color.argb(230, 24, 24, 24))
+            isScrollbarFadingEnabled = true
+            scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
+            addView(inner, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
         }
 
         // Pads column at the right edge of the panel.

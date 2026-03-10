@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Drawer panel content: circular profile picture placeholder at the top, followed by a scrollable Navigation section (Account, My Locations, My Trips, My Recordings, POI Groups, Settings) and a Map section (Map Types, Map Styles, Overlays, Presets). Each entry has an icon and a label. No functionality is wired yet.
+- Nine new vector drawables for the drawer menu icons: `ic_account`, `ic_pin`, `ic_route`, `ic_record`, `ic_star`, `ic_settings`, `ic_map_type`, `ic_palette`, `ic_tune`.
+
 ### Changed
 - Hamburger and layers buttons replaced by an edge-attached drawer panel. The panel is 1/4 of the screen width; only a 52dp pad column (rounded on the right, square on the left) sticks out from the left edge when closed. Tapping a pad toggles the drawer open/closed with a 260ms animated slide. Dragging a pad progressively reveals the panel and snaps open or closed on release depending on travel distance. When the drawer opens, the MapLibre camera focal point and the explore bar both shift right so the map stays centred in the remaining 3/4 of the screen.
 
