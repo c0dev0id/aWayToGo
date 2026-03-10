@@ -183,6 +183,11 @@ class MapActivity : ComponentActivity() {
     // deceleration take ~300ms per adjacent magnitude level.
     private var joyEffectiveMag = 0f
 
+    // ── Drag line anchor ──────────────────────────────────────────────────────
+    // When set, the Choreographer loop continuously updates the drag line so it
+    // connects the user's current GPS position with this anchored target.
+    private var dragLineAnchor: LatLng? = null
+
     // Last non-zero normalised direction: preserved so the ramp-down still applies
     // movement in the same direction after the stick is released.
     private var joyLastDirX = 0f
@@ -296,6 +301,15 @@ class MapActivity : ComponentActivity() {
                         ),
                         PAN_LOOK_AHEAD_MS,
                     )
+                }
+            }
+
+            // ── Drag line live update ────────────────────────────────────────
+            // Keep the drag line's "from" end pinned to the current GPS position
+            // so it tracks the user as they move toward the anchored target.
+            dragLineAnchor?.let { anchor ->
+                currentMap?.locationComponent?.lastKnownLocation?.let { loc ->
+                    setDragLine(LatLng(loc.latitude, loc.longitude), anchor)
                 }
             }
 
@@ -686,9 +700,11 @@ class MapActivity : ComponentActivity() {
                 RemoteKey.CONFIRM ->
                     if (isInPanningMode) {
                         // Capture the map position under the crosshair (screen centre)
-                        // and draw the drag line from the current GPS fix to that point.
+                        // and anchor the drag line to that point.  The Choreographer
+                        // loop keeps the line's "from" end on the current GPS fix.
                         val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
                         val target = m.projection.fromScreenLocation(screenCenter)
+                        dragLineAnchor = target
                         m.locationComponent.lastKnownLocation?.let { loc ->
                             setDragLine(LatLng(loc.latitude, loc.longitude), target)
                         }
