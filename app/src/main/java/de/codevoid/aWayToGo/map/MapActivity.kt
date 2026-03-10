@@ -860,8 +860,8 @@ class MapActivity : ComponentActivity() {
     private fun buildExploreBottomBar(): FrameLayout {
         val d          = resources.displayMetrics.density
         val circleSize = (144 * d).toInt()
-        val btnH       = (96 * d).toInt()
-        val btnW       = (216 * d).toInt()
+        val btnH       = (64 * d).toInt()
+        val btnW       = (172 * d).toInt()
         val overlap    = (44 * d).toInt()    // how far each button slides under the circle
         val spacerW    = (circleSize - overlap * 2).coerceAtLeast(0)
         val outerR     = btnH / 2f
