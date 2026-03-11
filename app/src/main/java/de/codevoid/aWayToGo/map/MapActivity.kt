@@ -467,10 +467,12 @@ class MapActivity : ComponentActivity() {
         // at the wrong (pre-keyboard) position before jumping up.
         ViewCompat.setWindowInsetsAnimationCallback(
             root,
-            object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE) {
+            object : WindowInsetsAnimationCompat.Callback(
+                WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE,
+            ) {
                 override fun onProgress(
                     insets: WindowInsetsCompat,
-                    runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+                    runningAnimations: List<WindowInsetsAnimationCompat>,
                 ): WindowInsetsCompat {
                     val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
                     (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
