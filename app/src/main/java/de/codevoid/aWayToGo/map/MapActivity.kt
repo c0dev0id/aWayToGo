@@ -40,7 +40,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.activity.viewModels
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
 import de.codevoid.aWayToGo.remote.RemoteControlManager
@@ -152,7 +155,6 @@ class MapActivity : ComponentActivity() {
     private lateinit var hamburgerBars: Array<View>
     private lateinit var menuPanel: View
     private lateinit var menuDismissOverlay: View
-    private var isMenuOpen = false
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
     private lateinit var exploreBottomBar: FrameLayout
@@ -160,10 +162,10 @@ class MapActivity : ComponentActivity() {
     private lateinit var navigateBanner: View
     private lateinit var navigateStopBtn: View
     private lateinit var editTopBar: LinearLayout
-    // True once the first setMode() call has run; subsequent calls animate.
-    private var hasAnimatedModeSetup = false
 
-    private var currentMode = AppMode.EXPLORE
+    private val viewModel: MapViewModel by viewModels()
+    // Last state that was fully rendered; used to diff new vs old in renderUiState().
+    private var renderedState: MapUiState? = null
 
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
@@ -178,11 +180,6 @@ class MapActivity : ComponentActivity() {
     private var map: MapLibreMap? = null
     private var style: Style? = null
     private var hasLocationPermission = false
-
-    // True while the user is panning freely (crosshair visible, tracking disabled).
-    // Entered by D-pad or touch gesture; exited by BACK, CONFIRM, or the
-    // my-location button → re-enables GPS tracking and flies back to position.
-    private var isInPanningMode = false
 
     // Active pan directions → vsync timestamp (ns) when the key was first pressed.
     // Used to compute the speed ramp-up in the Choreographer loop.
@@ -562,8 +559,18 @@ class MapActivity : ComponentActivity() {
 
         setContentView(root)
 
-        // Apply initial visibility for all mode views.
-        setMode(AppMode.EXPLORE)
+        // Observe UI state and render changes reactively.
+        // repeatOnLifecycle(STARTED): pauses collection when the app is in the background
+        // and re-subscribes on resume, which re-emits the current state and re-applies
+        // all visibilities / animations to handle any changes that happened off-screen.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.uiState.collect { state ->
+                    renderUiState(state, renderedState)
+                    renderedState = state
+                }
+            }
+        }
 
         // MapView lifecycle must be driven manually (no Compose lifecycle observer here).
         mapView.onCreate(savedInstanceState)
@@ -714,7 +721,7 @@ class MapActivity : ComponentActivity() {
                 RemoteKey.CONFIRM ->
                     // In panning mode: confirm exits panning and re-locks on GPS.
                     // Outside panning mode: fly to current location directly.
-                    if (isInPanningMode) {
+                    if (viewModel.uiState.value.isInPanningMode) {
                         exitPanningMode()
                     } else {
                         m.locationComponent.lastKnownLocation?.let { loc ->
@@ -725,7 +732,7 @@ class MapActivity : ComponentActivity() {
                 RemoteKey.BACK ->
                     // In panning mode: exit panning → re-lock on GPS.
                     // Outside panning mode: reset map bearing to north.
-                    if (isInPanningMode) {
+                    if (viewModel.uiState.value.isInPanningMode) {
                         exitPanningMode()
                     } else {
                         m.animateCamera(
@@ -743,7 +750,7 @@ class MapActivity : ComponentActivity() {
 
             is RemoteEvent.LongPress -> when (event.key) {
                 RemoteKey.CONFIRM ->
-                    if (isInPanningMode) {
+                    if (viewModel.uiState.value.isInPanningMode) {
                         // Capture the map position under the crosshair (screen centre)
                         // and anchor the drag line to that point.  The Choreographer
                         // loop keeps the line's "from" end on the current GPS fix.
@@ -784,33 +791,22 @@ class MapActivity : ComponentActivity() {
     /**
      * Switch to panning mode: show the crosshair, disable GPS camera tracking.
      *
-     * Idempotent — safe to call when already in panning mode (e.g. while the
-     * D-pad is held and multiple KeyDown events arrive).
+     * Idempotent — StateFlow only emits when the value changes, so repeated calls
+     * while already in panning mode produce no extra renders.
      */
     private fun enterPanningMode() {
-        if (isInPanningMode) return
-        isInPanningMode = true
-        map?.locationComponent?.cameraMode = CameraMode.NONE
-        // In EDIT mode the crosshair is already pinned visible; no change needed.
-        if (currentMode != AppMode.EDIT) crosshairView.visibility = View.VISIBLE
+        viewModel.enterPanningMode()
     }
 
     /**
      * Leave panning mode: hide the crosshair, re-enable GPS tracking, and
      * animate back to the user's current location.
      *
-     * Also used by the my-location button so touch-only users can exit panning.
-     * Calling when already outside panning mode is harmless — the crosshair will
-     * stay hidden and the camera will simply fly to the current location.
+     * The camera tracking re-enable and flyToLocation are triggered reactively
+     * in [renderUiState] when it observes [MapUiState.isInPanningMode] go false.
      */
     private fun exitPanningMode() {
-        isInPanningMode = false
-        // In EDIT mode the crosshair stays pinned visible.
-        if (currentMode != AppMode.EDIT) crosshairView.visibility = View.GONE
-        val m   = map ?: return
-        val loc = m.locationComponent.lastKnownLocation ?: return
-        m.locationComponent.cameraMode = CameraMode.TRACKING
-        flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+        viewModel.exitPanningMode()
     }
 
     // ── Mode management ───────────────────────────────────────────────────────
@@ -865,48 +861,12 @@ class MapActivity : ComponentActivity() {
     /**
      * Switch the app to [mode].
      *
-     * The first call (during onCreate) applies visibilities instantly.
-     * Subsequent calls play a two-phase animation: outgoing chrome slides off-
-     * screen, then incoming chrome slides in from the appropriate edge.
-     *
-     * Explore elements (hamburger, locate-me, bottom bar) slide left / down.
-     * Navigate elements (banner, STOP) slide up / down respectively.
-     * Edit element (top bar) slides up.
+     * Delegates to [MapViewModel.setMode]; [renderUiState] reacts to the state
+     * change and drives the two-phase animation (outgoing chrome slides off-screen,
+     * then incoming chrome slides in from the appropriate edge).
      */
     private fun setMode(mode: AppMode) {
-        val from = currentMode
-        currentMode = mode
-
-        // Close popup menu immediately (no animation) on any mode change so it
-        // does not fight with the mode transition animation.
-        if (isMenuOpen) closeMenu(instant = true)
-
-        // Crosshair: always on in EDIT, otherwise mirrors panning state.
-        crosshairView.visibility = when {
-            mode == AppMode.EDIT -> View.VISIBLE
-            isInPanningMode      -> View.VISIBLE
-            else                 -> View.GONE
-        }
-
-        // Camera tracking: re-engage when entering NAVIGATE, release when entering EDIT.
-        when (mode) {
-            AppMode.NAVIGATE -> map?.locationComponent?.cameraMode = CameraMode.TRACKING
-            AppMode.EDIT     -> {
-                isInPanningMode = false
-                map?.locationComponent?.cameraMode = CameraMode.NONE
-            }
-            AppMode.EXPLORE  -> { /* tracking state unchanged — user controls it via locate-me */ }
-        }
-
-        // First call during onCreate: instant setup, no animation.
-        if (!hasAnimatedModeSetup) {
-            hasAnimatedModeSetup = true
-            applyModeInstant(mode)
-            return
-        }
-
-        if (from == mode) return
-        animateModeTransition(from, mode)
+        viewModel.setMode(mode)
     }
 
     /** Instant (no-animation) visibility setup — used only on app startup. */
@@ -1047,6 +1007,87 @@ class MapActivity : ComponentActivity() {
                         editTopBar.translationY = 0f
                         slideIn()
                     }.start()
+            }
+        }
+    }
+
+    // ── Reactive state renderer ───────────────────────────────────────────────
+
+    /**
+     * Applies [new] UI state to all views.
+     *
+     * Called from the [viewModel] StateFlow collector on the main thread whenever
+     * the state changes.  [old] is `null` on the very first call (initial setup),
+     * which triggers instant visibility setup with no animations.
+     *
+     * All three state dimensions are handled independently so partial changes
+     * (e.g. only [MapUiState.isInPanningMode] changing) do the minimum work.
+     */
+    private fun renderUiState(new: MapUiState, old: MapUiState?) {
+        val modeChanged    = old?.mode != new.mode
+        val panningChanged = old?.isInPanningMode != new.isInPanningMode
+        val menuChanged    = old?.isMenuOpen != new.isMenuOpen
+
+        // ── Crosshair ──────────────────────────────────────────────────────────
+        // EDIT always shows the crosshair (it acts as the placement cursor).
+        // Otherwise the crosshair is shown only while the user is manually panning.
+        crosshairView.visibility = when {
+            new.mode == AppMode.EDIT || new.isInPanningMode -> View.VISIBLE
+            else                                            -> View.GONE
+        }
+
+        // ── Camera tracking ────────────────────────────────────────────────────
+        // Only update when something that affects tracking actually changed.
+        if (modeChanged || panningChanged) {
+            when {
+                // Entering NAVIGATE always re-enables GPS tracking (may override panning).
+                modeChanged && new.mode == AppMode.NAVIGATE ->
+                    map?.locationComponent?.cameraMode = CameraMode.TRACKING
+
+                // Entering EDIT always disables tracking (panning state also cleared by ViewModel).
+                modeChanged && new.mode == AppMode.EDIT ->
+                    map?.locationComponent?.cameraMode = CameraMode.NONE
+
+                // Starting to pan (any non-EDIT mode): suspend tracking.
+                panningChanged && new.isInPanningMode ->
+                    map?.locationComponent?.cameraMode = CameraMode.NONE
+
+                // Stopping panning: re-enable tracking and fly back to current position.
+                panningChanged && !new.isInPanningMode && old?.isInPanningMode == true -> {
+                    val m   = map
+                    val loc = m?.locationComponent?.lastKnownLocation
+                    if (m != null && loc != null) {
+                        m.locationComponent.cameraMode = CameraMode.TRACKING
+                        flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+                    }
+                }
+
+                // Entering EXPLORE from NAVIGATE/EDIT: tracking state is unchanged —
+                // the user controls it via the my-location button.
+            }
+        }
+
+        // ── Menu animation ─────────────────────────────────────────────────────
+        // Skip on the first render (old == null): the panel already starts at button size.
+        if (old != null && menuChanged) {
+            if (new.isMenuOpen) {
+                runOpenMenuAnimation()
+            } else {
+                // Close instantly when a mode change is also happening so the menu
+                // does not fight with the mode-transition slide animation.
+                runCloseMenuAnimation(instant = modeChanged)
+            }
+        }
+
+        // ── Mode transition ────────────────────────────────────────────────────
+        if (modeChanged) {
+            if (old == null) {
+                // First render: instant visibility setup, no animation.
+                applyModeInstant(new.mode)
+                applyCameraForMode(new.mode, animated = false)
+            } else {
+                animateModeTransition(old.mode, new.mode)
+                applyCameraForMode(new.mode, animated = true)
             }
         }
     }
@@ -1274,6 +1315,8 @@ class MapActivity : ComponentActivity() {
         navigateStopBtn = stopBtn
 
         return FrameLayout(this).apply {
+            // Hidden by default — only shown in NAVIGATE mode.
+            visibility = View.GONE
             addView(banner, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1305,6 +1348,8 @@ class MapActivity : ComponentActivity() {
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            // Hidden by default — only shown in EDIT mode.
+            visibility = View.GONE
             setBackgroundColor(Color.argb(220, 0, 80, 160))
             gravity = Gravity.CENTER_VERTICAL
             setPadding(hPad, vPad, hPad, vPad)
@@ -1475,19 +1520,21 @@ class MapActivity : ComponentActivity() {
         }
     }
 
-    private fun toggleMenu() {
-        if (isMenuOpen) closeMenu() else openMenu()
-    }
+    private fun toggleMenu() { viewModel.toggleMenu() }
+    private fun openMenu()   { viewModel.openMenu() }
+    private fun closeMenu()  { viewModel.closeMenu() }
 
     /**
      * Expand the panel from button size (64×64dp) to its full content size.
      *
-     * Animates the LayoutParams width+height so the cornerRadius (32dp) stays
+     * Pure animation helper called from [renderUiState] when [MapUiState.isMenuOpen]
+     * transitions to true.  Never mutates state directly.
+     *
+     * The LayoutParams width+height animate so the cornerRadius (32dp) stays
      * visually constant — the shape smoothly transforms from circle → rounded rect.
-     * The hamburger icon rotates 90° during the expansion.
+     * The hamburger icon rotates 90° during the expansion with a staggered cascade.
      */
-    private fun openMenu() {
-        isMenuOpen = true
+    private fun runOpenMenuAnimation() {
         menuDismissOverlay.visibility = View.VISIBLE
         menuAnimator?.cancel()
 
@@ -1524,11 +1571,13 @@ class MapActivity : ComponentActivity() {
     /**
      * Collapse the panel back to button size (64×64dp).
      *
-     * @param instant  When true (called from [setMode]), collapses immediately
-     *                 with no animation — avoids fighting with the mode transition.
+     * Pure animation helper called from [renderUiState] when [MapUiState.isMenuOpen]
+     * transitions to false.  Never mutates state directly.
+     *
+     * @param instant  When true (simultaneous mode change), collapses immediately
+     *                 with no animation — avoids fighting with the mode-transition slide.
      */
-    private fun closeMenu(instant: Boolean = false) {
-        isMenuOpen = false
+    private fun runCloseMenuAnimation(instant: Boolean = false) {
         menuAnimator?.cancel()
 
         val d     = resources.displayMetrics.density
@@ -1958,7 +2007,7 @@ class MapActivity : ComponentActivity() {
 
         // Re-apply camera padding with the new screen height, no animation so the
         // map does not sweep during the transition.
-        applyCameraForMode(currentMode, animated = false)
+        applyCameraForMode(viewModel.uiState.value.mode, animated = false)
 
         // ── 4. Fade the overlay out, revealing the re-laid-out UI. ───────────
         // A 50 ms start-delay lets the first re-drawn frame settle before we

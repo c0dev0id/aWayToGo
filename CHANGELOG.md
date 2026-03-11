@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `MapViewModel` and `MapUiState`: mode, panning, and menu state extracted from `MapActivity` into a `ViewModel` backed by a `StateFlow`. `MapActivity` now observes the flow and delegates all view rendering to `renderUiState(new, old)`, which diffs the two states to minimise work and drive the correct animations.
 - `RoutingDomain` skeleton: `RoutingRepository` interface, `Route`, `RoutePoint`, `RoutingProfile`, `RoutingResult` domain types, and a `BRouterEngine` stub that wires to the interface. No BRouter library yet — the stub returns an error; this establishes the correct layer boundary before integration.
 
 ### Changed
