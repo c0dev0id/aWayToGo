@@ -69,9 +69,6 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 // ── Drag line style layer / source IDs ───────────────────────────────────────
 // Two LineLayer instances (casing behind, fill in front) produce the outlined
@@ -80,36 +77,6 @@ private const val SOURCE_DRAG_LINE        = "drag-line"
 private const val LAYER_DRAG_LINE_CASING  = "drag-line-casing"
 private const val LAYER_DRAG_LINE_FILL    = "drag-line-fill"
 private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
-
-// Web-Mercator tile-resolution constants used for bearing-aware pixel→LatLng.
-// MERCATOR_CIRCUMFERENCE: Earth equatorial circumference mapped to a 256-px
-//   tile at zoom 0 (standard Web-Mercator definition).
-// METERS_PER_DEGREE_LAT: approximate metres per degree of latitude (near equator).
-private const val MERCATOR_CIRCUMFERENCE  = 156543.03392
-private const val METERS_PER_DEGREE_LAT  = 111320.0
-
-// Desired pan speed in screen pixels per second.
-private const val PAN_SPEED_PX_PER_SEC = 120f
-
-// Joystick speed table: discrete magnitude → px/s.
-// Hardware sends magnitudes 2–5 (dead zone swallows 0–1).
-// Piecewise-linear interpolation in joyMagnitudeToSpeed().
-//   mag 2 →  15 px/s
-//   mag 3 →  30 px/s
-//   mag 4 →  60 px/s
-//   mag 5 → 120 px/s
-// Adjacent levels ramp in 300 ms (JOY_RAMP_RATE = 1/0.3 ≈ 3.33 mag-units/s).
-private const val JOY_RAMP_RATE = 1f / 0.3f  // magnitude units per second
-
-// Desired zoom speed in MapLibre zoom levels per second.
-private const val ZOOM_SPEED_PER_SEC = 1.5f
-
-// How far ahead (ms) each animateCamera call targets.
-// The GL thread interpolates this segment smoothly at its own refresh rate.
-// At 59 fps (16ms frames) 32ms gives the GL thread 2 frames of animation
-// to interpolate between main-thread updates — enough for smooth movement
-// without adding noticeable look-ahead lag.
-private const val PAN_LOOK_AHEAD_MS = 32
 
 private const val TILT_3D = 60.0
 
@@ -177,30 +144,13 @@ class MapActivity : ComponentActivity() {
     private var style: Style? = null
     private var hasLocationPermission = false
 
-    // Active pan directions → vsync timestamp (ns) when the key was first pressed.
-    // Used to compute the speed ramp-up in the Choreographer loop.
-    private val panStartNs = mutableMapOf<RemoteKey, Long>()
-
-    // Analog joystick state: normalised [-1, 1] axes from the last JoyInput event.
-    // (0, 0) = joystick released.  Written on the main thread by handleRemoteEvent,
-    // read on the main thread by the Choreographer callback — no synchronisation needed.
-    private var joyDx = 0f
-    private var joyDy = 0f
-
-    // Smoothed joystick magnitude (0–5), ramped toward the target at JOY_RAMP_RATE.
-    // Decouples the speed ramp from instantaneous stick input so acceleration and
-    // deceleration take ~300ms per adjacent magnitude level.
-    private var joyEffectiveMag = 0f
+    // Owns all D-pad / joystick / zoom-key state and drives per-frame camera updates.
+    private val panController = PanController(onEnterPanningMode = { enterPanningMode() })
 
     // ── Drag line anchor ──────────────────────────────────────────────────────
     // When set, the Choreographer loop continuously updates the drag line so it
     // connects the user's current GPS position with this anchored target.
     private var dragLineAnchor: LatLng? = null
-
-    // Last non-zero normalised direction: preserved so the ramp-down still applies
-    // movement in the same direction after the stick is released.
-    private var joyLastDirX = 0f
-    private var joyLastDirY = 0f
 
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
@@ -219,105 +169,15 @@ class MapActivity : ComponentActivity() {
             osdLastFrameNs = frameTimeNanos
 
             // ── Pan + Zoom ─────────────────────────────────────────────────────
-            val currentMap = map
-            var panSpeed = 0f
-            if (currentMap != null && (panStartNs.isNotEmpty() || joyDx != 0f || joyDy != 0f || joyEffectiveMag > 0.001f)) {
-                // Accumulate deltas for all held keys.  Pan and zoom are merged into
-                // a single animateCamera call so they never compete with each other.
-                var totalDx   = 0f
-                var totalDy   = 0f
-                var totalZoom = 0f
-
-                for ((key, startNs) in panStartNs) {
-                    val elapsedMs = (frameTimeNanos - startNs) / 1_000_000L
-                    // Linear ramp: 50 % speed at t=0, 100 % at t=2 s.
-                    val ramp = (elapsedMs / 2000f).coerceAtMost(1f)
-                    when (key) {
-                        RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
-                            val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
-                            val px    = speed * PAN_LOOK_AHEAD_MS / 1000f
-                            if (speed > panSpeed) panSpeed = speed
-                            when (key) {
-                                RemoteKey.UP    -> totalDy -= px
-                                RemoteKey.DOWN  -> totalDy += px
-                                RemoteKey.LEFT  -> totalDx -= px
-                                RemoteKey.RIGHT -> totalDx += px
-                                else -> {}
-                            }
-                        }
-                        RemoteKey.ZOOM_IN, RemoteKey.ZOOM_OUT -> {
-                            val delta = ZOOM_SPEED_PER_SEC * (0.5f + 0.5f * ramp) * PAN_LOOK_AHEAD_MS / 1000f
-                            if (key == RemoteKey.ZOOM_IN) totalZoom += delta else totalZoom -= delta
-                        }
-                        else -> {}
-                    }
-                }
-
-                // Analog joystick — ramped speed curve.
-                // targetMag: hardware sends 0.4–1.0, multiply by 5 to get 2–5.
-                val inputMag  = maxOf(kotlin.math.abs(joyDx), kotlin.math.abs(joyDy)) * 5f
-                val dtS       = dtNs / 1_000_000_000f
-                val rampDelta = JOY_RAMP_RATE * dtS
-                joyEffectiveMag = when {
-                    joyEffectiveMag < inputMag ->
-                        (joyEffectiveMag + rampDelta).coerceAtMost(inputMag)
-                    joyEffectiveMag > inputMag ->
-                        (joyEffectiveMag - rampDelta).coerceAtLeast(inputMag)
-                    else -> joyEffectiveMag
-                }
-
-                if (joyEffectiveMag > 0.001f) {
-                    // Update last known direction while stick is active.
-                    val len = sqrt(joyDx * joyDx + joyDy * joyDy)
-                    if (len > 0.001f) {
-                        joyLastDirX = joyDx / len
-                        joyLastDirY = joyDy / len
-                    }
-                    val speedPxS = joyMagnitudeToSpeed(joyEffectiveMag)
-                    val px = speedPxS * PAN_LOOK_AHEAD_MS / 1000f
-                    totalDx +=  joyLastDirX * px
-                    totalDy += -joyLastDirY * px   // joy Y+ = screen-up = subtract from dy
-                    if (speedPxS > panSpeed) panSpeed = speedPxS
-                }
-
-                if (totalDx != 0f || totalDy != 0f || totalZoom != 0f) {
-                    val pos    = currentMap.cameraPosition
-                    val target = pos.target
-
-                    // Bearing-aware pan: rotate screen-space vector by map bearing so
-                    // pushing UP always scrolls map content down regardless of rotation.
-                    val newLatLng = if (target != null && (totalDx != 0f || totalDy != 0f)) {
-                        val bearingRad  = Math.toRadians(pos.bearing)
-                        val cosB        = cos(bearingRad).toFloat()
-                        val sinB        = sin(bearingRad).toFloat()
-                        val rotatedDx   = totalDx * cosB - totalDy * sinB
-                        val rotatedDy   = totalDx * sinB + totalDy * cosB
-                        val latRad      = Math.toRadians(target.latitude)
-                        val metersPerPx = MERCATOR_CIRCUMFERENCE * cos(latRad) / Math.pow(2.0, pos.zoom)
-                        val latDelta    = -(rotatedDy * metersPerPx) / METERS_PER_DEGREE_LAT
-                        val lngDelta    =  (rotatedDx * metersPerPx) / (METERS_PER_DEGREE_LAT * cos(latRad))
-                        LatLng(target.latitude + latDelta, target.longitude + lngDelta)
-                    } else target
-
-                    currentMap.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(
-                            CameraPosition.Builder()
-                                .target(newLatLng)
-                                .zoom(pos.zoom + totalZoom)
-                                .bearing(pos.bearing)
-                                .tilt(pos.tilt)
-                                .build(),
-                        ),
-                        PAN_LOOK_AHEAD_MS,
-                    )
-                }
-            }
+            // PanController owns all D-pad/joystick state and returns the current
+            // pan speed for OSD display.
+            val panSpeed = panController.onFrame(map, frameTimeNanos, dtNs)
 
             // ── Drag line live update ────────────────────────────────────────
             // Keep the drag line's "from" end pinned to the current GPS position
             // so it tracks the user as they move toward the anchored target.
             dragLineAnchor?.let { anchor ->
-                currentMap?.locationComponent?.lastKnownLocation?.let { loc ->
+                map?.locationComponent?.lastKnownLocation?.let { loc ->
                     setDragLine(LatLng(loc.latitude, loc.longitude), anchor)
                 }
             }
@@ -703,34 +563,11 @@ class MapActivity : ComponentActivity() {
         val m = map ?: return
         when (event) {
 
-            is RemoteEvent.JoyInput -> {
-                joyDx = event.dx
-                joyDy = event.dy
-                // Non-neutral joystick movement enters panning mode just like a D-pad press.
-                if (event.dx != 0f || event.dy != 0f) enterPanningMode()
-            }
+            is RemoteEvent.JoyInput -> panController.onJoyInput(event.dx, event.dy)
 
-            is RemoteEvent.KeyDown -> when (event.key) {
-                RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
-                    // Moving the D-pad immediately enters panning mode so the
-                    // crosshair appears and GPS tracking is suspended.
-                    enterPanningMode()
-                    panStartNs[event.key] = System.nanoTime()
-                }
-                RemoteKey.ZOOM_IN, RemoteKey.ZOOM_OUT -> {
-                    // Zoom keys use the same ramp-up / look-ahead mechanism as pan.
-                    panStartNs[event.key] = System.nanoTime()
-                }
-                else -> {}
-            }
+            is RemoteEvent.KeyDown -> panController.onKeyDown(event.key)
 
-            is RemoteEvent.KeyUp -> {
-                panStartNs.remove(event.key)
-                // Cancel the in-flight animation so the map does not coast past the release point.
-                // The next Choreographer frame will issue a fresh animation for any remaining
-                // active directions.
-                m.cancelTransitions()
-            }
+            is RemoteEvent.KeyUp -> panController.onKeyUp(event.key, m)
 
             is RemoteEvent.ShortPress -> when (event.key) {
                 RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {}
@@ -1402,28 +1239,6 @@ class MapActivity : ComponentActivity() {
         val loc = m?.locationComponent?.lastKnownLocation
         if (m == null || loc == null) { onComplete(); return }
         flyToLocation(m, LatLng(loc.latitude, loc.longitude), onFinish = onComplete)
-    }
-
-    /**
-     * Piecewise-linear speed lookup for the analog joystick.
-     *
-     * Maps a smoothed magnitude (0–5) to a pan speed in px/s:
-     *   0 →   0 px/s
-     *   2 →  15 px/s
-     *   3 →  30 px/s
-     *   4 →  60 px/s
-     *   5 → 120 px/s
-     *
-     * Values between integer levels are linearly interpolated; values outside
-     * [0, 5] are clamped to the nearest endpoint.
-     */
-    private fun joyMagnitudeToSpeed(mag: Float): Float = when {
-        mag <= 0f -> 0f
-        mag < 2f  -> mag / 2f * 15f           // 0 → 0, 2 → 15
-        mag < 3f  -> 15f + (mag - 2f) * 15f   // 2 → 15, 3 → 30
-        mag < 4f  -> 30f + (mag - 3f) * 30f   // 3 → 30, 4 → 60
-        mag < 5f  -> 60f + (mag - 4f) * 60f   // 4 → 60, 5 → 120
-        else      -> 120f
     }
 
     /**
