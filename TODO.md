@@ -1,1 +1,3 @@
 - When entering riding mode, zoom in to 17.0
+- Rotate the map in driving direction
+- Move map control functions in one folder
