@@ -1189,12 +1189,13 @@ class MapActivity : ComponentActivity() {
         // The panel appears at the screen edge (bottomMargin = 0, no keyboard).
         // The keyboard opens only when the user taps the search field; the IME
         // animation callback then smoothly slides the panel up in sync.
-        searchOverlayResult.root.alpha = 1f
+        searchOverlayResult.root.alpha = 0f
         (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
             lp.bottomMargin = 0
             searchOverlayResult.root.layoutParams = lp
         }
         searchOverlayResult.root.visibility = View.VISIBLE
+        searchOverlayResult.root.animate().alpha(1f).setDuration(200).start()
         searchOverlayResult.prepareForOpen()
         panToLastSearchResult()
     }

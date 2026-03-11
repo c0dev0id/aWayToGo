@@ -404,9 +404,17 @@ fun buildSearchOverlay(
     }
 
     // ── State mutators returned to MapActivity ────────────────────────────────
+
+    /** Fade the results wrapper in from invisible. Cancels any in-flight animation first. */
+    fun fadeInWrapper() {
+        resultsWrapper.animate().cancel()
+        resultsWrapper.alpha = 0f
+        resultsWrapper.visibility = View.VISIBLE
+        resultsWrapper.animate().alpha(1f).setDuration(150).start()
+    }
+
     fun showResults(results: List<SearchResult>) {
         resultsContainer.removeAllViews()
-        resultsWrapper.visibility = View.VISIBLE
         if (results.isEmpty()) {
             resultsContainer.addView(TextView(context).apply {
                 text = "No results found."
@@ -416,19 +424,19 @@ fun buildSearchOverlay(
                 val p = (16 * d).toInt()
                 setPadding(p, p, p, p)
             })
-            return
+        } else {
+            results.forEachIndexed { i, result ->
+                if (i > 0) resultsContainer.addView(makeDivider())
+                resultsContainer.addView(makeResultRow(result) { onResultClick(result) })
+            }
+            // Refresh shortcuts now that the new search term has been saved.
+            refreshShortcuts(searchField)
         }
-        results.forEachIndexed { i, result ->
-            if (i > 0) resultsContainer.addView(makeDivider())
-            resultsContainer.addView(makeResultRow(result) { onResultClick(result) })
-        }
-        // Refresh shortcuts now that the new search term has been saved.
-        refreshShortcuts(searchField)
+        fadeInWrapper()
     }
 
     fun showLoading() {
         resultsContainer.removeAllViews()
-        resultsWrapper.visibility = View.VISIBLE
         resultsContainer.addView(ProgressBar(context).apply {
             isIndeterminate = true
         }, LinearLayout.LayoutParams(
@@ -440,11 +448,11 @@ fun buildSearchOverlay(
             val m = (16 * d).toInt()
             setMargins(0, m, 0, m)
         })
+        fadeInWrapper()
     }
 
     fun showError() {
         resultsContainer.removeAllViews()
-        resultsWrapper.visibility = View.VISIBLE
         resultsContainer.addView(TextView(context).apply {
             text = "Search failed. Check your connection."
             setTextColor(Color.argb(200, 255, 100, 100))
@@ -453,11 +461,16 @@ fun buildSearchOverlay(
             val p = (16 * d).toInt()
             setPadding(p, p, p, p)
         })
+        fadeInWrapper()
     }
 
     fun clearResults() {
-        resultsContainer.removeAllViews()
-        resultsWrapper.visibility = View.GONE
+        resultsWrapper.animate().cancel()
+        resultsWrapper.animate().alpha(0f).setDuration(100).withEndAction {
+            resultsWrapper.visibility = View.GONE
+            resultsWrapper.alpha = 1f   // reset for next show
+            resultsContainer.removeAllViews()
+        }.start()
         refreshShortcuts(searchField)
     }
 
