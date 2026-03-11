@@ -204,7 +204,7 @@ class MapActivity : ComponentActivity() {
     private var osdWindowNs    = 0L
     private var osdLastFps     = 0
     private var osdLastDtMs    = 0L
-    private var osdGlFps       = 0.0
+    @Volatile private var osdGlFps = 0.0
     private var osdRxLast      = 0L
     private var osdTxLast      = 0L
     private var osdRxRate      = 0L  // bytes/s
@@ -686,7 +686,19 @@ class MapActivity : ComponentActivity() {
                 TileCache.gate.resume()
             }
             if (BuildConfig.DEBUG) {
-                m.addOnFpsChangedListener { fps -> osdGlFps = fps }
+                var glFrameCount = 0
+                var glWindowNs   = 0L
+                mapView.addOnDidFinishRenderingFrameListener { _ ->
+                    val now = System.nanoTime()
+                    if (glWindowNs == 0L) { glWindowNs = now; return@addOnDidFinishRenderingFrameListener }
+                    glFrameCount++
+                    val elapsed = now - glWindowNs
+                    if (elapsed >= 1_000_000_000L) {
+                        osdGlFps     = glFrameCount * 1_000_000_000.0 / elapsed
+                        glFrameCount = 0
+                        glWindowNs   = now
+                    }
+                }
             }
             m.setStyle(styleUrl) { s ->
                 map   = m
@@ -951,6 +963,10 @@ class MapActivity : ComponentActivity() {
         if (uiState.isInPanningMode || uiState.mode == AppMode.EDIT) return
         val lc = map?.locationComponent?.takeIf { it.isLocationComponentActivated } ?: return
         if (lc.cameraMode == CameraMode.NONE) return
+        // MapLibre 11 treats reassigning the same cameraMode value as a no-op and never
+        // re-engages tracking after a programmatic animateCamera() call.  Cycling through
+        // NONE forces a real mode transition, re-attaching both position and heading following.
+        lc.cameraMode = CameraMode.NONE
         lc.cameraMode = trackingCameraMode()
         lc.renderMode  = trackingRenderMode()
     }
