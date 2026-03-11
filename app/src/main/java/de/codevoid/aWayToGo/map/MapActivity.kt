@@ -55,6 +55,11 @@ import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
 import de.codevoid.aWayToGo.update.AppUpdater
+import de.codevoid.aWayToGo.update.DownloadProgress
+import android.graphics.drawable.ClipDrawable
+import android.graphics.drawable.LayerDrawable
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.maplibre.android.MapLibre
@@ -168,6 +173,10 @@ class MapActivity : ComponentActivity() {
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
     private var downloadProgressBar: ProgressBar? = null
+    private var downloadLabel: TextView? = null
+    private var downloadJob: Job? = null
+    private var isDownloadOverlayVisible = false
+    private var lastDownloadProgress: DownloadProgress? = null
 
     private val appUpdater by lazy { AppUpdater(this) }
 
@@ -493,7 +502,10 @@ class MapActivity : ComponentActivity() {
             setTextColor(Color.WHITE)
             textSize = 20f
             typeface = Typeface.MONOSPACE
-            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            background = GradientDrawable().apply {
+                setColor(Color.argb(160, 0, 0, 0))
+                cornerRadius = 16f * density
+            }
             setPadding(
                 (8 * density).toInt(), (4 * density).toInt(),
                 (8 * density).toInt(), (4 * density).toInt(),
@@ -1660,6 +1672,13 @@ class MapActivity : ComponentActivity() {
      * the card label and the download progress overlay.
      */
     private fun onVersionCardTapped() {
+        // If downloading with the overlay hidden, re-show it.
+        if (downloadJob?.isActive == true && !isDownloadOverlayVisible) {
+            showDownloadOverlay()
+            lastDownloadProgress?.let { updateDownloadUi(it) }
+            return
+        }
+
         // Ignore taps while already busy (text is not the commit hash).
         if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
         versionCardView.text = "checking…"
@@ -1673,25 +1692,91 @@ class MapActivity : ComponentActivity() {
                 return@launch
             }
 
+            // Remove stale files from a different update.
+            appUpdater.cleanupStaleFiles(apkUrl)
+
             showDownloadOverlay()
-            try {
-                val apk = appUpdater.downloadApk(apkUrl) { pct ->
-                    downloadProgressBar?.progress = pct
+            downloadJob = launch {
+                try {
+                    val apk = appUpdater.downloadApk(apkUrl) { progress ->
+                        lastDownloadProgress = progress
+                        updateDownloadUi(progress)
+                    }
+                    dismissDownloadOverlay()
+                    resetVersionCard()
+                    appUpdater.installApk(apk)
+                } catch (_: CancellationException) {
+                    // User cancelled — partial file kept for resume.
+                    dismissDownloadOverlay()
+                    resetVersionCard()
+                } catch (_: Exception) {
+                    dismissDownloadOverlay()
+                    versionCardView.text = "error"
+                    delay(2_000)
+                    resetVersionCard()
                 }
-                hideDownloadOverlay()
-                appUpdater.installApk(apk)
-            } catch (_: Exception) {
-                hideDownloadOverlay()
-                versionCardView.text = "error"
-                delay(2_000)
-                versionCardView.text = BuildConfig.GIT_COMMIT
             }
         }
     }
 
-    /** Shows a semi-transparent overlay with a horizontal progress bar. */
-    private fun showDownloadOverlay() {
+    private fun formatMb(bytes: Long): String =
+        "%.2f".format(bytes / 1_048_576.0)
+
+    private fun formatSpeed(bytesPerSecond: Long): String {
+        val mbps = bytesPerSecond / 1_048_576.0
+        return if (mbps >= 1.0) "%.1f MB/s".format(mbps)
+        else "%.0f KB/s".format(bytesPerSecond / 1_024.0)
+    }
+
+    private fun updateDownloadUi(p: DownloadProgress) {
+        val sizeText = "${formatMb(p.bytesDownloaded)}/${formatMb(p.totalBytes)} MB"
+        val pct = if (p.totalBytes > 0) (p.bytesDownloaded * 100 / p.totalBytes).toInt() else 0
+
+        if (isDownloadOverlayVisible) {
+            downloadProgressBar?.progress = pct
+            val speedText = if (p.bytesPerSecond > 0) " · ${formatSpeed(p.bytesPerSecond)}" else ""
+            downloadLabel?.text = "$sizeText$speedText"
+        } else {
+            // Show progress on the version card.
+            versionCardView.text = sizeText
+            updateVersionCardProgress(pct)
+        }
+    }
+
+    private fun updateVersionCardProgress(pct: Int) {
         val d = resources.displayMetrics.density
+        val r = 16f * d
+        val base = GradientDrawable().apply {
+            setColor(Color.argb(160, 0, 0, 0))
+            cornerRadius = r
+        }
+        val accent = GradientDrawable().apply {
+            setColor(Color.argb(220, 0, 80, 160))
+            cornerRadius = r
+        }
+        val clip = ClipDrawable(accent, Gravity.START, ClipDrawable.HORIZONTAL)
+        val layers = LayerDrawable(arrayOf(base, clip))
+        versionCardView.background = layers
+        clip.level = pct * 100   // ClipDrawable level is 0–10000
+    }
+
+    private fun resetVersionCard() {
+        val d = resources.displayMetrics.density
+        versionCardView.text = BuildConfig.GIT_COMMIT
+        versionCardView.background = GradientDrawable().apply {
+            setColor(Color.argb(160, 0, 0, 0))
+            cornerRadius = 16f * d
+        }
+        lastDownloadProgress = null
+    }
+
+    /** Shows a semi-transparent overlay with a progress bar, size label, and cancel button. */
+    private fun showDownloadOverlay() {
+        // Remove any existing overlay first.
+        dismissDownloadOverlay()
+
+        val d = resources.displayMetrics.density
+        isDownloadOverlayVisible = true
 
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max      = 100
@@ -1699,27 +1784,58 @@ class MapActivity : ComponentActivity() {
         }
         downloadProgressBar = bar
 
-        val label = TextView(this).apply {
-            text = "Downloading update…"
+        val title = TextView(this).apply {
+            text = "Downloading…"
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val cancelBtn = TextView(this).apply {
+            text = "✕"
             setTextColor(Color.WHITE)
             textSize = 20f
-            setPadding(0, 0, 0, (8 * d).toInt())
+            setPadding((8 * d).toInt(), 0, 0, 0)
+            setOnClickListener { downloadJob?.cancel() }
         }
+
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title)
+            addView(cancelBtn)
+        }
+
+        val sizeLabel = TextView(this).apply {
+            text = ""
+            setTextColor(Color.argb(200, 255, 255, 255))
+            textSize = 14f
+            setPadding(0, (6 * d).toInt(), 0, 0)
+        }
+        downloadLabel = sizeLabel
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(230, 24, 24, 24))
+            background = GradientDrawable().apply {
+                setColor(Color.argb(230, 24, 24, 24))
+                cornerRadius = 16f * d
+            }
             setPadding((24 * d).toInt(), (20 * d).toInt(), (24 * d).toInt(), (20 * d).toInt())
-            addView(label)
+            addView(headerRow)
             addView(bar, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-            ))
+            ).apply { topMargin = (12 * d).toInt() })
+            addView(sizeLabel)
+            // Consume taps on the card so they don't hide the overlay.
+            isClickable = true
         }
 
         val overlay = FrameLayout(this).apply {
             setBackgroundColor(Color.argb(160, 0, 0, 0))
-            isClickable = true   // consume touches so nothing behind is tapped
+            isClickable = true
+            // Tap outside the card → hide overlay (download continues).
+            setOnClickListener { hideDownloadOverlayKeepDownloading() }
             addView(container, FrameLayout.LayoutParams(
                 (280 * d).toInt(),
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1737,10 +1853,20 @@ class MapActivity : ComponentActivity() {
         )
     }
 
-    private fun hideDownloadOverlay() {
+    /** Hides the overlay but keeps the download running; progress moves to the version card. */
+    private fun hideDownloadOverlayKeepDownloading() {
+        dismissDownloadOverlay()
+        // Push current progress into the version card.
+        lastDownloadProgress?.let { updateDownloadUi(it) }
+    }
+
+    /** Removes the overlay views and resets overlay-related references. */
+    private fun dismissDownloadOverlay() {
         downloadOverlay?.let { (window.decorView as? ViewGroup)?.removeView(it) }
-        downloadOverlay    = null
+        downloadOverlay     = null
         downloadProgressBar = null
+        downloadLabel       = null
+        isDownloadOverlayVisible = false
     }
 
     /**
