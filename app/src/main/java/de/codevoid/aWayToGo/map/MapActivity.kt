@@ -1140,9 +1140,11 @@ class MapActivity : ComponentActivity() {
 
     private fun reloadStyle(isDark: Boolean, isSatellite: Boolean) {
         val m = map ?: return
+        val savedCamera = m.cameraPosition
         style = null
         m.setStyle(styleUrl(isDark, isSatellite)) { s ->
             style = s
+            m.moveCamera(CameraUpdateFactory.newCameraPosition(savedCamera))
             enableLocationIfReady()
         }
     }
