@@ -38,10 +38,15 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
+import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
 import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
 import de.codevoid.aWayToGo.map.ui.buildMenuPanel
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
+import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
+import de.codevoid.aWayToGo.search.GeocodingRepository
+import de.codevoid.aWayToGo.search.RecentSearches
+import de.codevoid.aWayToGo.search.SearchResult
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
@@ -60,6 +65,7 @@ import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -77,6 +83,9 @@ private const val SOURCE_DRAG_LINE        = "drag-line"
 private const val LAYER_DRAG_LINE_CASING  = "drag-line-casing"
 private const val LAYER_DRAG_LINE_FILL    = "drag-line-fill"
 private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
+
+private const val SOURCE_SEARCH_PIN = "search-pin-src"
+private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
 private const val TILT_3D = 60.0
 
@@ -143,6 +152,11 @@ class MapActivity : ComponentActivity() {
     private var downloadProgressBar: ProgressBar? = null
 
     private val appUpdater by lazy { AppUpdater(this) }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+    private lateinit var searchOverlayResult: SearchOverlayResult
+    private val geocoding = GeocodingRepository()
+    private lateinit var recentSearches: RecentSearches
 
     // Overlay used to animate screen rotation — covers the SurfaceView's brief
     // black resize frame, then fades out to reveal the re-laid-out UI.
@@ -351,9 +365,10 @@ class MapActivity : ComponentActivity() {
         // Only one set is visible at a time; renderUiState() manages visibility.
 
         exploreBottomBar = buildExploreBottomBar(
-            context = this,
-            onRide  = { flyToCurrentLocationThen {}; setMode(AppMode.NAVIGATE) },
-            onPlan  = { flyToCurrentLocationThen {}; setMode(AppMode.EDIT) },
+            context   = this,
+            onRide    = { flyToCurrentLocationThen {}; setMode(AppMode.NAVIGATE) },
+            onSearch  = { openSearch() },
+            onPlan    = { flyToCurrentLocationThen {}; setMode(AppMode.EDIT) },
         )
         root.addView(
             exploreBottomBar,
@@ -417,6 +432,25 @@ class MapActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.END,
             ).apply { setMargins(0, 0, btnMargin, btnMargin) },
+        )
+
+        // Search overlay — bottom-anchored panel that fades in/out over the map.
+        // Added before the menu dismiss overlay so the menu still sits on top.
+        recentSearches = RecentSearches(getSharedPreferences("search", MODE_PRIVATE))
+        searchOverlayResult = buildSearchOverlay(
+            context       = this,
+            recentSearches = recentSearches,
+            onClose       = { closeSearch() },
+            onSearch      = { query -> performSearch(query) },
+            onResultClick = { result -> onSearchResultSelected(result) },
+        )
+        root.addView(
+            searchOverlayResult.root.apply { visibility = View.GONE },
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM,
+            ).apply { setMargins(0, 0, 0, (80 * density).toInt()) },
         )
 
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
@@ -982,6 +1016,7 @@ class MapActivity : ComponentActivity() {
         val modeChanged    = old?.mode != new.mode
         val panningChanged = old?.isInPanningMode != new.isInPanningMode
         val menuChanged    = old?.isMenuOpen != new.isMenuOpen
+        val searchChanged  = old?.isSearchOpen != new.isSearchOpen
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1025,6 +1060,11 @@ class MapActivity : ComponentActivity() {
             }
         }
 
+        // ── Search overlay ─────────────────────────────────────────────────────
+        if (searchChanged) {
+            if (new.isSearchOpen) showSearchOverlay() else hideSearchOverlay()
+        }
+
         // ── Menu animation ─────────────────────────────────────────────────────
         // Skip on the first render (old == null): the panel already starts at button size.
         if (old != null && menuChanged) {
@@ -1053,6 +1093,71 @@ class MapActivity : ComponentActivity() {
     private fun toggleMenu() { viewModel.toggleMenu() }
     private fun openMenu()   { viewModel.openMenu() }
     private fun closeMenu()  { viewModel.closeMenu() }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+
+    private fun openSearch()  { viewModel.openSearch() }
+    private fun closeSearch() { viewModel.closeSearch() }
+
+    private fun showSearchOverlay() {
+        searchOverlayResult.clearResults()
+        searchOverlayResult.root.visibility = View.VISIBLE
+        searchOverlayResult.root.alpha = 0f
+        searchOverlayResult.root.animate().alpha(1f).setDuration(200).start()
+    }
+
+    private fun hideSearchOverlay() {
+        searchOverlayResult.root.animate().alpha(0f).setDuration(150)
+            .withEndAction { searchOverlayResult.root.visibility = View.GONE }
+            .start()
+    }
+
+    private fun performSearch(query: String) {
+        recentSearches.saveSearchTerm(query)
+        lifecycleScope.launch {
+            searchOverlayResult.showLoading()
+            try {
+                val results = geocoding.search(query)
+                searchOverlayResult.showResults(results)
+            } catch (_: Exception) {
+                searchOverlayResult.showError()
+            }
+        }
+    }
+
+    private fun onSearchResultSelected(result: SearchResult) {
+        recentSearches.saveLocation(result.displayName, result.lat, result.lon)
+        closeSearch()
+        val target = LatLng(result.lat, result.lon)
+        val m = map ?: return
+        flyToLocation(m, target, zoom = 14.0)
+        placeSearchPin(target)
+    }
+
+    private fun placeSearchPin(target: LatLng) {
+        val s = style ?: return
+        val feature    = Feature.fromGeometry(Point.fromLngLat(target.longitude, target.latitude))
+        val collection = FeatureCollection.fromFeatures(listOf(feature))
+
+        val existing = s.getSourceAs<GeoJsonSource>(SOURCE_SEARCH_PIN)
+        if (existing != null) {
+            existing.setGeoJson(collection)
+            return
+        }
+
+        s.addSource(GeoJsonSource(SOURCE_SEARCH_PIN, collection))
+        s.addLayer(
+            CircleLayer(LAYER_SEARCH_PIN, SOURCE_SEARCH_PIN).apply {
+                setProperties(
+                    PropertyFactory.circleColor("#FF0000"),
+                    PropertyFactory.circleRadius(10f),
+                    PropertyFactory.circleStrokeColor("#8B0000"),
+                    PropertyFactory.circleStrokeWidth(2f),
+                    PropertyFactory.circleOpacity(0.9f),
+                )
+            }
+        )
+    }
 
     /**
      * Expand the panel from button size (64×64dp) to its full content size.

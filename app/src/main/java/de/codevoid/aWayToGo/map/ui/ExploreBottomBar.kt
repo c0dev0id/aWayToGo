@@ -46,6 +46,7 @@ import de.codevoid.aWayToGo.R
 fun buildExploreBottomBar(
     context: Context,
     onRide: () -> Unit,
+    onSearch: () -> Unit,
     onPlan: () -> Unit,
 ): FrameLayout {
     val d          = context.resources.displayMetrics.density
@@ -143,7 +144,7 @@ fun buildExploreBottomBar(
         })
         isClickable = true
         isFocusable = true
-        setOnClickListener { /* stub */ }
+        setOnClickListener { onSearch() }
     }
 
     // Row sits behind the circle (added first → lower z-order).
