@@ -46,6 +46,7 @@ import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
 import de.codevoid.aWayToGo.map.ui.buildMenuPanel
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
+import de.codevoid.aWayToGo.map.ui.makePillButton
 import de.codevoid.aWayToGo.search.GeocodingRepository
 import de.codevoid.aWayToGo.search.RecentSearches
 import de.codevoid.aWayToGo.search.SearchResult
@@ -77,6 +78,11 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+
+// ── Map style URLs ────────────────────────────────────────────────────────────
+private const val STYLE_OUTDOOR = "https://api.maptiler.com/maps/outdoor-v2/style.json?key="
+private const val STYLE_DARK    = "https://api.maptiler.com/maps/dataviz-dark/style.json?key="
+private const val STYLE_HYBRID  = "https://api.maptiler.com/maps/hybrid/style.json?key="
 
 // ── Drag line style layer / source IDs ───────────────────────────────────────
 // Two LineLayer instances (casing behind, fill in front) produce the outlined
@@ -126,6 +132,8 @@ class MapActivity : ComponentActivity() {
     private lateinit var mapView: MapView
     private lateinit var remoteControl: RemoteControlManager
     private lateinit var osdView: TextView
+    private lateinit var satelliteToggleBtn: TextView
+    private lateinit var darkModeToggleBtn: TextView
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: View
     private lateinit var versionCardView: TextView
@@ -282,8 +290,7 @@ class MapActivity : ComponentActivity() {
         TileCache.init(this)
         remoteControl = RemoteControlManager(this)
 
-        val styleUrl =
-            "https://api.maptiler.com/maps/outdoor-v2/style.json?key=${BuildConfig.MAPTILER_KEY}"
+        val styleUrl = styleUrl(isDark = false, isSatellite = false)
 
         // Root layout — TwoFingerLockLayout disables map scrolling while a
         // two-finger (zoom/rotate) gesture is in progress.
@@ -309,6 +316,13 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
+        val density = resources.displayMetrics.density
+
+        // Top-right container: OSD debug info (debug builds only) + map toggle buttons.
+        val topRightContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
         // OSD overlay — plain TextView, no Compose recomposition.
         osdView = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -318,15 +332,44 @@ class MapActivity : ComponentActivity() {
             setPadding(16, 8, 16, 8)
             visibility = if (BuildConfig.DEBUG) View.VISIBLE else View.GONE
         }
-        val osdParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END,
-        ).apply { setMargins(0, 48, 16, 0) }
-        root.addView(osdView, osdParams)
+        topRightContainer.addView(
+            osdView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { gravity = Gravity.END },
+        )
 
-        // My-location button — top-left, circular dark background with ripple.
-        val density = resources.displayMetrics.density
+        val btnTopMargin = (8 * density).toInt()
+
+        satelliteToggleBtn = makePillButton(this, "SAT") { viewModel.toggleSatellite() }
+        topRightContainer.addView(
+            satelliteToggleBtn,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
+        )
+
+        darkModeToggleBtn = makePillButton(this, "DARK") { viewModel.toggleDarkMode() }
+        topRightContainer.addView(
+            darkModeToggleBtn,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
+        )
+
+        root.addView(
+            topRightContainer,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END,
+            ).apply { setMargins(0, 48, 16, 0) },
+        )
+
+        // My-location button — bottom-left, circular dark background with ripple.
         val btnSize = (64 * density).toInt()
         val btnPad  = (12 * density).toInt()
         val btnMargin = (16 * density).toInt()
@@ -1083,6 +1126,41 @@ class MapActivity : ComponentActivity() {
         }
     }
 
+    // ── Map style helpers ─────────────────────────────────────────────────────
+
+    private fun styleUrl(isDark: Boolean, isSatellite: Boolean): String {
+        val key = BuildConfig.MAPTILER_KEY
+        return when {
+            isSatellite -> "$STYLE_HYBRID$key"
+            isDark      -> "$STYLE_DARK$key"
+            else        -> "$STYLE_OUTDOOR$key"
+        }
+    }
+
+    private fun reloadStyle(isDark: Boolean, isSatellite: Boolean) {
+        val m = map ?: return
+        style = null
+        m.setStyle(styleUrl(isDark, isSatellite)) { s ->
+            style = s
+            enableLocationIfReady()
+        }
+    }
+
+    private fun setToggleActive(btn: TextView, active: Boolean) {
+        val d = resources.displayMetrics.density
+        val r = 24 * d
+        val bg = if (active) Color.argb(220, 30, 100, 200) else Color.argb(180, 0, 0, 0)
+        btn.background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE; cornerRadius = r; setColor(bg)
+            },
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE; cornerRadius = r; setColor(Color.WHITE)
+            },
+        )
+    }
+
     // ── Reactive state renderer ───────────────────────────────────────────────
 
     /**
@@ -1171,6 +1249,15 @@ class MapActivity : ComponentActivity() {
                 applyCameraForMode(new.mode, animated = true)
             }
         }
+
+        // ── Map style toggles ──────────────────────────────────────────────────
+        val satChanged  = old?.isSatelliteEnabled != new.isSatelliteEnabled
+        val darkChanged = old?.isDarkMode         != new.isDarkMode
+        if (satChanged || darkChanged) {
+            reloadStyle(new.isDarkMode, new.isSatelliteEnabled)
+        }
+        setToggleActive(satelliteToggleBtn, new.isSatelliteEnabled)
+        setToggleActive(darkModeToggleBtn,  new.isDarkMode)
     }
 
     private fun toggleMenu() { viewModel.toggleMenu() }
