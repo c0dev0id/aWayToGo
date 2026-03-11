@@ -1,0 +1,1 @@
+- When entering riding mode, zoom in to 17.0
