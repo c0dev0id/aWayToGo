@@ -102,4 +102,14 @@ class MapViewModel : ViewModel() {
     fun closeSearch() {
         _uiState.update { it.copy(isSearchOpen = false) }
     }
+
+    /** Toggle satellite hybrid style on/off. */
+    fun toggleSatellite() {
+        _uiState.update { it.copy(isSatelliteEnabled = !it.isSatelliteEnabled) }
+    }
+
+    /** Toggle dark map style on/off. */
+    fun toggleDarkMode() {
+        _uiState.update { it.copy(isDarkMode = !it.isDarkMode) }
+    }
 }
