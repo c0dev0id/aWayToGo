@@ -764,8 +764,14 @@ class MapActivity : ComponentActivity() {
                 LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
             )
             isLocationComponentEnabled = true
-            cameraMode = trackingCameraMode()
-            renderMode = trackingRenderMode()
+            val uiState = viewModel.uiState.value
+            val shouldTrack = !uiState.isInPanningMode
+                && uiState.mode != AppMode.EDIT
+                && cameraMode != CameraMode.NONE  // don't override user-disabled state
+            if (shouldTrack) {
+                cameraMode = trackingCameraMode()
+                renderMode = trackingRenderMode()
+            }
         }
 
         m.locationComponent.lastKnownLocation?.let { loc ->
@@ -1919,6 +1925,7 @@ class MapActivity : ComponentActivity() {
             600,
             object : MapLibreMap.CancelableCallback {
                 override fun onFinish() {
+                    reassertTrackingMode()
                     // Phase 2: ease into the final zoom level.
                     m.animateCamera(
                         CameraUpdateFactory.newLatLngZoom(target, zoom),
