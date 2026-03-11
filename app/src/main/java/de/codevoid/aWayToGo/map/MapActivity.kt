@@ -6,16 +6,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.ColorFilter
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PixelFormat
 import android.graphics.PointF
-import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
@@ -27,7 +20,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
-import android.widget.ScrollView
 import android.widget.TextView
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
@@ -46,6 +38,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
+import de.codevoid.aWayToGo.map.ui.buildEditTopBar
+import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
+import de.codevoid.aWayToGo.map.ui.buildMenuPanel
+import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
@@ -475,9 +471,13 @@ class MapActivity : ComponentActivity() {
         )
 
         // ── Mode overlays ─────────────────────────────────────────────────────
-        // Only one set is visible at a time; setMode() manages visibility.
+        // Only one set is visible at a time; renderUiState() manages visibility.
 
-        exploreBottomBar = buildExploreBottomBar()
+        exploreBottomBar = buildExploreBottomBar(
+            context = this,
+            onRide  = { flyToCurrentLocationThen {}; setMode(AppMode.NAVIGATE) },
+            onPlan  = { flyToCurrentLocationThen {}; setMode(AppMode.EDIT) },
+        )
         root.addView(
             exploreBottomBar,
             FrameLayout.LayoutParams(
@@ -487,7 +487,14 @@ class MapActivity : ComponentActivity() {
             ).apply { setMargins(0, 0, 0, btnMargin) },
         )
 
-        navigateOverlay = buildNavigateOverlay()
+        buildNavigateOverlay(
+            context = this,
+            onStop  = { setMode(AppMode.EXPLORE) },
+        ).also { result ->
+            navigateOverlay  = result.root
+            navigateBanner   = result.banner
+            navigateStopBtn  = result.stopBtn
+        }
         root.addView(
             navigateOverlay,
             FrameLayout.LayoutParams(
@@ -496,7 +503,11 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
-        editTopBar = buildEditTopBar()
+        editTopBar = buildEditTopBar(
+            context   = this,
+            onDiscard = { setMode(AppMode.EXPLORE) },
+            onSave    = { setMode(AppMode.EXPLORE) },
+        )
         root.addView(
             editTopBar,
             FrameLayout.LayoutParams(
@@ -548,9 +559,16 @@ class MapActivity : ComponentActivity() {
         )
 
         // Popup menu panel — the hamburger button IS this panel's top-left corner.
-        // Starts at button size (64×64dp); openMenu/closeMenu animate the layout params
-        // to expand/collapse it. cornerRadius=32dp gives a perfect circle at button size.
-        menuPanel = buildMenuPanel()
+        // Starts at button size (64×64dp); runOpenMenuAnimation/runCloseMenuAnimation
+        // animate the layout params to expand/collapse it.
+        // cornerRadius=32dp gives a perfect circle at button size.
+        buildMenuPanel(
+            context       = this,
+            onToggleMenu  = { toggleMenu() },
+        ).also { result ->
+            menuPanel      = result.root
+            hamburgerBars  = result.hamburgerBars
+        }
         root.addView(
             menuPanel,
             FrameLayout.LayoutParams(btnSize, btnSize, Gravity.TOP or Gravity.START)
@@ -1089,434 +1107,6 @@ class MapActivity : ComponentActivity() {
                 animateModeTransition(old.mode, new.mode)
                 applyCameraForMode(new.mode, animated = true)
             }
-        }
-    }
-
-    // ── View builders ─────────────────────────────────────────────────────────
-
-    /**
-     * Circular icon button with dark semi-transparent background and ripple.
-     * Matches the visual style of [myLocationButton].
-     */
-    private fun makeCircleButton(iconRes: Int, onClick: () -> Unit): ImageView {
-        val d   = resources.displayMetrics.density
-        val pad = (12 * d).toInt()
-        return ImageView(this).apply {
-            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, iconRes))
-            background = RippleDrawable(
-                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(180, 0, 0, 0)) },
-                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
-            )
-            setPadding(pad, pad, pad, pad)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { onClick() }
-        }
-    }
-
-    /**
-     * Pill-shaped text button with dark semi-transparent background and ripple.
-     * Width and height are set by the caller via LayoutParams.
-     */
-    private fun makePillButton(label: String, onClick: () -> Unit): TextView {
-        val d      = resources.displayMetrics.density
-        val hPad   = (20 * d).toInt()
-        val vPad   = (10 * d).toInt()
-        val radius = 24 * d
-        return TextView(this).apply {
-            text = label
-            setTextColor(Color.WHITE)
-            textSize = 20f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            background = RippleDrawable(
-                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = radius
-                    setColor(Color.argb(180, 0, 0, 0))
-                },
-                GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = radius
-                    setColor(Color.WHITE)
-                },
-            )
-            setPadding(hPad, vPad, hPad, vPad)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { onClick() }
-        }
-    }
-
-    /**
-     * Explore mode action bar: two half-pill buttons flanking a large central search
-     * circle, with a clean 2dp gap. Each button's inner edge is a concave arc that
-     * follows the circle outline exactly.
-     *
-     * Layout (z-order: row behind, circle on top):
-     *
-     *       ╭──────╮           ╭──────╮
-     *       │ RIDE )           ( Plan │  ← concave inner edge, 2dp gap from circle
-     *       ╰──────╯           ╰──────╯
-     *                ╔══════╗
-     *                ║  🔍  ║  ← circle, sits cleanly between the two buttons
-     *                ║Search║
-     *                ╚══════╝
-     *
-     * Implemented via Path.Op.DIFFERENCE: half-pill base shape (addRoundRect) minus
-     * a circle enlarged by 2dp (the gap) punched out of the inner edge.
-     *
-     * Geometry: circle centre in row-local coords = (rowWidth/2, btnH/2).
-     * In rideBtn-local coords that is (+200dp, +32dp); in planBtn-local it is
-     * (−28dp, +32dp). The cutout radius of 74dp (72 + 2dp gap) produces a constant
-     * 2dp radial separation between button edge and circle edge at every point.
-     */
-    private fun buildExploreBottomBar(): FrameLayout {
-        val d          = resources.displayMetrics.density
-        val circleSize = (144 * d).toInt()
-        val btnH       = (64 * d).toInt()
-        val btnW       = (172 * d).toInt()
-        val overlap    = (44 * d).toInt()
-        val spacerW    = (circleSize - overlap * 2).coerceAtLeast(0)
-        val outerR     = btnH / 2f
-        val cutoutR    = circleSize / 2f + (2 * d)   // circle radius + 2dp gap
-
-        // Circle centre in row-local coordinates.
-        // Both the row and the circle are centred (Gravity.CENTER) in the FrameLayout,
-        // so the circle centre x = rowWidth / 2.
-        val rowWidth     = 2f * btnW + spacerW
-        val circleCX_row = rowWidth / 2f
-        val circleCY     = btnH / 2f   // circle and buttons share the same vertical centre
-
-        // Minimal path-backed solid-colour Drawable (GradientDrawable can't do concave arcs).
-        fun pathDrawable(path: Path, color: Int): Drawable = object : Drawable() {
-            private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                this.color = color; style = Paint.Style.FILL
-            }
-            override fun draw(canvas: Canvas) = canvas.drawPath(path, paint)
-            override fun setAlpha(a: Int) { paint.alpha = a }
-            override fun setColorFilter(cf: ColorFilter?) { paint.colorFilter = cf }
-            @Suppress("OVERRIDE_DEPRECATION")
-            override fun getOpacity() = PixelFormat.TRANSLUCENT
-        }
-
-        // Half-pill outline with a circular notch on the inner edge (Path.Op.DIFFERENCE).
-        fun makeButtonPath(roundLeft: Boolean): Path {
-            // planBtn starts further right in the row, so its circle centre is negative in local x.
-            val btnLeft = if (roundLeft) 0f else (btnW + spacerW).toFloat()
-            val cx = circleCX_row - btnLeft   // circle centre x in button-local coords
-            val cy = circleCY
-            val radii = if (roundLeft)
-                floatArrayOf(outerR, outerR, 0f, 0f, 0f, 0f, outerR, outerR)
-            else
-                floatArrayOf(0f, 0f, outerR, outerR, outerR, outerR, 0f, 0f)
-            return Path().apply {
-                addRoundRect(RectF(0f, 0f, btnW.toFloat(), btnH.toFloat()), radii, Path.Direction.CW)
-                val circle = Path()
-                circle.addCircle(cx, cy, cutoutR, Path.Direction.CW)
-                op(circle, Path.Op.DIFFERENCE)
-            }
-        }
-
-        fun makeHalfPill(label: String, roundLeft: Boolean, onClick: () -> Unit): TextView {
-            val path = makeButtonPath(roundLeft)
-            return TextView(this).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                textSize = 26f
-                typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER
-                background = RippleDrawable(
-                    ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                    pathDrawable(path, Color.argb(180, 0, 0, 0)),
-                    pathDrawable(path, Color.WHITE),
-                )
-                isClickable = true
-                isFocusable = true
-                setOnClickListener { onClick() }
-            }
-        }
-
-        val rideBtn = makeHalfPill("Ride", roundLeft = true)  { flyToCurrentLocationThen {}; setMode(AppMode.NAVIGATE) }
-        val planBtn = makeHalfPill("Plan", roundLeft = false) { flyToCurrentLocationThen {}; setMode(AppMode.EDIT) }
-
-        // Search circle: icon above label, larger than the side buttons.
-        val iconPad  = (16 * d).toInt()
-        val iconSize = (44 * d).toInt()
-        val searchBtn = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity     = Gravity.CENTER
-            background  = RippleDrawable(
-                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(210, 0, 0, 0)) },
-                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
-            )
-            setPadding(iconPad, iconPad, iconPad, iconPad)
-            addView(
-                ImageView(this@MapActivity).apply {
-                    setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_search))
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                },
-                LinearLayout.LayoutParams(iconSize, iconSize),
-            )
-            addView(TextView(this@MapActivity).apply {
-                text = "Search"
-                setTextColor(Color.WHITE)
-                textSize = 20f
-                gravity = Gravity.CENTER
-            })
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { /* stub */ }
-        }
-
-        // Row sits behind the circle (added first → lower z-order).
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity     = Gravity.CENTER_VERTICAL
-            addView(rideBtn, LinearLayout.LayoutParams(btnW, btnH))
-            addView(View(this@MapActivity), LinearLayout.LayoutParams(spacerW, btnH))
-            addView(planBtn, LinearLayout.LayoutParams(btnW, btnH))
-        }
-
-        return FrameLayout(this).apply {
-            addView(row, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER,
-            ))
-            // Circle added second → drawn on top, covers inner edges of both buttons.
-            addView(searchBtn, FrameLayout.LayoutParams(
-                circleSize, circleSize, Gravity.CENTER,
-            ))
-        }
-    }
-
-    /** Full-screen overlay for Navigate mode: green top banner + STOP at bottom. */
-    private fun buildNavigateOverlay(): FrameLayout {
-        val d      = resources.displayMetrics.density
-        val hPad   = (16 * d).toInt()
-        val vPad   = (12 * d).toInt()
-        val margin = (16 * d).toInt()
-
-        val banner = TextView(this).apply {
-            text = "▶  NAVIGATION"
-            setTextColor(Color.WHITE)
-            textSize = 20f
-            typeface = Typeface.DEFAULT_BOLD
-            setBackgroundColor(Color.argb(220, 0, 140, 60))
-            setPadding(hPad, vPad, hPad, vPad)
-        }
-        // Capture as instance fields so animateModeTransition() can address them directly.
-        navigateBanner = banner
-        val stopBtn = makePillButton("■  STOP") { setMode(AppMode.EXPLORE) }
-        navigateStopBtn = stopBtn
-
-        return FrameLayout(this).apply {
-            // Hidden by default — only shown in NAVIGATE mode.
-            visibility = View.GONE
-            addView(banner, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP,
-            ))
-            addView(stopBtn, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
-            ).apply { setMargins(0, 0, 0, margin) })
-        }
-    }
-
-    /** Top bar for Edit mode: [✕ DISCARD] [trip title] [✓ SAVE]. */
-    private fun buildEditTopBar(): LinearLayout {
-        val d    = resources.displayMetrics.density
-        val hPad = (16 * d).toInt()
-        val vPad = (8  * d).toInt()
-
-        val discardBtn = makePillButton("✕  DISCARD") { setMode(AppMode.EXPLORE) }
-        val saveBtn    = makePillButton("✓  SAVE")    { setMode(AppMode.EXPLORE) }
-        val titleView  = TextView(this).apply {
-            text = "New Trip"
-            setTextColor(Color.WHITE)
-            textSize = 20f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-        }
-
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            // Hidden by default — only shown in EDIT mode.
-            visibility = View.GONE
-            setBackgroundColor(Color.argb(220, 0, 80, 160))
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(hPad, vPad, hPad, vPad)
-            addView(discardBtn, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ))
-            addView(titleView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            addView(saveBtn, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ))
-        }
-    }
-
-    // ── Hamburger popup menu ──────────────────────────────────────────────────
-
-    /**
-     * Builds the popup menu panel.
-     *
-     * Design: the panel IS the hamburger button.  At rest it is 64×64dp with
-     * cornerRadius=32dp — identical to a circle.  [openMenu] / [closeMenu]
-     * animate the LayoutParams width+height from button size to full panel size
-     * and back, while [hamburgerBars] rotate 90° in a staggered cascade during open.
-     *
-     * Because the view is never scaled (only sized), the cornerRadius is always
-     * visually correct: 32dp on a 64×64dp view = circle; 32dp on the expanded
-     * 280×fullH view = rounded rectangle.
-     *
-     * Structure (outer FrameLayout → inner LinearLayout wrapper):
-     *   ├── hamburgerRow (64dp, fixed above scroll — always the topmost element)
-     *   └── ScrollView
-     *         └── profileRow + separator + 6 menu items
-     *
-     * Visibility is managed by [setMode]: VISIBLE in EXPLORE, GONE otherwise.
-     */
-    private fun buildMenuPanel(): View {
-        val d       = resources.displayMetrics.density
-        val radius  = 32 * d         // cornerRadius=32dp → circle at 64dp, rounded-rect when expanded
-        val panelW  = (280 * d).toInt()
-        val itemH   = (64 * d).toInt()
-        val iconSz  = (28 * d).toInt()
-        val hPad    = (16 * d).toInt()
-        val iconGap = (12 * d).toInt()
-        val btnPad  = (12 * d).toInt()
-
-        // Single menu row: icon + label, full-width ripple.
-        fun menuItem(iconRes: Int, label: String): LinearLayout {
-            return LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity     = Gravity.CENTER_VERTICAL
-                setPadding(hPad, 0, hPad, 0)
-                isClickable = true
-                isFocusable = true
-                background  = RippleDrawable(
-                    ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
-                    null,
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        setColor(Color.WHITE)
-                    },
-                )
-                addView(
-                    ImageView(this@MapActivity).apply {
-                        setImageDrawable(ContextCompat.getDrawable(this@MapActivity, iconRes))
-                        scaleType = ImageView.ScaleType.FIT_CENTER
-                    },
-                    LinearLayout.LayoutParams(iconSz, iconSz),
-                )
-                addView(View(this@MapActivity), LinearLayout.LayoutParams(iconGap, 0))
-                addView(
-                    TextView(this@MapActivity).apply {
-                        text = label
-                        setTextColor(Color.WHITE)
-                        textSize = 20f
-                        gravity = Gravity.CENTER_VERTICAL
-                    },
-                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-                )
-            }
-        }
-
-        // Three-bar hamburger icon: each bar is a separate View so they can be rotated
-        // individually during open/close.  All pivots point to the icon centre (32dp, 32dp)
-        // so they rotate as if they were one unit — but at different speeds.
-        //
-        // Layout inside the 64×64dp button area (btnPad=12dp, contentArea=40×40dp):
-        //   bar 0 centre at ¼ of content height = 22dp from top
-        //   bar 1 centre at ½ of content height = 32dp from top  (= icon centre)
-        //   bar 2 centre at ¾ of content height = 42dp from top
-        //
-        // pivotY for each bar = iconCY − barTop, so the rotation axis is always the
-        // icon centre (32dp) in parent coordinates.
-        // pivotX = barW/2 because the bar is centred on iconCX, so bar.left = iconCX − barW/2
-        // and bar.left + pivotX = iconCX − barW/2 + barW/2 = iconCX.
-        val barH         = (3 * d).toInt().coerceAtLeast(2)
-        val barW         = (32 * d).toInt()                      // 32dp, centred on icon
-        val contentH     = itemH - 2 * btnPad                    // 40dp
-        val iconCX       = itemH / 2f                            // 32dp in px
-        val iconCY       = itemH / 2f
-        val barLeftMargin = (iconCX - barW / 2f).toInt()         // 16dp — centres bar on icon
-
-        hamburgerBars = Array(3) { i ->
-            val barCY  = btnPad + contentH * (i + 1f) / 4f   // 22, 32, 42 dp
-            val barTop = (barCY - barH / 2f).toInt()
-            View(this).apply {
-                background = GradientDrawable().apply {
-                    shape        = GradientDrawable.RECTANGLE
-                    cornerRadius = barH / 2f
-                    setColor(Color.WHITE)
-                }
-                pivotX = barW / 2f                // centre of bar = iconCX in parent coords
-                pivotY = iconCY - barTop          // distance from bar's top to icon centre Y
-            }
-        }
-
-        // Hamburger button container — clipChildren=false lets the bars draw outside their
-        // own 32×3dp layout rectangles during rotation without being clipped.
-        val hamburgerBtn = FrameLayout(this).apply {
-            clipChildren = false
-            isClickable  = true
-            isFocusable  = true
-            setOnClickListener { toggleMenu() }
-            hamburgerBars.forEachIndexed { i, bar ->
-                val barCY  = btnPad + contentH * (i + 1f) / 4f
-                val barTop = (barCY - barH / 2f).toInt()
-                addView(bar, FrameLayout.LayoutParams(barW, barH).apply {
-                    gravity    = Gravity.TOP or Gravity.START
-                    topMargin  = barTop
-                    leftMargin = barLeftMargin
-                })
-            }
-        }
-
-        // 6 menu items, scrollable.
-        val contentList = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(menuItem(R.drawable.ic_menu_locations,    "My Locations"),  LinearLayout.LayoutParams(panelW, itemH))
-            addView(menuItem(R.drawable.ic_menu_trips,        "My Trips"),      LinearLayout.LayoutParams(panelW, itemH))
-            addView(menuItem(R.drawable.ic_menu_recordings,   "My Recordings"), LinearLayout.LayoutParams(panelW, itemH))
-            addView(menuItem(R.drawable.ic_menu_poi_groups,   "My POI Groups"), LinearLayout.LayoutParams(panelW, itemH))
-            addView(menuItem(R.drawable.ic_menu_offline_maps, "Offline Maps"),  LinearLayout.LayoutParams(panelW, itemH))
-            addView(menuItem(R.drawable.ic_menu_settings,     "Settings"),      LinearLayout.LayoutParams(panelW, itemH))
-        }
-
-        val scroll = ScrollView(this).apply { addView(contentList) }
-
-        return FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                shape        = GradientDrawable.RECTANGLE
-                cornerRadius = radius
-                setColor(Color.argb(220, 20, 20, 20))
-            }
-            // Clip content to the rounded-rect outline so children don't bleed
-            // through corners as the panel grows beyond the button-sized initial rect.
-            clipToOutline = true
-
-            // Scroll content pushed below the 64dp header area.
-            addView(scroll, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = itemH
-            })
-
-            addView(hamburgerBtn, FrameLayout.LayoutParams(itemH, itemH).apply {
-                gravity = Gravity.TOP or Gravity.START
-            })
-            // Starts VISIBLE at button size (64×64dp set by addView LayoutParams in onCreate).
-            // setMode() manages VISIBLE/GONE; openMenu/closeMenu animate the size.
         }
     }
 

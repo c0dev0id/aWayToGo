@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - `MapViewModel` and `MapUiState`: mode, panning, and menu state extracted from `MapActivity` into a `ViewModel` backed by a `StateFlow`. `MapActivity` now observes the flow and delegates all view rendering to `renderUiState(new, old)`, which diffs the two states to minimise work and drive the correct animations.
+- View builders extracted to `map/ui/` package: `buildExploreBottomBar`, `buildNavigateOverlay`, `buildEditTopBar`, `buildMenuPanel`, `makeCircleButton`, and `makePillButton` are now package-level functions. They receive a `Context` and lambda callbacks; no Activity reference is needed. `MapActivity` lost ~400 lines.
 - `RoutingDomain` skeleton: `RoutingRepository` interface, `Route`, `RoutePoint`, `RoutingProfile`, `RoutingResult` domain types, and a `BRouterEngine` stub that wires to the interface. No BRouter library yet — the stub returns an error; this establishes the correct layer boundary before integration.
 
 ### Changed
