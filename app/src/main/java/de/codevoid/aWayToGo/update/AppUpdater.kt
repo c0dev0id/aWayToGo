@@ -44,6 +44,8 @@ class AppUpdater(private val context: Context) {
     suspend fun checkForUpdate(): String? = withContext(Dispatchers.IO) {
         try {
             val conn = URL(RELEASES_URL).openConnection() as HttpURLConnection
+            conn.connectTimeout = 10_000
+            conn.readTimeout    = 15_000
             conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
             conn.connect()
             val body = conn.inputStream.bufferedReader().readText()
@@ -92,6 +94,8 @@ class AppUpdater(private val context: Context) {
     suspend fun downloadApk(url: String, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
             val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout          = 15_000
+            conn.readTimeout             = 30_000
             conn.instanceFollowRedirects = true
             conn.connect()
 

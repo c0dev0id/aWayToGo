@@ -1612,25 +1612,31 @@ class MapActivity : ComponentActivity() {
         versionCardView.text = "checking…"
 
         lifecycleScope.launch {
-            val apkUrl = appUpdater.checkForUpdate()
-            if (apkUrl == null) {
-                versionCardView.text = "up to date"
-                delay(2_000)
-                versionCardView.text = BuildConfig.GIT_COMMIT
-                return@launch
-            }
-
-            showDownloadOverlay()
             try {
-                val apk = appUpdater.downloadApk(apkUrl) { pct ->
-                    downloadProgressBar?.progress = pct
+                val apkUrl = appUpdater.checkForUpdate()
+                if (apkUrl == null) {
+                    versionCardView.text = "up to date"
+                    delay(2_000)
+                    return@launch
                 }
+
+                showDownloadOverlay()
+                try {
+                    val apk = appUpdater.downloadApk(apkUrl) { pct ->
+                        downloadProgressBar?.progress = pct
+                    }
+                    hideDownloadOverlay()
+                    appUpdater.installApk(apk)
+                    return@launch   // success — installer dialog takes over; finally resets text
+                } catch (_: Exception) {
+                    hideDownloadOverlay()
+                    versionCardView.text = "error"
+                    delay(2_000)
+                }
+            } finally {
+                // Always restore the card to the commit hash — covers cancellation,
+                // timeout, "up to date", "error", and successful install paths.
                 hideDownloadOverlay()
-                appUpdater.installApk(apk)
-            } catch (_: Exception) {
-                hideDownloadOverlay()
-                versionCardView.text = "error"
-                delay(2_000)
                 versionCardView.text = BuildConfig.GIT_COMMIT
             }
         }
