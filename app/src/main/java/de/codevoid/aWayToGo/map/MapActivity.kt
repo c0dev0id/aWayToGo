@@ -1217,8 +1217,16 @@ class MapActivity : ComponentActivity() {
                     }
                 }
 
-                // Entering EXPLORE from NAVIGATE/EDIT: tracking state is unchanged —
-                // the user controls it via the my-location button.
+                // Entering EXPLORE: always re-enable tracking.
+                //
+                // EDIT sets cameraMode = NONE, and reassertTrackingMode() bails early when
+                // it sees NONE — so without this branch, rotation stays permanently broken
+                // after any EDIT-mode visit.  Re-enabling here is also safe when coming from
+                // NAVIGATE (where tracking was already on) — it is just a harmless no-op.
+                modeChanged && new.mode == AppMode.EXPLORE -> {
+                    map?.locationComponent?.cameraMode = trackingCameraMode()
+                    map?.locationComponent?.renderMode  = trackingRenderMode()
+                }
             }
         }
 
@@ -1333,6 +1341,10 @@ class MapActivity : ComponentActivity() {
         m.animateCamera(
             CameraUpdateFactory.newLatLngZoom(newCameraTarget, m.cameraPosition.zoom),
             350,
+            object : MapLibreMap.CancelableCallback {
+                override fun onFinish() { reassertTrackingMode() }
+                override fun onCancel() { reassertTrackingMode() }
+            },
         )
     }
 
