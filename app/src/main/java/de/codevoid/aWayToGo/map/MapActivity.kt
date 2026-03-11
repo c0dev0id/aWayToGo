@@ -465,14 +465,11 @@ class MapActivity : ComponentActivity() {
         // The panel starts as INVISIBLE (focusable but not drawn) and is promoted to
         // VISIBLE on the first animation frame — this ensures the panel never appears
         // at the wrong (pre-keyboard) position before jumping up.
-        // WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE = 1 per stable AndroidX API.
-        // Kotlin cannot resolve the constant via qualified name in this core version, so we
-        // use the raw int value to avoid an "Unresolved reference" compile error.
-        @Suppress("WrongConstant")
-        val imeDispatchMode = 1 // DISPATCH_MODE_CONTINUE
         ViewCompat.setWindowInsetsAnimationCallback(
             root,
-            object : WindowInsetsAnimationCompat.Callback(imeDispatchMode) {
+            object : WindowInsetsAnimationCompat.Callback(
+                WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE,
+            ) {
                 override fun onProgress(
                     insets: WindowInsetsCompat,
                     runningAnimations: List<WindowInsetsAnimationCompat>,
