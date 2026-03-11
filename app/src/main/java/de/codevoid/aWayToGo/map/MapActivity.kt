@@ -688,7 +688,7 @@ class MapActivity : ComponentActivity() {
             if (BuildConfig.DEBUG) {
                 var glFrameCount = 0
                 var glWindowNs   = 0L
-                mapView.addOnDidFinishRenderingFrameListener { _ ->
+                mapView.addOnDidFinishRenderingFrameListener { _, _, _ ->
                     val now = System.nanoTime()
                     if (glWindowNs == 0L) { glWindowNs = now; return@addOnDidFinishRenderingFrameListener }
                     glFrameCount++
