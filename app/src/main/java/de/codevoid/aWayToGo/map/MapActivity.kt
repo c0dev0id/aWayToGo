@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.TrafficStats
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
@@ -203,6 +204,11 @@ class MapActivity : ComponentActivity() {
     private var osdWindowNs    = 0L
     private var osdLastFps     = 0
     private var osdLastDtMs    = 0L
+    private var osdGlFps       = 0.0
+    private var osdRxLast      = 0L
+    private var osdTxLast      = 0L
+    private var osdRxRate      = 0L  // bytes/s
+    private var osdTxRate      = 0L  // bytes/s
 
     // ── Choreographer loop ────────────────────────────────────────────────────
     //
@@ -243,13 +249,30 @@ class MapActivity : ComponentActivity() {
                     osdLastFps    = (osdFrameCount * 1_000_000_000L / elapsed).toInt()
                     osdFrameCount = 0
                     osdWindowNs   = frameTimeNanos
+
+                    // Network rate — sampled once per second
+                    val rx = TrafficStats.getTotalRxBytes()
+                    val tx = TrafficStats.getTotalTxBytes()
+                    if (osdRxLast != 0L) {
+                        osdRxRate = rx - osdRxLast
+                        osdTxRate = tx - osdTxLast
+                    }
+                    osdRxLast = rx
+                    osdTxLast = tx
                 }
 
-                val zoom    = map?.cameraPosition?.zoom ?: 0.0
-                val panLine = if (panSpeed > 0f)
-                    "\npan  ${"%.0f".format(panSpeed)} px/s" else ""
-                osdView.text =
-                    "fps  $osdLastFps  dt:${osdLastDtMs}ms\nzoom ${"%.1f".format(zoom)}$panLine"
+                val zoom   = map?.cameraPosition?.zoom ?: 0.0
+                val loc    = map?.locationComponent?.lastKnownLocation
+                val hasFix = loc != null
+                val acc    = loc?.accuracy ?: 0f
+                val panLine = if (panSpeed > 0f) "\npan  ${"%.0f".format(panSpeed)} px/s" else ""
+                osdView.text = buildString {
+                    append("fps  $osdLastFps  dt:${osdLastDtMs}ms\n")
+                    append("zoom ${"%.1f".format(zoom)}  gl_fps ${"%.0f".format(osdGlFps)}\n")
+                    append("net  rx:${osdRxRate / 1024}kB/s  tx:${osdTxRate / 1024}kB/s\n")
+                    append("gps  fix:${if (hasFix) "Y" else "N"}  mov:${if (isMoving) "Y" else "N"}  acc:${"%.0f".format(acc)}m")
+                    if (panLine.isNotEmpty()) append(panLine)
+                }
             }
 
             Choreographer.getInstance().postFrameCallback(this)
@@ -661,6 +684,9 @@ class MapActivity : ComponentActivity() {
             // uploads do not drop visible frames.
             m.addOnCameraIdleListener {
                 TileCache.gate.resume()
+            }
+            if (BuildConfig.DEBUG) {
+                m.addOnFpsChangedListener { fps -> osdGlFps = fps }
             }
             m.setStyle(styleUrl) { s ->
                 map   = m
