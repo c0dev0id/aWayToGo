@@ -1,5 +1,43 @@
 # Development Journal — aWayToGo
 
+## ⚑ Session Handoff (2026-03-11) — pick up here
+
+### Current state
+- **Branch:** `main`
+- **Last local commit:** `7cce80a` — "Search: lazy keyboard, dismiss on Go, map-tap closes panel"
+- **⚠ Not yet pushed to GitHub.** The `.gh_token` file has a fine-grained PAT with `contents:read` only — it cannot push. Push from your machine with `git push` before the next session so CI can run.
+- **Last green CI run:** `de2c4b9` (all jobs: build ✅ lint ✅ sign ✅ release ✅)
+- **Token note for next session:** use `.gh_token` for READ operations (workflow status, logs) via the GitHub REST API or the `gh` binary at `/sessions/<id>/gh`. Do not try to push with it — it will always 403.
+
+### What was done this session
+
+#### Build fix
+- `DISPATCH_MODE_CONTINUE` does not exist in `WindowInsetsAnimationCompat.Callback` in core-ktx 1.15.0 — the correct constant is `DISPATCH_MODE_CONTINUE_ON_SUBTREE`. Four commits were needed to diagnose this (the first attempts tried workarounds before the actual name was found in the lint error output).
+
+#### Search overlay UX (commit `7cce80a`)
+All changes are in `MapActivity.kt` and `map/ui/SearchOverlay.kt`.
+
+**New keyboard behaviour:**
+- Search panel now opens at the screen edge **without** showing the keyboard. The keyboard only appears when the user taps the search field (via `setOnFocusChangeListener` → `showSoftInput`).
+- Tapping **Go** (or the IME search action) **dismisses** the keyboard so the result list has maximum height. Results remain visible with the panel sitting at the screen edge.
+- Dismissing the keyboard manually (back gesture) **no longer closes search** — the panel descends to the screen edge and stays. `onEnd` no longer calls `closeSearch()`.
+- Tapping the **map** closes the entire search panel (`m.addOnMapClickListener`).
+
+**Landscape / side insets:**
+- `ViewCompat.setOnApplyWindowInsetsListener` on the search panel root applies `systemBars + displayCutout` left/right insets as margins, so the panel never overlaps side nav buttons.
+
+**`SearchOverlayResult` API change:**
+- `focusAndShowKeyboard` removed → replaced with `prepareForOpen` (just calls `refreshShortcuts`, no focus/keyboard side effects).
+- `hideKeyboard` unchanged (called by `hideSearchOverlay` when closing).
+
+### Immediate next tasks (suggested)
+1. `git push` from your machine so CI runs on `7cce80a`.
+2. Test search UX on device: open search → panel at edge → tap field → keyboard + panel rise → tap Go → keyboard collapses, results visible → tap map → panel gone.
+3. Consider: result list height cap in landscape — currently 250 dp fixed; with keyboard gone it could fill more of the screen. May want to make it `WRAP_CONTENT` with a `maxHeight` based on available window height.
+4. Next feature: BRouter integration (routing domain skeleton already in place).
+
+
+
 ## Software Stack
 
 | Component | Technology |
