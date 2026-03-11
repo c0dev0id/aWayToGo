@@ -50,6 +50,7 @@ class MapViewModel : ViewModel() {
             current.copy(
                 mode        = mode,
                 isMenuOpen  = false,
+                isSearchOpen = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
                 isInPanningMode = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
@@ -90,5 +91,15 @@ class MapViewModel : ViewModel() {
     /** Toggle the hamburger panel open/closed. */
     fun toggleMenu() {
         _uiState.update { it.copy(isMenuOpen = !it.isMenuOpen) }
+    }
+
+    /** Show the search overlay (Explore mode only). */
+    fun openSearch() {
+        _uiState.update { it.copy(isSearchOpen = true) }
+    }
+
+    /** Hide the search overlay. */
+    fun closeSearch() {
+        _uiState.update { it.copy(isSearchOpen = false) }
     }
 }

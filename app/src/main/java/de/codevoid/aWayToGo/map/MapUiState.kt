@@ -11,9 +11,11 @@ package de.codevoid.aWayToGo.map
  * | [mode]           | Which overlay set is visible (Explore / Navigate / Edit).   |
  * | [isInPanningMode]| Crosshair visible, GPS tracking suspended.                  |
  * | [isMenuOpen]     | Hamburger panel expanded.                                   |
+ * | [isSearchOpen]   | Search overlay visible (Explore mode only).                 |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
     val isInPanningMode: Boolean = false,
     val isMenuOpen: Boolean = false,
+    val isSearchOpen: Boolean = false,
 )
