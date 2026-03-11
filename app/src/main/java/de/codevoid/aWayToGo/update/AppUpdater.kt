@@ -7,11 +7,12 @@ import de.codevoid.aWayToGo.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okio.buffer
+import okio.sink
 import org.json.JSONArray
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -45,6 +46,11 @@ class AppUpdater(private val context: Context) {
             "https://api.github.com/repos/c0dev0id/aWayToGo/releases"
     }
 
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
     private val partFile get() = File(context.externalCacheDir, "update.apk.part")
     private val apkFile  get() = File(context.externalCacheDir, "update.apk")
     private val urlFile  get() = File(context.externalCacheDir, "update.url")
@@ -58,13 +64,14 @@ class AppUpdater(private val context: Context) {
      */
     suspend fun checkForUpdate(): String? = withContext(Dispatchers.IO) {
         try {
-            val conn = URL(RELEASES_URL).openConnection() as HttpURLConnection
-            conn.connectTimeout = 10_000
-            conn.readTimeout    = 15_000
-            conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-            conn.connect()
-            val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
+            val request = Request.Builder()
+                .url(RELEASES_URL)
+                .header("Accept", "application/vnd.github.v3+json")
+                .build()
+            val body = httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.string() ?: return@withContext null
+            }
 
             val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
@@ -128,17 +135,17 @@ class AppUpdater(private val context: Context) {
 
             val existing = if (partFile.exists()) partFile.length() else 0L
 
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout          = 15_000
-            conn.readTimeout             = 30_000
-            conn.instanceFollowRedirects = true
-            if (existing > 0) {
-                conn.setRequestProperty("Range", "bytes=$existing-")
+            val request = Request.Builder()
+                .url(url)
+                .apply { if (existing > 0) header("Range", "bytes=$existing-") }
+                .build()
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful && response.code != 206) {
+                throw Exception("HTTP ${response.code}")
             }
-            conn.connect()
 
-            val resumed = existing > 0 && conn.responseCode == 206
-            val serverBytes = conn.contentLengthLong          // bytes the server will send
+            val resumed = existing > 0 && response.code == 206
+            val serverBytes = response.body?.contentLength() ?: -1L
             val alreadyDownloaded = if (resumed) existing else 0L
             val total = if (serverBytes > 0) alreadyDownloaded + serverBytes else -1L
 
@@ -154,15 +161,17 @@ class AppUpdater(private val context: Context) {
 
             var downloaded = alreadyDownloaded
 
-            conn.inputStream.use { input ->
-                FileOutputStream(partFile, resumed).use { output ->
-                    val buf = ByteArray(65_536)
-                    var read: Int
-                    while (input.read(buf).also { read = it } != -1) {
+            val body = response.body ?: throw Exception("Empty response body")
+            body.source().use { source ->
+                partFile.sink(append = resumed).buffer().use { sink ->
+                    val buf = okio.Buffer()
+                    while (true) {
                         ensureActive()                        // honour cancellation
-                        output.write(buf, 0, read)
-                        downloaded += read
-                        speedBytes += read
+                        val n = source.read(buf, 65_536)
+                        if (n == -1L) break
+                        sink.write(buf, n)
+                        downloaded += n
+                        speedBytes += n
 
                         val now = System.nanoTime()
                         val elapsed = now - speedStamp
