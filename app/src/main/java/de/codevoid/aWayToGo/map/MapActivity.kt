@@ -1039,6 +1039,7 @@ class MapActivity : ComponentActivity() {
                     menuPanel.translationX        = -w
                     myLocationButton.translationX = -w
                     exploreBottomBar.translationY = h
+                    exploreBottomBar.alpha        = 1f   // clear any search-fade leftover
                     menuPanel.visibility          = View.VISIBLE
                     myLocationButton.visibility   = View.VISIBLE
                     exploreBottomBar.visibility   = View.VISIBLE
@@ -1223,7 +1224,18 @@ class MapActivity : ComponentActivity() {
 
         // ── Search overlay ─────────────────────────────────────────────────────
         if (searchChanged) {
-            if (new.isSearchOpen) showSearchOverlay() else hideSearchOverlay()
+            if (new.isSearchOpen) {
+                showSearchOverlay()
+                exploreBottomBar.animate().alpha(0f).setDuration(200).start()
+            } else {
+                hideSearchOverlay()
+                // Skip the fade-back if a mode transition is also firing — the
+                // mode animation owns the bottom bar and the two ViewPropertyAnimators
+                // would cancel each other (only the last call to animate() wins).
+                if (!modeChanged) {
+                    exploreBottomBar.animate().alpha(1f).setDuration(200).start()
+                }
+            }
         }
 
         // ── Menu animation ─────────────────────────────────────────────────────
