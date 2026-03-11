@@ -23,14 +23,15 @@ import de.codevoid.aWayToGo.search.SearchResult
 /**
  * Handle returned by [buildSearchOverlay] to imperatively push state into the overlay.
  *
- * @property root                 The overlay view to add to the root layout.
- * @property showResults          Replace the result list with [results].
- * @property showLoading          Replace the result list with a spinner.
- * @property showError            Replace the result list with an error message.
- * @property clearResults         Remove all results and hide the result panel.
- * @property focusAndShowKeyboard Focus the search field and open the soft keyboard.
- *                                Also refreshes the shortcuts row with the latest data.
- * @property hideKeyboard         Dismiss the soft keyboard.
+ * @property root          The overlay view to add to the root layout.
+ * @property showResults   Replace the result list with [results].
+ * @property showLoading   Replace the result list with a spinner.
+ * @property showError     Replace the result list with an error message.
+ * @property clearResults  Remove all results and hide the result panel.
+ * @property prepareForOpen Refresh shortcuts so the panel is ready when made visible.
+ *                          Does NOT focus the field or show the keyboard — the user
+ *                          activates the keyboard by tapping the search field.
+ * @property hideKeyboard  Dismiss the soft keyboard without closing the search panel.
  */
 class SearchOverlayResult(
     val root: FrameLayout,
@@ -38,7 +39,7 @@ class SearchOverlayResult(
     val showLoading: () -> Unit,
     val showError: () -> Unit,
     val clearResults: () -> Unit,
-    val focusAndShowKeyboard: () -> Unit,
+    val prepareForOpen: () -> Unit,
     val hideKeyboard: () -> Unit,
 )
 
@@ -164,6 +165,18 @@ fun buildSearchOverlay(
         setColor(Color.argb(220, 0, 0, 0))
     }
 
+    // ── Keyboard helpers (defined early so goButton can reference them) ───────
+    // Defined here rather than near the return so goButton can call hideKeyboard.
+    fun showKeyboard(view: android.view.View) {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    fun hideKeyboard(view: android.view.View) {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+
     // ── Input row (bottom — sits directly above the keyboard) ─────────────────
     val searchField = EditText(context).apply {
         hint = "Search for a place…"
@@ -181,6 +194,11 @@ fun buildSearchOverlay(
         imeOptions = EditorInfo.IME_ACTION_SEARCH
         inputType = android.text.InputType.TYPE_CLASS_TEXT
         maxLines = 1
+        // Show the keyboard whenever the field gains focus (i.e. when the user
+        // taps it).  post() defers until the view is laid out and attached.
+        setOnFocusChangeListener { v, hasFocus ->
+            if (hasFocus) v.post { showKeyboard(v) }
+        }
     }
 
     val goButton = TextView(context).apply {
@@ -360,9 +378,18 @@ fun buildSearchOverlay(
         }
     }
 
-    goButton.setOnClickListener { triggerSearch() }
+    // After search is triggered collapse the keyboard so the result list has
+    // maximum screen space (especially useful in landscape).
+    goButton.setOnClickListener {
+        triggerSearch()
+        hideKeyboard(searchField)
+    }
     searchField.setOnEditorActionListener { _, actionId, _ ->
-        if (actionId == EditorInfo.IME_ACTION_SEARCH) { triggerSearch(); true } else false
+        if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+            triggerSearch()
+            hideKeyboard(searchField)
+            true
+        } else false
     }
 
     // ── State mutators returned to MapActivity ────────────────────────────────
@@ -423,33 +450,17 @@ fun buildSearchOverlay(
         refreshShortcuts(searchField)
     }
 
-    // ── Keyboard helpers ──────────────────────────────────────────────────────
-    val focusAndShowKeyboard: () -> Unit = {
-        refreshShortcuts(searchField)
-        searchField.requestFocus()
-        // post() defers until the view is laid out and attached, which is required
-        // for showSoftInput to succeed when the overlay was just made VISIBLE.
-        searchField.post {
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(searchField, InputMethodManager.SHOW_IMPLICIT)
-        }
-    }
-
-    val hideKeyboard: () -> Unit = {
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(root.windowToken, 0)
-    }
-
     // Initial shortcut population
     refreshShortcuts(searchField)
 
     return SearchOverlayResult(
-        root                 = root,
-        showResults          = ::showResults,
-        showLoading          = ::showLoading,
-        showError            = ::showError,
-        clearResults         = ::clearResults,
-        focusAndShowKeyboard = focusAndShowKeyboard,
-        hideKeyboard         = hideKeyboard,
+        root          = root,
+        showResults   = ::showResults,
+        showLoading   = ::showLoading,
+        showError     = ::showError,
+        clearResults  = ::clearResults,
+        // Refresh shortcuts so the panel is ready; keyboard opens only on field tap.
+        prepareForOpen = { refreshShortcuts(searchField) },
+        hideKeyboard   = { hideKeyboard(searchField) },
     )
 }

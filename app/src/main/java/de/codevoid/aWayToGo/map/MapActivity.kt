@@ -462,9 +462,9 @@ class MapActivity : ComponentActivity() {
         // animation (API 30+) rather than only at the final value like the static
         // OnApplyWindowInsetsListener would, giving us per-frame position updates.
         //
-        // The panel starts as INVISIBLE (focusable but not drawn) and is promoted to
-        // VISIBLE on the first animation frame — this ensures the panel never appears
-        // at the wrong (pre-keyboard) position before jumping up.
+        // Dismissing the keyboard (e.g. back gesture) slides the panel back to the
+        // screen edge but does NOT close the search — the user must tap the map to do
+        // that.  This gives the result list maximum screen space after "Go" is tapped.
         ViewCompat.setWindowInsetsAnimationCallback(
             root,
             object : WindowInsetsAnimationCompat.Callback(
@@ -474,34 +474,41 @@ class MapActivity : ComponentActivity() {
                     insets: WindowInsetsCompat,
                     runningAnimations: List<WindowInsetsAnimationCompat>,
                 ): WindowInsetsCompat {
+                    if (!viewModel.uiState.value.isSearchOpen) return insets
                     val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
                     (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
                         lp.bottomMargin = imeBottom
                         searchOverlayResult.root.layoutParams = lp
                     }
-                    // Reveal the panel on the first frame the keyboard starts to move,
-                    // so the panel and keyboard animate up together from the start.
-                    if (imeBottom > 0
-                        && viewModel.uiState.value.isSearchOpen
-                        && searchOverlayResult.root.visibility == View.INVISIBLE
-                    ) {
-                        searchOverlayResult.root.visibility = View.VISIBLE
-                    }
                     return insets
                 }
 
                 override fun onEnd(animation: WindowInsetsAnimationCompat) {
-                    // Close search if the user dismissed the keyboard manually.
-                    // Guard: hideKeyboard() (called by hideSearchOverlay) sets
-                    // isSearchOpen = false before this fires, so there is no loop.
+                    if (!viewModel.uiState.value.isSearchOpen) return
+                    // Snap to the final keyboard position after the animation ends.
                     val imeBottom = ViewCompat.getRootWindowInsets(root)
                         ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-                    if (imeBottom == 0 && viewModel.uiState.value.isSearchOpen) {
-                        closeSearch()
+                    (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                        lp.bottomMargin = imeBottom
+                        searchOverlayResult.root.layoutParams = lp
                     }
                 }
             },
         )
+
+        // Apply side margins from system bars (e.g. landscape navigation bar) so the
+        // search panel never overlaps buttons on the left/right edges.
+        ViewCompat.setOnApplyWindowInsetsListener(searchOverlayResult.root) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            (v.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                lp.leftMargin  = bars.left
+                lp.rightMargin = bars.right
+                v.layoutParams = lp
+            }
+            insets
+        }
 
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
@@ -582,6 +589,15 @@ class MapActivity : ComponentActivity() {
             // queued until the camera is idle so the GL thread is not
             // interrupted by upload work mid-animation.
             // Touch gestures additionally trigger visual panning mode.
+            // A tap on the map surface closes the search panel (all elements).
+            m.addOnMapClickListener {
+                if (viewModel.uiState.value.isSearchOpen) {
+                    closeSearch()
+                    true  // consumed — don't propagate further
+                } else {
+                    false
+                }
+            }
             m.addOnCameraMoveStartedListener { reason ->
                 TileCache.gate.pause()
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
@@ -1166,15 +1182,18 @@ class MapActivity : ComponentActivity() {
 
     private fun showSearchOverlay() {
         // Results are intentionally NOT cleared here — the previous result list
-        // (if any) remains visible so re-opening the search shows the last results.
+        // (if any) remains visible so re-opening shows the last results.
         //
-        // Start INVISIBLE (not GONE) so the search field can receive focus and
-        // trigger the keyboard.  The IME animation callback promotes the panel to
-        // VISIBLE on the very first animation frame, so it rises with the keyboard
-        // rather than appearing at the bottom and then jumping up.
+        // The panel appears at the screen edge (bottomMargin = 0, no keyboard).
+        // The keyboard opens only when the user taps the search field; the IME
+        // animation callback then smoothly slides the panel up in sync.
         searchOverlayResult.root.alpha = 1f
-        searchOverlayResult.root.visibility = View.INVISIBLE
-        searchOverlayResult.focusAndShowKeyboard()
+        (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            lp.bottomMargin = 0
+            searchOverlayResult.root.layoutParams = lp
+        }
+        searchOverlayResult.root.visibility = View.VISIBLE
+        searchOverlayResult.prepareForOpen()
     }
 
     private fun hideSearchOverlay() {
