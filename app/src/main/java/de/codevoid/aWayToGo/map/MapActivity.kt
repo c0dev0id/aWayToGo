@@ -29,6 +29,7 @@ import android.view.animation.DecelerateInterpolator
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -450,8 +451,21 @@ class MapActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM,
-            ).apply { setMargins(0, 0, 0, (80 * density).toInt()) },
+            ),
         )
+
+        // Track the IME (keyboard) height and shift the search panel up accordingly.
+        // The Activity runs with setDecorFitsSystemWindows(false) for full immersive
+        // mode, so the layout never resizes automatically when the keyboard appears —
+        // we have to apply the inset as a bottomMargin ourselves.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                lp.bottomMargin = imeBottom
+                searchOverlayResult.root.layoutParams = lp
+            }
+            insets  // pass insets through so other views also receive them
+        }
 
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
