@@ -31,6 +31,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.activity.viewModels
@@ -454,25 +455,51 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
-        // Track the IME (keyboard) height and shift the search panel up accordingly.
-        // The Activity runs with setDecorFitsSystemWindows(false) for full immersive
-        // mode, so the layout never resizes automatically when the keyboard appears —
-        // we have to apply the inset as a bottomMargin ourselves.
-        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-                lp.bottomMargin = imeBottom
-                searchOverlayResult.root.layoutParams = lp
-            }
-            // If the user dismissed the keyboard manually (back-swipe or back button)
-            // while search is open, treat it the same as tapping ✕.
-            // Guard: when closeSearch() itself calls hideKeyboard(), isSearchOpen is
-            // already false by the time this listener fires, so there is no loop.
-            if (imeBottom == 0 && viewModel.uiState.value.isSearchOpen) {
-                closeSearch()
-            }
-            insets  // pass insets through so other views also receive them
-        }
+        // Smoothly track the keyboard height so the search panel rises and falls
+        // in sync with the keyboard animation.
+        //
+        // WindowInsetsAnimationCompat.Callback fires every frame during the IME
+        // animation (API 30+) rather than only at the final value like the static
+        // OnApplyWindowInsetsListener would, giving us per-frame position updates.
+        //
+        // The panel starts as INVISIBLE (focusable but not drawn) and is promoted to
+        // VISIBLE on the first animation frame — this ensures the panel never appears
+        // at the wrong (pre-keyboard) position before jumping up.
+        ViewCompat.setWindowInsetsAnimationCallback(
+            root,
+            object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_CONTINUE) {
+                override fun onProgress(
+                    insets: WindowInsetsCompat,
+                    runningAnimations: MutableList<WindowInsetsAnimationCompat>,
+                ): WindowInsetsCompat {
+                    val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+                    (searchOverlayResult.root.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                        lp.bottomMargin = imeBottom
+                        searchOverlayResult.root.layoutParams = lp
+                    }
+                    // Reveal the panel on the first frame the keyboard starts to move,
+                    // so the panel and keyboard animate up together from the start.
+                    if (imeBottom > 0
+                        && viewModel.uiState.value.isSearchOpen
+                        && searchOverlayResult.root.visibility == View.INVISIBLE
+                    ) {
+                        searchOverlayResult.root.visibility = View.VISIBLE
+                    }
+                    return insets
+                }
+
+                override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                    // Close search if the user dismissed the keyboard manually.
+                    // Guard: hideKeyboard() (called by hideSearchOverlay) sets
+                    // isSearchOpen = false before this fires, so there is no loop.
+                    val imeBottom = ViewCompat.getRootWindowInsets(root)
+                        ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                    if (imeBottom == 0 && viewModel.uiState.value.isSearchOpen) {
+                        closeSearch()
+                    }
+                }
+            },
+        )
 
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
@@ -1138,16 +1165,23 @@ class MapActivity : ComponentActivity() {
     private fun showSearchOverlay() {
         // Results are intentionally NOT cleared here — the previous result list
         // (if any) remains visible so re-opening the search shows the last results.
-        searchOverlayResult.root.visibility = View.VISIBLE
-        searchOverlayResult.root.alpha = 0f
-        searchOverlayResult.root.animate().alpha(1f).setDuration(200).start()
+        //
+        // Start INVISIBLE (not GONE) so the search field can receive focus and
+        // trigger the keyboard.  The IME animation callback promotes the panel to
+        // VISIBLE on the very first animation frame, so it rises with the keyboard
+        // rather than appearing at the bottom and then jumping up.
+        searchOverlayResult.root.alpha = 1f
+        searchOverlayResult.root.visibility = View.INVISIBLE
         searchOverlayResult.focusAndShowKeyboard()
     }
 
     private fun hideSearchOverlay() {
         searchOverlayResult.hideKeyboard()
         searchOverlayResult.root.animate().alpha(0f).setDuration(150)
-            .withEndAction { searchOverlayResult.root.visibility = View.GONE }
+            .withEndAction {
+                searchOverlayResult.root.visibility = View.GONE
+                searchOverlayResult.root.alpha = 1f   // reset for next open
+            }
             .start()
     }
 
