@@ -572,6 +572,11 @@ class MapActivity : ComponentActivity() {
                     LatLng(loc.latitude, loc.longitude),
                     14.0,
                 ),
+                600,
+                object : MapLibreMap.CancelableCallback {
+                    override fun onFinish() { reassertTrackingMode() }
+                    override fun onCancel() { reassertTrackingMode() }
+                },
             )
         }
     }
@@ -616,6 +621,11 @@ class MapActivity : ComponentActivity() {
                                     .bearing(0.0)
                                     .build(),
                             ),
+                            400,
+                            object : MapLibreMap.CancelableCallback {
+                                override fun onFinish() { reassertTrackingMode() }
+                                override fun onCancel() { reassertTrackingMode() }
+                            },
                         )
                     }
             }
@@ -652,6 +662,11 @@ class MapActivity : ComponentActivity() {
                                 .tilt(if (currentTilt > 0.0) 0.0 else TILT_3D)
                                 .build(),
                         ),
+                        400,
+                        object : MapLibreMap.CancelableCallback {
+                            override fun onFinish() { reassertTrackingMode() }
+                            override fun onCancel() { reassertTrackingMode() }
+                        },
                     )
                 }
 
