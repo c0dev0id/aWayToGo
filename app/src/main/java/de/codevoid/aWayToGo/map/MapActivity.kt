@@ -72,8 +72,11 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.sources.RasterSource
+import org.maplibre.android.style.sources.TileSet
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
@@ -82,7 +85,10 @@ import org.maplibre.geojson.Point
 // ── Map style URLs ────────────────────────────────────────────────────────────
 private const val STYLE_OUTDOOR = "https://api.maptiler.com/maps/outdoor-v2/style.json?key="
 private const val STYLE_DARK    = "https://api.maptiler.com/maps/dataviz-dark/style.json?key="
-private const val STYLE_HYBRID  = "https://api.maptiler.com/maps/hybrid/style.json?key="
+private const val SOURCE_SATELLITE  = "satellite-raster-src"
+private const val LAYER_SATELLITE   = "satellite-raster-layer"
+private const val SAT_TILE_TEMPLATE = "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key="
+private const val SAT_ANIMATE_MS    = 350L
 
 // ── Drag line style layer / source IDs ───────────────────────────────────────
 // Two LineLayer instances (casing behind, fill in front) produce the outlined
@@ -147,6 +153,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var menuDismissOverlay: View
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
+    private var satelliteAnimator: ValueAnimator? = null
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var navigateBanner: View
@@ -290,7 +297,7 @@ class MapActivity : ComponentActivity() {
         TileCache.init(this)
         remoteControl = RemoteControlManager(this)
 
-        val styleUrl = styleUrl(isDark = false, isSatellite = false)
+        val styleUrl = styleUrl(isDark = false)
 
         // Root layout — TwoFingerLockLayout disables map scrolling while a
         // two-finger (zoom/rotate) gesture is in progress.
@@ -1129,23 +1136,22 @@ class MapActivity : ComponentActivity() {
 
     // ── Map style helpers ─────────────────────────────────────────────────────
 
-    private fun styleUrl(isDark: Boolean, isSatellite: Boolean): String {
+    private fun styleUrl(isDark: Boolean): String {
         val key = BuildConfig.MAPTILER_KEY
-        return when {
-            isSatellite -> "$STYLE_HYBRID$key"
-            isDark      -> "$STYLE_DARK$key"
-            else        -> "$STYLE_OUTDOOR$key"
-        }
+        return if (isDark) "$STYLE_DARK$key" else "$STYLE_OUTDOOR$key"
     }
 
-    private fun reloadStyle(isDark: Boolean, isSatellite: Boolean) {
+    private fun reloadStyle(isDark: Boolean) {
         val m = map ?: return
         val savedCamera = m.cameraPosition
         style = null
-        m.setStyle(styleUrl(isDark, isSatellite)) { s ->
+        m.setStyle(styleUrl(isDark)) { s ->
             style = s
             m.moveCamera(CameraUpdateFactory.newCameraPosition(savedCamera))
             enableLocationIfReady()
+            if (viewModel.uiState.value.isSatelliteEnabled) {
+                applySatelliteLayer(enabled = true, animated = false)
+            }
         }
     }
 
@@ -1162,6 +1168,70 @@ class MapActivity : ComponentActivity() {
                 shape = GradientDrawable.RECTANGLE; cornerRadius = r; setColor(Color.WHITE)
             },
         )
+    }
+
+    private fun applySatelliteLayer(enabled: Boolean, animated: Boolean) {
+        val s = style ?: return
+
+        satelliteAnimator?.cancel()
+        satelliteAnimator = null
+
+        if (enabled) {
+            if (s.getSourceAs<RasterSource>(SOURCE_SATELLITE) == null) {
+                val tileSet = TileSet("2.1.0", "$SAT_TILE_TEMPLATE${BuildConfig.MAPTILER_KEY}")
+                tileSet.setTileSize(512)
+                s.addSource(RasterSource(SOURCE_SATELLITE, tileSet, 512))
+                s.addLayerAt(
+                    RasterLayer(LAYER_SATELLITE, SOURCE_SATELLITE).apply {
+                        setProperties(PropertyFactory.rasterOpacity(0f))
+                    },
+                    0,
+                )
+            }
+            val layer = s.getLayerAs<RasterLayer>(LAYER_SATELLITE) ?: return
+            val targetOpacity = 1f
+
+            if (!animated) {
+                layer.setProperties(PropertyFactory.rasterOpacity(targetOpacity))
+                return
+            }
+            val startOpacity = layer.rasterOpacity?.value ?: 0f
+            satelliteAnimator = ValueAnimator.ofFloat(startOpacity, targetOpacity).apply {
+                duration = SAT_ANIMATE_MS
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { va ->
+                    style?.getLayerAs<RasterLayer>(LAYER_SATELLITE)
+                        ?.setProperties(PropertyFactory.rasterOpacity(va.animatedValue as Float))
+                }
+                start()
+            }
+        } else {
+            val layer = s.getLayerAs<RasterLayer>(LAYER_SATELLITE) ?: return
+            val startOpacity = layer.rasterOpacity?.value ?: 1f
+
+            if (!animated) {
+                s.removeLayer(LAYER_SATELLITE)
+                s.removeSource(SOURCE_SATELLITE)
+                return
+            }
+            satelliteAnimator = ValueAnimator.ofFloat(startOpacity, 0f).apply {
+                duration = SAT_ANIMATE_MS
+                interpolator = AccelerateInterpolator()
+                addUpdateListener { va ->
+                    style?.getLayerAs<RasterLayer>(LAYER_SATELLITE)
+                        ?.setProperties(PropertyFactory.rasterOpacity(va.animatedValue as Float))
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        if (satelliteAnimator === animation || satelliteAnimator == null) {
+                            style?.removeLayer(LAYER_SATELLITE)
+                            style?.removeSource(SOURCE_SATELLITE)
+                        }
+                    }
+                })
+                start()
+            }
+        }
     }
 
     // ── Reactive state renderer ───────────────────────────────────────────────
@@ -1275,9 +1345,13 @@ class MapActivity : ComponentActivity() {
         // ── Map style toggles ──────────────────────────────────────────────────
         val satChanged  = old?.isSatelliteEnabled != new.isSatelliteEnabled
         val darkChanged = old?.isDarkMode         != new.isDarkMode
-        if (satChanged || darkChanged) {
-            reloadStyle(new.isDarkMode, new.isSatelliteEnabled)
+
+        if (darkChanged) {
+            reloadStyle(new.isDarkMode)   // callback handles satellite re-add
+        } else if (satChanged) {
+            applySatelliteLayer(enabled = new.isSatelliteEnabled, animated = old != null)
         }
+
         setToggleActive(satelliteToggleBtn, new.isSatelliteEnabled)
         setToggleActive(darkModeToggleBtn,  new.isDarkMode)
     }
