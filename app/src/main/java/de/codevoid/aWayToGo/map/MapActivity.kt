@@ -851,14 +851,20 @@ class MapActivity : ComponentActivity() {
     // ── Adaptive heading (compass ↔ GPS) ──────────────────────────────────────
 
     /**
-     * [CameraMode] that both follows the user's position AND rotates the map:
-     * - Stationary ([isMoving] == false): [CameraMode.TRACKING_COMPASS] — the map
-     *   heading follows the device compass so "up" is wherever you're pointing.
-     * - Moving    ([isMoving] == true):  [CameraMode.TRACKING_GPS] — the map heading
-     *   follows the GPS course-over-ground so "up" is the direction of travel.
+     * [CameraMode] that follows the user's position and, in heading-up mode, rotates
+     * the map so the device heading is always at the top of the screen:
+     *
+     * - North-up ([MapUiState.isNorthUp] == true): [CameraMode.TRACKING] — the map
+     *   stays fixed with north at the top; the location puck rotates to show heading.
+     * - Heading-up, stationary: [CameraMode.TRACKING_COMPASS] — the map heading
+     *   follows the device compass so "up" is wherever you're pointing.
+     * - Heading-up, moving:     [CameraMode.TRACKING_GPS] — the map heading follows
+     *   the GPS course-over-ground so "up" is the direction of travel.
      */
-    private fun trackingCameraMode() =
-        if (isMoving) CameraMode.TRACKING_GPS else CameraMode.TRACKING_COMPASS
+    private fun trackingCameraMode(): Int {
+        if (viewModel.uiState.value.isNorthUp) return CameraMode.TRACKING
+        return if (isMoving) CameraMode.TRACKING_GPS else CameraMode.TRACKING_COMPASS
+    }
 
     /**
      * [RenderMode] consistent with [trackingCameraMode]: the user location puck
@@ -1250,6 +1256,7 @@ class MapActivity : ComponentActivity() {
         val panningChanged = old?.isInPanningMode != new.isInPanningMode
         val menuChanged    = old?.isMenuOpen != new.isMenuOpen
         val searchChanged  = old?.isSearchOpen != new.isSearchOpen
+        val northUpChanged = old?.isNorthUp != new.isNorthUp
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1261,7 +1268,7 @@ class MapActivity : ComponentActivity() {
 
         // ── Camera tracking ────────────────────────────────────────────────────
         // Only update when something that affects tracking actually changed.
-        if (modeChanged || panningChanged) {
+        if (modeChanged || panningChanged || northUpChanged) {
             when {
                 // Entering NAVIGATE always re-enables GPS tracking (may override panning).
                 modeChanged && new.mode == AppMode.NAVIGATE -> {
@@ -1298,6 +1305,11 @@ class MapActivity : ComponentActivity() {
                     map?.locationComponent?.cameraMode = trackingCameraMode()
                     map?.locationComponent?.renderMode  = trackingRenderMode()
                 }
+
+                // North-up ↔ heading-up toggle: switch camera mode while keeping tracking.
+                // reassertTrackingMode() does the NONE→new-mode dance needed by MapLibre 11.
+                northUpChanged && !new.isInPanningMode && new.mode != AppMode.EDIT ->
+                    reassertTrackingMode()
             }
         }
 

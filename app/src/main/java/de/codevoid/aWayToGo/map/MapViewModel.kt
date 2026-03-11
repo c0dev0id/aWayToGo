@@ -112,4 +112,16 @@ class MapViewModel : ViewModel() {
     fun toggleDarkMode() {
         _uiState.update { it.copy(isDarkMode = !it.isDarkMode) }
     }
+
+    /**
+     * Toggle between heading-up (default, false) and north-up (true) map orientation.
+     *
+     * Heading-up: the map rotates so the device's heading is always at the top of
+     * the screen; the location puck arrow points straight up.
+     * North-up: the map stays fixed with north at the top; the location puck arrow
+     * rotates to show the actual heading direction.
+     */
+    fun toggleNorthUp() {
+        _uiState.update { it.copy(isNorthUp = !it.isNorthUp) }
+    }
 }

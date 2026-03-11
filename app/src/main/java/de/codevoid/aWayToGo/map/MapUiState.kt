@@ -14,6 +14,8 @@ package de.codevoid.aWayToGo.map
  * | [isSearchOpen]      | Search overlay visible (Explore mode only).                 |
  * | [isSatelliteEnabled]| Map style switched to hybrid satellite+labels.              |
  * | [isDarkMode]        | Map style switched to dark variant.                         |
+ * | [isNorthUp]         | Map stays north-up; location puck rotates to show heading.  |
+ * |                     | When false (heading-up), the map rotates so "up" = heading.  |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -22,4 +24,5 @@ data class MapUiState(
     val isSearchOpen: Boolean = false,
     val isSatelliteEnabled: Boolean = false,
     val isDarkMode: Boolean = false,
+    val isNorthUp: Boolean = false,
 )
