@@ -464,6 +464,13 @@ class MapActivity : ComponentActivity() {
                 lp.bottomMargin = imeBottom
                 searchOverlayResult.root.layoutParams = lp
             }
+            // If the user dismissed the keyboard manually (back-swipe or back button)
+            // while search is open, treat it the same as tapping ✕.
+            // Guard: when closeSearch() itself calls hideKeyboard(), isSearchOpen is
+            // already false by the time this listener fires, so there is no loop.
+            if (imeBottom == 0 && viewModel.uiState.value.isSearchOpen) {
+                closeSearch()
+            }
             insets  // pass insets through so other views also receive them
         }
 
