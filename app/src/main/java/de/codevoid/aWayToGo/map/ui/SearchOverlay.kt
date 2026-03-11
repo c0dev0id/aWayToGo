@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.map.ui
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -326,13 +327,23 @@ fun buildSearchOverlay(
         ))
     }
 
+    // In portrait the result list may grow to 50 % of the screen height so more
+    // results are visible without scrolling.  In landscape 250 dp is kept as the
+    // cap because vertical space is scarce and the keyboard takes a large chunk.
+    val isPortrait = context.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+    val resultsMaxHeightPx = if (isPortrait) {
+        (context.resources.displayMetrics.heightPixels * 0.5f).toInt()
+    } else {
+        (250 * d).toInt()
+    }
+
     // Wrapper holds the scroll + a divider below it. Starts hidden.
     val resultsWrapper = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility = View.GONE
         addView(resultsScroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            (250 * d).toInt(),
+            resultsMaxHeightPx,
         ))
         addView(makeDivider())
     }

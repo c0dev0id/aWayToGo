@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - When the search panel is reopened after a result has been selected, the map now pans so that the last result sits at 25 % from the top edge of the screen, keeping it clearly visible above the search panel.
+- Search result list height cap is now 50 % of the screen height in portrait mode (was a fixed 250 dp), giving more room for results without scrolling. The 250 dp cap is kept in landscape where vertical space is scarce.
 - Search overlay keyboard behaviour: the soft keyboard no longer opens automatically when search opens. Instead it appears only when the user taps the search field, so the result list has the full screen height available from the start. Tapping Go (or the IME search action) now also dismisses the keyboard so the result list can use the maximum available height. Dismissing the keyboard manually (back gesture) no longer closes the search panel — the panel descends to the screen edge and stays open. Tapping anywhere on the map closes the entire search panel.
 - Search panel side margins: in landscape mode (or on devices with a side navigation bar / display cutout) the panel now respects system-bar and display-cutout insets on the left and right edges, preventing overlap with hardware navigation buttons.
 
