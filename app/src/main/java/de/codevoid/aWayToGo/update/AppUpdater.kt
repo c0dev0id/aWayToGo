@@ -5,14 +5,25 @@ import android.content.Intent
 import androidx.core.content.FileProvider
 import de.codevoid.aWayToGo.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+
+/**
+ * Progress snapshot emitted during an APK download.
+ */
+data class DownloadProgress(
+    val bytesDownloaded: Long,
+    val totalBytes: Long,
+    val bytesPerSecond: Long,
+)
 
 /**
  * Checks GitHub for a newer pre-release APK, downloads it, and hands it to the
@@ -33,6 +44,10 @@ class AppUpdater(private val context: Context) {
         private const val RELEASES_URL =
             "https://api.github.com/repos/c0dev0id/aWayToGo/releases"
     }
+
+    private val partFile get() = File(context.externalCacheDir, "update.apk.part")
+    private val apkFile  get() = File(context.externalCacheDir, "update.apk")
+    private val urlFile  get() = File(context.externalCacheDir, "update.url")
 
     /**
      * Fetches the GitHub releases list and returns the browser download URL of the APK
@@ -82,42 +97,89 @@ class AppUpdater(private val context: Context) {
     }
 
     /**
+     * Removes partial/completed download files that do not belong to [currentUrl].
+     * Call after [checkForUpdate] so only the matching partial file is kept.
+     */
+    fun cleanupStaleFiles(currentUrl: String?) {
+        val storedUrl = if (urlFile.exists()) urlFile.readText().trim() else null
+        if (storedUrl != currentUrl) {
+            partFile.delete()
+            urlFile.delete()
+            apkFile.delete()
+        }
+    }
+
+    /**
      * Downloads the APK at [url] to `externalCacheDir/update.apk`.
      *
-     * [onProgress] is invoked on [Dispatchers.Main] with values 0–100 as data arrives.
-     * When the total content length is unknown (chunked transfer), [onProgress] is not called.
+     * Resumes from a previous partial download if a `.part` file for the same URL exists.
+     * [onProgress] is invoked on [Dispatchers.Main] with download size, total, and speed.
+     *
+     * On cancellation the partial file is retained for later resume.
      *
      * @throws Exception on any network or I/O error — let the caller decide how to surface it.
      */
-    suspend fun downloadApk(url: String, onProgress: (Int) -> Unit): File =
+    suspend fun downloadApk(url: String, onProgress: (DownloadProgress) -> Unit): File =
         withContext(Dispatchers.IO) {
+            // Remember which URL this partial belongs to.
+            urlFile.writeText(url)
+
+            val existing = if (partFile.exists()) partFile.length() else 0L
+
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.instanceFollowRedirects = true
+            if (existing > 0) {
+                conn.setRequestProperty("Range", "bytes=$existing-")
+            }
             conn.connect()
 
-            val total = conn.contentLengthLong
-            val dest  = File(context.externalCacheDir, "update.apk")
-            var lastPct = -1
+            val resumed = existing > 0 && conn.responseCode == 206
+            val serverBytes = conn.contentLengthLong          // bytes the server will send
+            val alreadyDownloaded = if (resumed) existing else 0L
+            val total = if (serverBytes > 0) alreadyDownloaded + serverBytes else -1L
+
+            if (!resumed) {
+                // Server ignored Range or fresh start — overwrite.
+                partFile.delete()
+            }
+
+            // Speed tracking: bytes received since last speed sample.
+            var speedBytes = 0L
+            var speedStamp = System.nanoTime()
+            var currentSpeed = 0L
+
+            var downloaded = alreadyDownloaded
 
             conn.inputStream.use { input ->
-                dest.outputStream().use { output ->
+                FileOutputStream(partFile, resumed).use { output ->
                     val buf = ByteArray(65_536)
-                    var downloaded = 0L
                     var read: Int
                     while (input.read(buf).also { read = it } != -1) {
+                        ensureActive()                        // honour cancellation
                         output.write(buf, 0, read)
                         downloaded += read
+                        speedBytes += read
+
+                        val now = System.nanoTime()
+                        val elapsed = now - speedStamp
+                        if (elapsed >= 500_000_000L) {        // update speed every 0.5 s
+                            currentSpeed = speedBytes * 1_000_000_000L / elapsed
+                            speedBytes = 0L
+                            speedStamp = now
+                        }
+
                         if (total > 0) {
-                            val pct = (downloaded * 100 / total).toInt()
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                withContext(Dispatchers.Main) { onProgress(pct) }
+                            withContext(Dispatchers.Main) {
+                                onProgress(DownloadProgress(downloaded, total, currentSpeed))
                             }
                         }
                     }
                 }
             }
-            dest
+
+            partFile.renameTo(apkFile)
+            urlFile.delete()
+            apkFile
         }
 
     /**
