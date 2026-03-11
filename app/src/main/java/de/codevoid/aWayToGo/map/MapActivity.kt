@@ -159,6 +159,8 @@ class MapActivity : ComponentActivity() {
     private lateinit var searchOverlayResult: SearchOverlayResult
     private val geocoding = GeocodingRepository()
     private lateinit var recentSearches: RecentSearches
+    /** LatLng of the most recently selected search result; null if none yet. */
+    private var lastSearchTarget: LatLng? = null
 
     // Overlay used to animate screen rotation — covers the SurfaceView's brief
     // black resize frame, then fades out to reveal the re-laid-out UI.
@@ -1194,6 +1196,44 @@ class MapActivity : ComponentActivity() {
         }
         searchOverlayResult.root.visibility = View.VISIBLE
         searchOverlayResult.prepareForOpen()
+        panToLastSearchResult()
+    }
+
+    /**
+     * When the search panel opens and a previous result exists, pan the map so
+     * that result sits at 25 % from the top edge of the screen — neatly visible
+     * in the space between the top of the screen and the search panel below.
+     *
+     * ### Geometry
+     * We want [lastSearchTarget] to appear at Y = 25 % of the map height.
+     * Its current screen position is obtained via the map projection, then we
+     * compute the screen-space delta from that position to the target row,
+     * apply the same delta to the screen centre to find where the camera centre
+     * should be, and convert that back to a [LatLng] for `animateCamera`.
+     *
+     *   resultScreen  = projection.toScreenLocation(lastSearchTarget)
+     *   dx = resultScreen.x − w/2          (centre it horizontally too)
+     *   dy = resultScreen.y − h * 0.25     (lift it to 25 % from top)
+     *   newCameraScreen = PointF(w/2 + dx, h/2 + dy)
+     *   newCameraLatLng = projection.fromScreenLocation(newCameraScreen)
+     */
+    private fun panToLastSearchResult() {
+        val target = lastSearchTarget ?: return
+        val m      = map              ?: return
+        val w = mapView.width.toFloat()
+        val h = mapView.height.toFloat()
+        if (w == 0f || h == 0f) return
+
+        val resultScreen = m.projection.toScreenLocation(target)
+        val dx = resultScreen.x - w / 2f
+        val dy = resultScreen.y - h * 0.25f
+        val newCameraScreen = PointF(w / 2f + dx, h / 2f + dy)
+        val newCameraTarget = m.projection.fromScreenLocation(newCameraScreen)
+
+        m.animateCamera(
+            CameraUpdateFactory.newLatLngZoom(newCameraTarget, m.cameraPosition.zoom),
+            350,
+        )
     }
 
     private fun hideSearchOverlay() {
@@ -1223,6 +1263,7 @@ class MapActivity : ComponentActivity() {
         recentSearches.saveLocation(result.displayName, result.lat, result.lon)
         closeSearch()
         val target = LatLng(result.lat, result.lon)
+        lastSearchTarget = target
         val m = map ?: return
         flyToLocation(m, target, zoom = 14.0)
         placeSearchPin(target)
