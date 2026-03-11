@@ -6,10 +6,12 @@ import androidx.core.content.FileProvider
 import de.codevoid.aWayToGo.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okio.buffer
+import okio.sink
 import org.json.JSONArray
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -34,6 +36,11 @@ class AppUpdater(private val context: Context) {
             "https://api.github.com/repos/c0dev0id/aWayToGo/releases"
     }
 
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
     /**
      * Fetches the GitHub releases list and returns the browser download URL of the APK
      * from the most recent pre-release, or null if:
@@ -43,13 +50,14 @@ class AppUpdater(private val context: Context) {
      */
     suspend fun checkForUpdate(): String? = withContext(Dispatchers.IO) {
         try {
-            val conn = URL(RELEASES_URL).openConnection() as HttpURLConnection
-            conn.connectTimeout = 10_000
-            conn.readTimeout    = 15_000
-            conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-            conn.connect()
-            val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
+            val request = Request.Builder()
+                .url(RELEASES_URL)
+                .header("Accept", "application/vnd.github.v3+json")
+                .build()
+            val body = httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.string() ?: return@withContext null
+            }
 
             val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
@@ -93,30 +101,26 @@ class AppUpdater(private val context: Context) {
      */
     suspend fun downloadApk(url: String, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout          = 15_000
-            conn.readTimeout             = 30_000
-            conn.instanceFollowRedirects = true
-            conn.connect()
+            val request = Request.Builder().url(url).build()
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
 
-            val total = conn.contentLengthLong
-            val dest  = File(context.externalCacheDir, "update.apk")
-            var lastPct = -1
+            val body = response.body ?: throw Exception("Empty response body")
+            val contentLength = body.contentLength()
 
-            conn.inputStream.use { input ->
-                dest.outputStream().use { output ->
-                    val buf = ByteArray(65_536)
-                    var downloaded = 0L
-                    var read: Int
-                    while (input.read(buf).also { read = it } != -1) {
-                        output.write(buf, 0, read)
-                        downloaded += read
-                        if (total > 0) {
-                            val pct = (downloaded * 100 / total).toInt()
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                withContext(Dispatchers.Main) { onProgress(pct) }
-                            }
+            val dest = File(context.externalCacheDir, "update.apk")
+            var bytesRead = 0L
+            body.source().use { source ->
+                dest.sink().buffer().use { sink ->
+                    val buf = okio.Buffer()
+                    while (true) {
+                        val n = source.read(buf, 65_536)
+                        if (n == -1L) break
+                        sink.write(buf, n)
+                        bytesRead += n
+                        if (contentLength > 0) {
+                            val pct = (bytesRead * 100 / contentLength).toInt()
+                            withContext(Dispatchers.Main) { onProgress(pct) }
                         }
                     }
                 }
