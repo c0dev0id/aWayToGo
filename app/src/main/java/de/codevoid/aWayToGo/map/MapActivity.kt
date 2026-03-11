@@ -733,6 +733,29 @@ class MapActivity : ComponentActivity() {
         lc.renderMode = trackingRenderMode()
     }
 
+    /**
+     * Re-establishes the correct [CameraMode] and [RenderMode] on the
+     * [LocationComponent] after any developer-initiated [MapLibreMap.animateCamera]
+     * or [MapLibreMap.moveCamera] call.
+     *
+     * In MapLibre, programmatic camera moves can internally disrupt the
+     * LocationComponent's camera-tracking state even though
+     * [LocationComponent.cameraMode] still reports the correct value.  Calling this
+     * method at the end of every animation re-arms tracking so rotation and
+     * position-following continue to work.
+     *
+     * No-ops when tracking is deliberately disabled (panning mode, EDIT mode, or
+     * [CameraMode.NONE]).
+     */
+    private fun reassertTrackingMode() {
+        val uiState = viewModel.uiState.value
+        if (uiState.isInPanningMode || uiState.mode == AppMode.EDIT) return
+        val lc = map?.locationComponent?.takeIf { it.isLocationComponentActivated } ?: return
+        if (lc.cameraMode == CameraMode.NONE) return
+        lc.cameraMode = trackingCameraMode()
+        lc.renderMode  = trackingRenderMode()
+    }
+
     // ── Mode management ───────────────────────────────────────────────────────
 
     /**
@@ -776,9 +799,17 @@ class MapActivity : ComponentActivity() {
             .build()
 
         if (animated) {
-            m.animateCamera(CameraUpdateFactory.newCameraPosition(newPos), 400)
+            m.animateCamera(
+                CameraUpdateFactory.newCameraPosition(newPos),
+                400,
+                object : MapLibreMap.CancelableCallback {
+                    override fun onFinish() { reassertTrackingMode() }
+                    override fun onCancel() { reassertTrackingMode() }
+                },
+            )
         } else {
             m.moveCamera(CameraUpdateFactory.newCameraPosition(newPos))
+            reassertTrackingMode()
         }
     }
 
@@ -1259,8 +1290,8 @@ class MapActivity : ComponentActivity() {
                 CameraUpdateFactory.newLatLngZoom(target, zoom),
                 600,
                 object : MapLibreMap.CancelableCallback {
-                    override fun onFinish() { onFinish?.invoke() }
-                    override fun onCancel() { onFinish?.invoke() }
+                    override fun onFinish() { reassertTrackingMode(); onFinish?.invoke() }
+                    override fun onCancel() { reassertTrackingMode(); onFinish?.invoke() }
                 },
             )
             return
@@ -1286,12 +1317,12 @@ class MapActivity : ComponentActivity() {
                         CameraUpdateFactory.newLatLngZoom(target, zoom),
                         500,
                         object : MapLibreMap.CancelableCallback {
-                            override fun onFinish() { onFinish?.invoke() }
-                            override fun onCancel() { onFinish?.invoke() }
+                            override fun onFinish() { reassertTrackingMode(); onFinish?.invoke() }
+                            override fun onCancel() { reassertTrackingMode(); onFinish?.invoke() }
                         },
                     )
                 }
-                override fun onCancel() { onFinish?.invoke() }
+                override fun onCancel() { reassertTrackingMode(); onFinish?.invoke() }
             },
         )
     }

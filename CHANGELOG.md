@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Profile avatar placeholder removed from the hamburger menu.
 
 ### Fixed
+- Map rotation not working after programmatic camera moves. MapLibre's `LocationComponent` internally loses its tracking state after a developer-initiated `animateCamera` or `moveCamera` call, even though `locationComponent.cameraMode` continues to report the correct value. Fixed by adding `reassertTrackingMode()`, which re-sets `cameraMode` and `renderMode` at the end of every animation. It is now called in all `CancelableCallback.onFinish`/`onCancel` handlers in `flyToLocation` and `applyCameraForMode`, and immediately after any `moveCamera` call.
 - Screen rotation visual disruption eliminated. Diagnostic confirmed that `configChanges` was already preventing Activity recreation (same window token across all rotations, no `DESTROY`/`RECREATE` events). The visible "redraw" was the OS freeze-and-rotate animation (`ROTATION_ANIMATION_ROTATE`), which captures a screenshot and cross-fades to the new layout regardless of `configChanges`. Fixed by setting `rotationAnimation = ROTATION_ANIMATION_SEAMLESS` on the window in `onCreate`, which instructs the compositor to skip the animation and resize the window in place.
 
 ### Changed
