@@ -41,6 +41,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
+import de.codevoid.aWayToGo.map.ui.AnimationLatch
+import de.codevoid.aWayToGo.map.ui.AnimatorBag
 import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
 import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
@@ -155,6 +157,8 @@ class MapActivity : ComponentActivity() {
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
     private var satelliteAnimator: ValueAnimator? = null
+    // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
+    private val animBag = AnimatorBag()
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var navigateBanner: View
@@ -1127,47 +1131,43 @@ class MapActivity : ComponentActivity() {
         when (from) {
             AppMode.EXPLORE -> {
                 // Three views leave simultaneously; fire slideIn() when all three finish.
-                val latch = intArrayOf(3)
-                fun check() { if (--latch[0] == 0) slideIn() }
+                val latch = AnimationLatch(3) { slideIn() }
 
                 menuPanel.animate().translationX(-w)
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction {
                         menuPanel.visibility   = View.GONE
                         menuPanel.translationX = 0f
-                        check()
+                        latch.decrement()
                     }.start()
                 myLocationButton.animate().translationX(-w)
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction {
                         myLocationButton.visibility   = View.GONE
                         myLocationButton.translationX = 0f
-                        check()
+                        latch.decrement()
                     }.start()
                 exploreBottomBar.animate().translationY(h)
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction {
                         exploreBottomBar.visibility   = View.GONE
                         exploreBottomBar.translationY = 0f
-                        check()
+                        latch.decrement()
                     }.start()
             }
 
             AppMode.NAVIGATE -> {
                 // Banner and STOP leave simultaneously; hide the overlay container when done.
-                val latch = intArrayOf(2)
-                fun check() {
-                    if (--latch[0] == 0) {
-                        navigateOverlay.visibility = View.GONE
-                        slideIn()
-                    }
+                val latch = AnimationLatch(2) {
+                    navigateOverlay.visibility = View.GONE
+                    slideIn()
                 }
                 navigateBanner.animate().translationY(-h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { navigateBanner.translationY = 0f; check() }.start()
+                    .withEndAction { navigateBanner.translationY = 0f; latch.decrement() }.start()
                 navigateStopBtn.animate().translationY(h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { navigateStopBtn.translationY = 0f; check() }.start()
+                    .withEndAction { navigateStopBtn.translationY = 0f; latch.decrement() }.start()
             }
 
             AppMode.EDIT -> {
@@ -1243,7 +1243,7 @@ class MapActivity : ComponentActivity() {
                 return
             }
             val startOpacity = layer.rasterOpacity?.value ?: 0f
-            satelliteAnimator = ValueAnimator.ofFloat(startOpacity, targetOpacity).apply {
+            satelliteAnimator = animBag.add(ValueAnimator.ofFloat(startOpacity, targetOpacity).apply {
                 duration = SAT_ANIMATE_MS
                 interpolator = DecelerateInterpolator()
                 addUpdateListener { va ->
@@ -1251,7 +1251,7 @@ class MapActivity : ComponentActivity() {
                         ?.setProperties(PropertyFactory.rasterOpacity(va.animatedValue as Float))
                 }
                 start()
-            }
+            })
         } else {
             val layer = s.getLayerAs<RasterLayer>(LAYER_SATELLITE) ?: return
             val startOpacity = layer.rasterOpacity?.value ?: 1f
@@ -1261,7 +1261,7 @@ class MapActivity : ComponentActivity() {
                 s.removeSource(SOURCE_SATELLITE)
                 return
             }
-            satelliteAnimator = ValueAnimator.ofFloat(startOpacity, 0f).apply {
+            satelliteAnimator = animBag.add(ValueAnimator.ofFloat(startOpacity, 0f).apply {
                 duration = SAT_ANIMATE_MS
                 interpolator = AccelerateInterpolator()
                 addUpdateListener { va ->
@@ -1277,7 +1277,7 @@ class MapActivity : ComponentActivity() {
                     }
                 })
                 start()
-            }
+            })
         }
     }
 
@@ -1562,7 +1562,7 @@ class MapActivity : ComponentActivity() {
         // staggered cascade where bar 0 leads and bar 2 trails.
         val openSpeeds = floatArrayOf(1.4f, 1.2f, 1.0f)
 
-        menuAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        menuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 220
             interpolator = DecelerateInterpolator()
             addUpdateListener { va ->
@@ -1576,7 +1576,7 @@ class MapActivity : ComponentActivity() {
                 }
             }
             start()
-        }
+        })
     }
 
     /**
@@ -1610,7 +1610,7 @@ class MapActivity : ComponentActivity() {
         // Reverse of open: bottom bar now fastest, top bar slowest.
         val closeSpeeds = floatArrayOf(1.0f, 1.2f, 1.4f)
 
-        menuAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        menuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 180
             interpolator = AccelerateInterpolator()
             addUpdateListener { va ->
@@ -1629,7 +1629,7 @@ class MapActivity : ComponentActivity() {
                 }
             })
             start()
-        }
+        })
     }
 
     /**
@@ -1931,6 +1931,7 @@ class MapActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        animBag.cancelAll()
         super.onDestroy()
         mapView.onDestroy()
     }

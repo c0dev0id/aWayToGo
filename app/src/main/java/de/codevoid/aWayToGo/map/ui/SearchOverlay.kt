@@ -407,10 +407,7 @@ fun buildSearchOverlay(
 
     /** Fade the results wrapper in from invisible. Cancels any in-flight animation first. */
     fun fadeInWrapper() {
-        resultsWrapper.animate().cancel()
-        resultsWrapper.alpha = 0f
-        resultsWrapper.visibility = View.VISIBLE
-        resultsWrapper.animate().alpha(1f).setDuration(150).start()
+        resultsWrapper.fadeIn()
     }
 
     fun showResults(results: List<SearchResult>) {
@@ -465,12 +462,7 @@ fun buildSearchOverlay(
     }
 
     fun clearResults() {
-        resultsWrapper.animate().cancel()
-        resultsWrapper.animate().alpha(0f).setDuration(100).withEndAction {
-            resultsWrapper.visibility = View.GONE
-            resultsWrapper.alpha = 1f   // reset for next show
-            resultsContainer.removeAllViews()
-        }.start()
+        resultsWrapper.fadeOut(duration = 100) { resultsContainer.removeAllViews() }
         refreshShortcuts(searchField)
     }
 
