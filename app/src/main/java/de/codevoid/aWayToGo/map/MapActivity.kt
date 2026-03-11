@@ -1186,7 +1186,6 @@ class MapActivity : ComponentActivity() {
         if (enabled) {
             if (s.getSourceAs<RasterSource>(SOURCE_SATELLITE) == null) {
                 val tileSet = TileSet("2.1.0", "$SAT_TILE_TEMPLATE${BuildConfig.MAPTILER_KEY}")
-                tileSet.setTileSize(512)
                 s.addSource(RasterSource(SOURCE_SATELLITE, tileSet, 512))
                 s.addLayerAt(
                     RasterLayer(LAYER_SATELLITE, SOURCE_SATELLITE).apply {
