@@ -9,6 +9,7 @@ import android.graphics.drawable.RippleDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -22,11 +23,14 @@ import de.codevoid.aWayToGo.search.SearchResult
 /**
  * Handle returned by [buildSearchOverlay] to imperatively push state into the overlay.
  *
- * @property root       The overlay view to add to the root layout.
- * @property showResults  Replace the result list with [results].
- * @property showLoading  Replace the result list with a spinner.
- * @property showError    Replace the result list with an error message.
- * @property clearResults Remove all results (back to the shortcuts-only state).
+ * @property root                 The overlay view to add to the root layout.
+ * @property showResults          Replace the result list with [results].
+ * @property showLoading          Replace the result list with a spinner.
+ * @property showError            Replace the result list with an error message.
+ * @property clearResults         Remove all results and hide the result panel.
+ * @property focusAndShowKeyboard Focus the search field and open the soft keyboard.
+ *                                Also refreshes the shortcuts row with the latest data.
+ * @property hideKeyboard         Dismiss the soft keyboard.
  */
 class SearchOverlayResult(
     val root: FrameLayout,
@@ -34,21 +38,28 @@ class SearchOverlayResult(
     val showLoading: () -> Unit,
     val showError: () -> Unit,
     val clearResults: () -> Unit,
+    val focusAndShowKeyboard: () -> Unit,
+    val hideKeyboard: () -> Unit,
 )
 
 /**
  * Build the search overlay panel.
  *
- * Layout (bottom-anchored, full-width):
+ * Layout (bottom-anchored, full-width) — visual order from top of screen downward:
  *
  *   ┌────────────────────────────────────────┐
- *   │  [Search field________________] [Go] ✕ │  input row
+ *   │  [Result name]                         │  results list (hidden until a search runs)
+ *   │  [Result name]                         │
  *   │  ────────────────────────────────────  │
  *   │  Recent: [Term] [Loc] [Term2] …        │  shortcuts (HorizontalScrollView)
  *   │  ────────────────────────────────────  │
- *   │  [Result name]                         │  results list (ScrollView)
- *   │  [Result name]                         │
+ *   │  [Search field________________] [Go] ✕ │  input row (sits just above keyboard)
  *   └────────────────────────────────────────┘
+ *
+ * The result panel starts hidden ([View.GONE]) and becomes visible once a search
+ * has been performed.  Results are **not** cleared when the overlay is closed and
+ * reopened — the caller must explicitly call [SearchOverlayResult.clearResults] to
+ * reset them.
  *
  * @param context         Activity context.
  * @param recentSearches  Storage for recent queries and visited locations.
@@ -64,6 +75,15 @@ fun buildSearchOverlay(
     onResultClick: (SearchResult) -> Unit,
 ): SearchOverlayResult {
     val d = context.resources.displayMetrics.density
+
+    // ── Helper: divider line ──────────────────────────────────────────────────
+    fun makeDivider(): View = View(context).apply {
+        setBackgroundColor(Color.argb(60, 255, 255, 255))
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            (1 * d).toInt(),
+        )
+    }
 
     // ── Helper: small shortcut card ───────────────────────────────────────────
     fun makeShortcutCard(label: String, onClick: () -> Unit): TextView {
@@ -136,7 +156,7 @@ fun buildSearchOverlay(
         }
     }
 
-    // ── Root panel ────────────────────────────────────────────────────────────
+    // ── Root panel background ─────────────────────────────────────────────────
     val topCornerRadius = 32 * d
     val panelBg = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
@@ -144,7 +164,7 @@ fun buildSearchOverlay(
         setColor(Color.argb(220, 0, 0, 0))
     }
 
-    // ── Input row ─────────────────────────────────────────────────────────────
+    // ── Input row (bottom — sits directly above the keyboard) ─────────────────
     val searchField = EditText(context).apply {
         hint = "Search for a place…"
         setHintTextColor(Color.argb(120, 255, 255, 255))
@@ -223,7 +243,7 @@ fun buildSearchOverlay(
         ).apply { setMargins((4 * d).toInt(), 0, 0, 0) })
     }
 
-    // ── Shortcuts row ─────────────────────────────────────────────────────────
+    // ── Shortcuts row (middle) ────────────────────────────────────────────────
     val shortcutsContainer = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -239,18 +259,18 @@ fun buildSearchOverlay(
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ).apply { setMargins(0, 0, gap, 0) }
 
-        // Recent locations first (with 📍 prefix), then recent search terms
+        // Recent locations first (with 📍 prefix), then the single recent search term
         recentSearches.getLocations().forEach { loc ->
             val card = makeShortcutCard("📍 ${loc.displayName.substringBefore(',')}") {
-                field.setText(loc.displayName.substringBefore(','))
                 onSearch(loc.displayName.substringBefore(','))
+                field.text.clear()
             }
             shortcutsContainer.addView(card, LinearLayout.LayoutParams(lp))
         }
         recentSearches.getSearchTerms().forEach { term ->
             val card = makeShortcutCard("🔍 $term") {
-                field.setText(term)
                 onSearch(term)
+                field.text.clear()
             }
             shortcutsContainer.addView(card, LinearLayout.LayoutParams(lp))
         }
@@ -275,50 +295,47 @@ fun buildSearchOverlay(
         ))
     }
 
-    // ── Results area ──────────────────────────────────────────────────────────
+    // ── Results area (top — visible above the map content when results exist) ──
     val resultsContainer = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
     }
 
     val resultsScroll = ScrollView(context).apply {
-        val maxH = (300 * d).toInt()
-        // Constrain the scroll area height so it doesn't push content off screen
-        minimumHeight = 0
+        isVerticalScrollBarEnabled = false
         addView(resultsContainer, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.WRAP_CONTENT,
         ))
-        // Apply max height via layout weight / constraints via parent
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            maxH,
-        )
     }
 
-    // ── Divider helper ────────────────────────────────────────────────────────
-    fun makeDivider(): View = View(context).apply {
-        setBackgroundColor(Color.argb(60, 255, 255, 255))
-        layoutParams = LinearLayout.LayoutParams(
+    // Wrapper holds the scroll + a divider below it. Starts hidden.
+    val resultsWrapper = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+        addView(resultsScroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            (1 * d).toInt(),
-        )
+            (250 * d).toInt(),
+        ))
+        addView(makeDivider())
     }
 
-    // ── Main panel (vertical) ─────────────────────────────────────────────────
+    // ── Main panel: results (top) → shortcuts → divider → input (bottom) ──────
     val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         background = panelBg
-        addView(inputRow, LinearLayout.LayoutParams(
+        addView(resultsWrapper, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
-        addView(makeDivider())
         addView(shortcutsSection, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
         addView(makeDivider())
-        addView(resultsScroll)
+        addView(inputRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ))
     }
 
     val root = FrameLayout(context).apply {
@@ -329,9 +346,14 @@ fun buildSearchOverlay(
     }
 
     // ── Wire up search actions ────────────────────────────────────────────────
+    // Triggers a search and clears the input field immediately so the user can
+    // see the result panel without the typed text lingering.
     fun triggerSearch() {
         val query = searchField.text.toString().trim()
-        if (query.isNotEmpty()) onSearch(query)
+        if (query.isNotEmpty()) {
+            onSearch(query)
+            searchField.text.clear()
+        }
     }
 
     goButton.setOnClickListener { triggerSearch() }
@@ -342,6 +364,7 @@ fun buildSearchOverlay(
     // ── State mutators returned to MapActivity ────────────────────────────────
     fun showResults(results: List<SearchResult>) {
         resultsContainer.removeAllViews()
+        resultsWrapper.visibility = View.VISIBLE
         if (results.isEmpty()) {
             resultsContainer.addView(TextView(context).apply {
                 text = "No results found."
@@ -357,12 +380,13 @@ fun buildSearchOverlay(
             if (i > 0) resultsContainer.addView(makeDivider())
             resultsContainer.addView(makeResultRow(result) { onResultClick(result) })
         }
-        // Refresh shortcuts now (recent terms were saved before this call)
+        // Refresh shortcuts now that the new search term has been saved.
         refreshShortcuts(searchField)
     }
 
     fun showLoading() {
         resultsContainer.removeAllViews()
+        resultsWrapper.visibility = View.VISIBLE
         resultsContainer.addView(ProgressBar(context).apply {
             isIndeterminate = true
         }, LinearLayout.LayoutParams(
@@ -378,6 +402,7 @@ fun buildSearchOverlay(
 
     fun showError() {
         resultsContainer.removeAllViews()
+        resultsWrapper.visibility = View.VISIBLE
         resultsContainer.addView(TextView(context).apply {
             text = "Search failed. Check your connection."
             setTextColor(Color.argb(200, 255, 100, 100))
@@ -390,17 +415,37 @@ fun buildSearchOverlay(
 
     fun clearResults() {
         resultsContainer.removeAllViews()
+        resultsWrapper.visibility = View.GONE
         refreshShortcuts(searchField)
+    }
+
+    // ── Keyboard helpers ──────────────────────────────────────────────────────
+    val focusAndShowKeyboard: () -> Unit = {
+        refreshShortcuts(searchField)
+        searchField.requestFocus()
+        // post() defers until the view is laid out and attached, which is required
+        // for showSoftInput to succeed when the overlay was just made VISIBLE.
+        searchField.post {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(searchField, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    val hideKeyboard: () -> Unit = {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(root.windowToken, 0)
     }
 
     // Initial shortcut population
     refreshShortcuts(searchField)
 
     return SearchOverlayResult(
-        root         = root,
-        showResults  = ::showResults,
-        showLoading  = ::showLoading,
-        showError    = ::showError,
-        clearResults = ::clearResults,
+        root                 = root,
+        showResults          = ::showResults,
+        showLoading          = ::showLoading,
+        showError            = ::showError,
+        clearResults         = ::clearResults,
+        focusAndShowKeyboard = focusAndShowKeyboard,
+        hideKeyboard         = hideKeyboard,
     )
 }

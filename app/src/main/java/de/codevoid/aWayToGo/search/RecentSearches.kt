@@ -4,8 +4,11 @@ import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val MAX_ITEMS = 5
-private const val KEY_TERMS = "recent_terms"
+// Only the single most-recent search term is kept; the remaining shortcut-card
+// space is reserved for favourite locations and last-navigated destination.
+private const val MAX_TERMS     = 1
+private const val MAX_LOCATIONS = 5
+private const val KEY_TERMS     = "recent_terms"
 private const val KEY_LOCATIONS = "recent_locations"
 
 class RecentSearches(private val prefs: SharedPreferences) {
@@ -15,7 +18,7 @@ class RecentSearches(private val prefs: SharedPreferences) {
         list.remove(term)
         list.add(0, term)
         val arr = JSONArray()
-        list.take(MAX_ITEMS).forEach { arr.put(it) }
+        list.take(MAX_TERMS).forEach { arr.put(it) }
         prefs.edit().putString(KEY_TERMS, arr.toString()).apply()
     }
 
@@ -32,7 +35,7 @@ class RecentSearches(private val prefs: SharedPreferences) {
         list.removeAll { it.displayName == name }
         list.add(0, SearchResult(name, lat, lon))
         val arr = JSONArray()
-        list.take(MAX_ITEMS).forEach { r ->
+        list.take(MAX_LOCATIONS).forEach { r ->
             arr.put(JSONObject().apply {
                 put("name", r.displayName)
                 put("lat", r.lat)

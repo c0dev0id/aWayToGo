@@ -1115,13 +1115,16 @@ class MapActivity : ComponentActivity() {
     private fun closeSearch() { viewModel.closeSearch() }
 
     private fun showSearchOverlay() {
-        searchOverlayResult.clearResults()
+        // Results are intentionally NOT cleared here — the previous result list
+        // (if any) remains visible so re-opening the search shows the last results.
         searchOverlayResult.root.visibility = View.VISIBLE
         searchOverlayResult.root.alpha = 0f
         searchOverlayResult.root.animate().alpha(1f).setDuration(200).start()
+        searchOverlayResult.focusAndShowKeyboard()
     }
 
     private fun hideSearchOverlay() {
+        searchOverlayResult.hideKeyboard()
         searchOverlayResult.root.animate().alpha(0f).setDuration(150)
             .withEndAction { searchOverlayResult.root.visibility = View.GONE }
             .start()
