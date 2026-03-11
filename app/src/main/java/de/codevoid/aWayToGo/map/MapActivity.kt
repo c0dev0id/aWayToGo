@@ -80,6 +80,14 @@ private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
 
 private const val TILT_3D = 60.0
 
+// Speed thresholds for adaptive compass ↔ GPS heading mode.
+// Hysteresis avoids mode flipping at a stop light: higher threshold to enter
+// GPS mode, lower to return to compass mode.
+//   1.5 m/s ≈  5.4 km/h  → start rotating map with GPS course
+//   0.5 m/s ≈  1.8 km/h  → return to compass heading when nearly stopped
+private const val SPEED_TO_GPS_MS     = 1.5f
+private const val SPEED_TO_COMPASS_MS = 0.5f
+
 private const val LOCATION_PERMISSION_REQUEST = 1
 
 // Distance threshold (metres) below which flyToLocation animates directly.
@@ -144,6 +152,10 @@ class MapActivity : ComponentActivity() {
     private var style: Style? = null
     private var hasLocationPermission = false
 
+    // True while GPS speed exceeds SPEED_TO_GPS_MS; false below SPEED_TO_COMPASS_MS.
+    // Drives the adaptive compass ↔ GPS camera/render mode selection.
+    private var isMoving = false
+
     // Owns all D-pad / joystick / zoom-key state and drives per-frame camera updates.
     private val panController = PanController(onEnterPanningMode = { enterPanningMode() })
 
@@ -167,6 +179,11 @@ class MapActivity : ComponentActivity() {
         override fun doFrame(frameTimeNanos: Long) {
             val dtNs = if (osdLastFrameNs != 0L) frameTimeNanos - osdLastFrameNs else 16_000_000L
             osdLastFrameNs = frameTimeNanos
+
+            // ── Adaptive heading (compass ↔ GPS) ───────────────────────────────
+            // Check GPS speed and switch CameraMode/RenderMode when the user
+            // crosses the moving/stationary threshold.  O(1) no-op most frames.
+            updateMovingState()
 
             // ── Pan + Zoom ─────────────────────────────────────────────────────
             // PanController owns all D-pad/joystick state and returns the current
@@ -545,8 +562,8 @@ class MapActivity : ComponentActivity() {
                 LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
             )
             isLocationComponentEnabled = true
-            cameraMode  = CameraMode.TRACKING
-            renderMode  = RenderMode.COMPASS
+            cameraMode = trackingCameraMode()
+            renderMode = trackingRenderMode()
         }
 
         m.locationComponent.lastKnownLocation?.let { loc ->
@@ -619,7 +636,7 @@ class MapActivity : ComponentActivity() {
                         // Outside panning mode: toggle GPS camera tracking.
                         m.locationComponent.cameraMode =
                             if (m.locationComponent.cameraMode == CameraMode.NONE)
-                                CameraMode.TRACKING
+                                trackingCameraMode()
                             else
                                 CameraMode.NONE
                     }
@@ -662,6 +679,58 @@ class MapActivity : ComponentActivity() {
      */
     private fun exitPanningMode() {
         viewModel.exitPanningMode()
+    }
+
+    // ── Adaptive heading (compass ↔ GPS) ──────────────────────────────────────
+
+    /**
+     * [CameraMode] that both follows the user's position AND rotates the map:
+     * - Stationary ([isMoving] == false): [CameraMode.TRACKING_COMPASS] — the map
+     *   heading follows the device compass so "up" is wherever you're pointing.
+     * - Moving    ([isMoving] == true):  [CameraMode.TRACKING_GPS] — the map heading
+     *   follows the GPS course-over-ground so "up" is the direction of travel.
+     */
+    private fun trackingCameraMode() =
+        if (isMoving) CameraMode.TRACKING_GPS else CameraMode.TRACKING_COMPASS
+
+    /**
+     * [RenderMode] consistent with [trackingCameraMode]: the user location puck
+     * always shows a directional indicator, pointing either compass or GPS bearing.
+     */
+    private fun trackingRenderMode() =
+        if (isMoving) RenderMode.GPS else RenderMode.COMPASS
+
+    /**
+     * Check GPS speed from the most recent location fix and, if the moving/stationary
+     * state has changed, switch [CameraMode] and [RenderMode] accordingly.
+     *
+     * Called every Choreographer frame but is an O(1) no-op in the common case
+     * (no state change).  Hysteresis ([SPEED_TO_GPS_MS] / [SPEED_TO_COMPASS_MS])
+     * prevents mode flipping when the user is stopped at a traffic light with a
+     * speed reading hovering near zero.
+     *
+     * Does nothing while panning or in EDIT mode — the location component's
+     * camera mode is [CameraMode.NONE] in those states and must not be overridden.
+     */
+    @SuppressLint("MissingPermission")
+    private fun updateMovingState() {
+        val uiState = viewModel.uiState.value
+        if (uiState.isInPanningMode || uiState.mode == AppMode.EDIT) return
+
+        val lc = map?.locationComponent?.takeIf { it.isLocationComponentActivated } ?: return
+        if (lc.cameraMode == CameraMode.NONE) return   // user manually detached tracking
+
+        val loc   = lc.lastKnownLocation ?: return
+        val speed = if (loc.hasSpeed()) loc.speed else 0f
+
+        // Hysteresis: once moving, require a lower speed before switching back,
+        // so a momentary slow-down at lights doesn't drop back to compass.
+        val nowMoving = if (isMoving) speed > SPEED_TO_COMPASS_MS else speed > SPEED_TO_GPS_MS
+        if (nowMoving == isMoving) return
+
+        isMoving = nowMoving
+        lc.cameraMode = trackingCameraMode()
+        lc.renderMode = trackingRenderMode()
     }
 
     // ── Mode management ───────────────────────────────────────────────────────
@@ -896,8 +965,10 @@ class MapActivity : ComponentActivity() {
         if (modeChanged || panningChanged) {
             when {
                 // Entering NAVIGATE always re-enables GPS tracking (may override panning).
-                modeChanged && new.mode == AppMode.NAVIGATE ->
-                    map?.locationComponent?.cameraMode = CameraMode.TRACKING
+                modeChanged && new.mode == AppMode.NAVIGATE -> {
+                    map?.locationComponent?.cameraMode = trackingCameraMode()
+                    map?.locationComponent?.renderMode  = trackingRenderMode()
+                }
 
                 // Entering EDIT always disables tracking (panning state also cleared by ViewModel).
                 modeChanged && new.mode == AppMode.EDIT ->
@@ -912,7 +983,8 @@ class MapActivity : ComponentActivity() {
                     val m   = map
                     val loc = m?.locationComponent?.lastKnownLocation
                     if (m != null && loc != null) {
-                        m.locationComponent.cameraMode = CameraMode.TRACKING
+                        m.locationComponent.cameraMode = trackingCameraMode()
+                        m.locationComponent.renderMode  = trackingRenderMode()
                         flyToLocation(m, LatLng(loc.latitude, loc.longitude))
                     }
                 }
