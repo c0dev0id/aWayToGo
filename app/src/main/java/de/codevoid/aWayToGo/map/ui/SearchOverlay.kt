@@ -319,20 +319,24 @@ fun buildSearchOverlay(
         addView(makeDivider())
     }
 
-    // ── Main panel: results (top) → shortcuts → divider → input (bottom) ──────
+    // ── Main panel ────────────────────────────────────────────────────────────
+    // Visual order from top of screen downward (panel is bottom-anchored):
+    //   1. Results list   — hidden until a search is performed
+    //   2. Input row      — search field + Go + ✕
+    //   3. Shortcuts row  — sits directly above the system keyboard
     val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         background = panelBg
-        addView(resultsWrapper, LinearLayout.LayoutParams(
+        addView(resultsWrapper, LinearLayout.LayoutParams(       // 1. results
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
-        addView(shortcutsSection, LinearLayout.LayoutParams(
+        addView(inputRow, LinearLayout.LayoutParams(             // 2. input
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
         addView(makeDivider())
-        addView(inputRow, LinearLayout.LayoutParams(
+        addView(shortcutsSection, LinearLayout.LayoutParams(     // 3. shortcuts
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
