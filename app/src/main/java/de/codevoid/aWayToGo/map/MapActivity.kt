@@ -1394,8 +1394,6 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        val avatarSz = itemH   // 64dp — fills the entire button circle when collapsed
-
         // Three-bar hamburger icon: each bar is a separate View so they can be rotated
         // individually during open/close.  All pivots point to the icon centre (32dp, 32dp)
         // so they rotate as if they were one unit — but at different speeds.
@@ -1448,15 +1446,6 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // Profile avatar — overlay at top-right, vertically centred in the 64dp header area.
-        // clipToOutline on the panel hides it while the panel is in 64×64 button state.
-        val profileAvatar = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.argb(120, 150, 150, 150))
-            }
-        }
-
         // 6 menu items, scrollable.
         val contentList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1485,18 +1474,6 @@ class MapActivity : ComponentActivity() {
                 topMargin = itemH
             })
 
-            // Profile avatar added first (lower z) so hamburger bars render on top.
-            // avatarSz == itemH (64dp): when collapsed, the avatar exactly fills the
-            // 64×64dp panel and clipToOutline clips it to the same circle as the button.
-            // 0 margins place it flush at the top-right corner; when expanded the panel's
-            // cornerRadius clips it naturally to the rounded corner arc.
-            addView(profileAvatar, FrameLayout.LayoutParams(avatarSz, avatarSz).apply {
-                gravity   = Gravity.TOP or Gravity.END
-                topMargin = 0
-                marginEnd = 0
-            })
-
-            // Hamburger button on top (higher z) so bars are visible over the avatar.
             addView(hamburgerBtn, FrameLayout.LayoutParams(itemH, itemH).apply {
                 gravity = Gravity.TOP or Gravity.START
             })
