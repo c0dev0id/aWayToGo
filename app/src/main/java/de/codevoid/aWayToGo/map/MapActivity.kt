@@ -37,7 +37,6 @@ import android.view.animation.DecelerateInterpolator
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -47,17 +46,9 @@ import de.codevoid.aWayToGo.R
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
-import kotlinx.coroutines.Dispatchers
+import de.codevoid.aWayToGo.update.AppUpdater
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -177,6 +168,8 @@ class MapActivity : ComponentActivity() {
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
     private var downloadProgressBar: ProgressBar? = null
+
+    private val appUpdater by lazy { AppUpdater(this) }
 
     // Overlay used to animate screen rotation — covers the SurfaceView's brief
     // black resize frame, then fades out to reveal the re-laid-out UI.
@@ -1603,9 +1596,8 @@ class MapActivity : ComponentActivity() {
     /**
      * Tap handler for the version card.
      *
-     * Checks GitHub for a pre-release newer than the current build, then
-     * downloads and opens it with the package installer if one is found.
-     * The card text reflects the current state (checking / up to date / error).
+     * Delegates network and file I/O to [AppUpdater]; this method only manages
+     * the card label and the download progress overlay.
      */
     private fun onVersionCardTapped() {
         // Ignore taps while already busy (text is not the commit hash).
@@ -1613,7 +1605,7 @@ class MapActivity : ComponentActivity() {
         versionCardView.text = "checking…"
 
         lifecycleScope.launch {
-            val apkUrl = fetchLatestPreReleaseApkUrl()
+            val apkUrl = appUpdater.checkForUpdate()
             if (apkUrl == null) {
                 versionCardView.text = "up to date"
                 delay(2_000)
@@ -1623,9 +1615,11 @@ class MapActivity : ComponentActivity() {
 
             showDownloadOverlay()
             try {
-                val apk = downloadApk(apkUrl) { pct -> downloadProgressBar?.progress = pct }
+                val apk = appUpdater.downloadApk(apkUrl) { pct ->
+                    downloadProgressBar?.progress = pct
+                }
                 hideDownloadOverlay()
-                installApk(apk)
+                appUpdater.installApk(apk)
             } catch (_: Exception) {
                 hideDownloadOverlay()
                 versionCardView.text = "error"
@@ -1633,60 +1627,6 @@ class MapActivity : ComponentActivity() {
                 versionCardView.text = BuildConfig.GIT_COMMIT
             }
         }
-    }
-
-    /**
-     * Fetches the GitHub releases list and returns the download URL of the APK
-     * asset from the most recent pre-release.
-     * Returns null if already on that release or on any network/parse error.
-     *
-     * "Already on that release" is determined by checking whether the APK filename
-     * of the latest pre-release contains [BuildConfig.GIT_COMMIT] — the short hash
-     * embedded in the filename by the CI pipeline (e.g. "aWayToGo-abc1234.apk").
-     * No timestamp comparison needed: if the hash matches we are up to date.
-     */
-    private suspend fun fetchLatestPreReleaseApkUrl(): String? = withContext(Dispatchers.IO) {
-        try {
-            val conn = URL("https://api.github.com/repos/c0dev0id/aWayToGo/releases")
-                .openConnection() as HttpURLConnection
-            conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-            conn.connect()
-            val body = conn.inputStream.bufferedReader().readText()
-            conn.disconnect()
-
-            val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }
-
-            // Find the most recent pre-release that has an APK asset.
-            var bestTime = 0L
-            var bestUrl: String? = null
-            var isCurrentBuild = false
-
-            val releases = JSONArray(body)
-            for (i in 0 until releases.length()) {
-                val rel = releases.getJSONObject(i)
-                if (!rel.optBoolean("prerelease")) continue
-                val published = fmt.parse(rel.optString("published_at"))?.time ?: continue
-                if (published <= bestTime) continue
-
-                val assets = rel.optJSONArray("assets") ?: continue
-                for (j in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(j)
-                    val name  = asset.optString("name")
-                    if (name.endsWith(".apk")) {
-                        bestUrl        = asset.optString("browser_download_url")
-                        bestTime       = published
-                        // If the filename contains our commit hash this release was
-                        // built from the same commit — nothing to update.
-                        isCurrentBuild = name.contains(BuildConfig.GIT_COMMIT)
-                        break
-                    }
-                }
-            }
-
-            if (isCurrentBuild) null else bestUrl
-        } catch (_: Exception) { null }
     }
 
     /** Shows a semi-transparent overlay with a horizontal progress bar. */
@@ -1741,53 +1681,6 @@ class MapActivity : ComponentActivity() {
         downloadOverlay?.let { (window.decorView as? ViewGroup)?.removeView(it) }
         downloadOverlay    = null
         downloadProgressBar = null
-    }
-
-    /**
-     * Downloads the APK at [url] to externalCacheDir/update.apk.
-     * Calls [onProgress] (0–100) on the main thread as data arrives.
-     * Must be called from a coroutine; suspends on IO.
-     */
-    private suspend fun downloadApk(url: String, onProgress: (Int) -> Unit): File =
-        withContext(Dispatchers.IO) {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            conn.connect()
-            val total = conn.contentLengthLong
-            val dest  = File(externalCacheDir, "update.apk")
-            var lastPct = -1
-
-            conn.inputStream.use { input ->
-                dest.outputStream().use { output ->
-                    val buf = ByteArray(65_536)
-                    var downloaded = 0L
-                    var read: Int
-                    while (input.read(buf).also { read = it } != -1) {
-                        output.write(buf, 0, read)
-                        downloaded += read
-                        if (total > 0) {
-                            val pct = (downloaded * 100 / total).toInt()
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                withContext(Dispatchers.Main) { onProgress(pct) }
-                            }
-                        }
-                    }
-                }
-            }
-            dest
-        }
-
-    /** Opens the downloaded APK with the system package installer. */
-    private fun installApk(file: File) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-        startActivity(
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-        )
     }
 
     /**

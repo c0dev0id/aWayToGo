@@ -117,7 +117,7 @@ Each domain has its own Repository and UseCases. The rest of the app never talks
 
 **MapDomain** — tile source, MBTiles management, camera state, offline area tracking. Observes `PoiGroup.isVisible` from LibraryDomain and maintains corresponding GeoJSON sources and SymbolLayers in MapLibre.
 
-**RoutingDomain** — BRouter integration and profile management. BRouter runs as a bounded service inside the app process; a Kotlin wrapper isolates it so no other module touches BRouter directly.
+**RoutingDomain** — BRouter integration and profile management. BRouter runs as a bounded service inside the app process; a Kotlin wrapper isolates it so no other module touches BRouter directly. The domain skeleton exists: `RoutingRepository` (interface), `BRouterEngine` (stub implementation), `Route`, `RoutePoint`, `RoutingProfile`, `RoutingResult`. BRouter library integration is the next step.
 
 **NavigationDomain** — active navigation session, GPS tracking, off-route detection, TTS instructions. Runs as a Foreground Service to continue in the background. Publishes state as a `StateFlow` that the UI layer observes. GPS is the single source of truth here — both LibraryDomain (RecorderDomain path) and MapDomain observe it.
 

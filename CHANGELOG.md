@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `RoutingDomain` skeleton: `RoutingRepository` interface, `Route`, `RoutePoint`, `RoutingProfile`, `RoutingResult` domain types, and a `BRouterEngine` stub that wires to the interface. No BRouter library yet — the stub returns an error; this establishes the correct layer boundary before integration.
+
+### Changed
+- Self-update logic extracted from `MapActivity` into `update/AppUpdater`. `MapActivity` now only manages the download progress overlay UI; all network, file I/O, and package installer concerns live in `AppUpdater`.
+- Profile avatar placeholder removed from the hamburger menu.
+
 ### Fixed
 - Screen rotation visual disruption eliminated. Diagnostic confirmed that `configChanges` was already preventing Activity recreation (same window token across all rotations, no `DESTROY`/`RECREATE` events). The visible "redraw" was the OS freeze-and-rotate animation (`ROTATION_ANIMATION_ROTATE`), which captures a screenshot and cross-fades to the new layout regardless of `configChanges`. Fixed by setting `rotationAnimation = ROTATION_ANIMATION_SEAMLESS` on the window in `onCreate`, which instructs the compositor to skip the animation and resize the window in place.
 
