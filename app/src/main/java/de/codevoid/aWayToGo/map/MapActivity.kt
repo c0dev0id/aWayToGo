@@ -111,7 +111,6 @@ private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
-private const val TILT_3D = 60.0
 
 private const val LOCATION_PERMISSION_REQUEST = 1
 
@@ -807,21 +806,8 @@ class MapActivity : ComponentActivity() {
 
                 RemoteKey.BACK ->
                     // In panning mode: exit panning → re-lock on GPS.
-                    // Outside panning mode: reset map bearing to north.
                     if (viewModel.uiState.value.isInPanningMode) {
                         exitPanningMode()
-                    } else {
-                        m.animateCamera(
-                            CameraUpdateFactory.newCameraPosition(
-                                CameraPosition.Builder()
-                                    .target(m.cameraPosition.target)
-                                    .zoom(m.cameraPosition.zoom)
-                                    .tilt(m.cameraPosition.tilt)
-                                    .bearing(0.0)
-                                    .build(),
-                            ),
-                            400,
-                        )
                     }
             }
 
@@ -838,21 +824,6 @@ class MapActivity : ComponentActivity() {
                             setDragLine(LatLng(loc.latitude, loc.longitude), target)
                         }
                     }
-
-                RemoteKey.BACK -> {
-                    val currentTilt = m.cameraPosition.tilt
-                    m.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(
-                            CameraPosition.Builder()
-                                .target(m.cameraPosition.target)
-                                .zoom(m.cameraPosition.zoom)
-                                .bearing(m.cameraPosition.bearing)
-                                .tilt(if (currentTilt > 0.0) 0.0 else TILT_3D)
-                                .build(),
-                        ),
-                        400,
-                    )
-                }
 
                 else -> {}
             }
@@ -880,37 +851,102 @@ class MapActivity : ComponentActivity() {
         viewModel.exitPanningMode()
     }
 
+    // ── Map movement primitives ────────────────────────────────────────────────
+
+    /**
+     * Smoothly animates the map tilt to [angle] degrees.
+     *
+     * Default 45° gives a comfortable perspective view.  Pass 0.0 to flatten the map.
+     * All other camera properties (position, zoom, bearing, padding) are preserved.
+     */
+    private fun tilt(angle: Double = 45.0, durationMs: Int = 400) {
+        val m = map ?: return
+        val cur = m.cameraPosition
+        m.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(cur.target)
+                    .zoom(cur.zoom)
+                    .bearing(cur.bearing)
+                    .tilt(angle)
+                    .padding(cur.padding)
+                    .build(),
+            ),
+            durationMs,
+        )
+    }
+
+    /**
+     * Smoothly rotates the map so [bearing] degrees faces upward.
+     *
+     * The animation duration scales with angular distance (100–600 ms) so both
+     * small corrections and large turns feel natural.  Calling this again while
+     * an animation is in-flight cancels it and starts toward the new target —
+     * sensor or GPS updates naturally chain into smooth continuous rotation.
+     *
+     * All other camera properties (position, zoom, tilt, padding) are preserved.
+     */
+    private fun rotate(bearing: Double) {
+        val m = map ?: return
+        val cur = m.cameraPosition
+        m.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(cur.target)
+                    .zoom(cur.zoom)
+                    .bearing(bearing)
+                    .tilt(cur.tilt)
+                    .padding(cur.padding)
+                    .build(),
+            ),
+            angularDuration(cur.bearing, bearing),
+        )
+    }
+
+    /** Maps shortest angular distance (0–180°) to animation duration (100–600 ms). */
+    private fun angularDuration(from: Double, to: Double): Int {
+        val delta = Math.abs(((to - from + 540.0) % 360.0) - 180.0)
+        return (100 + (delta / 180.0) * 500).toInt()
+    }
+
     // ── Mode management ───────────────────────────────────────────────────────
 
     /**
      * Apply (or animate) camera tilt and vertical focal-point offset for [mode].
      *
-     * Navigate mode:
-     *   - 30° tilt — gives a perspective view of the road ahead.
-     *   - Top padding = 60 % of screen height — moves the GPS anchor point to
-     *     80 % from the top (30 % lower than the default screen centre), so
-     *     more of the road ahead is visible above the user's position.
+     * Navigate mode: 45° tilt with top padding that anchors the GPS dot at ~90 %
+     * from the top, keeping more of the road ahead visible.  When [animated] is
+     * true the camera flies to the current GPS position (with zoom scaling for
+     * distance) before settling at the final tilt and padding.
      *
-     * All other modes: flat (0° tilt), no padding.
-     *
-     * Both tilt and padding are delivered as a single [CameraPosition] update
-     * so MapLibre interpolates them together in one smooth 400 ms animation.
+     * All other modes: flat (0° tilt), no padding, 400 ms smooth animation.
      */
     private fun applyCameraForMode(mode: AppMode, animated: Boolean) {
         val m = map ?: return
         val screenH = resources.displayMetrics.heightPixels
 
+        if (mode == AppMode.NAVIGATE && animated) {
+            // Fly to GPS position with tilt and focal-point padding applied at arrival.
+            // flyToLocation uses the two-phase zoom when far from GPS, a single smooth
+            // animation when nearby — the tilt/padding are always set in the final phase.
+            val gpsTarget = m.locationComponent.lastKnownLocation
+                ?.let { LatLng(it.latitude, it.longitude) }
+                ?: m.cameraPosition.target
+                ?: return
+            flyToLocation(
+                m, gpsTarget,
+                tilt    = 45.0,
+                padding = doubleArrayOf(0.0, screenH * 0.8, 0.0, 0.0),
+                enableZoom = true,
+            )
+            return
+        }
+
         val targetTilt: Double
         val topPad: Double
         when (mode) {
-            AppMode.NAVIGATE -> {
-                targetTilt = 45.0
-                topPad     = screenH * 0.8   // GPS dot at ~90 % from top = 40 % below centre
-            }
-            else -> {
-                targetTilt = 0.0
-                topPad     = 0.0
-            }
+            AppMode.NAVIGATE -> { targetTilt = 45.0; topPad = screenH * 0.8 }
+            else             -> { targetTilt = 0.0;  topPad = 0.0 }
         }
 
         val cur    = m.cameraPosition
@@ -1376,10 +1412,7 @@ class MapActivity : ComponentActivity() {
         val newCameraScreen = PointF(w / 2f + dx, h / 2f + dy)
         val newCameraTarget = m.projection.fromScreenLocation(newCameraScreen)
 
-        m.animateCamera(
-            CameraUpdateFactory.newLatLngZoom(newCameraTarget, m.cameraPosition.zoom),
-            350,
-        )
+        flyToLocation(m, newCameraTarget, enableZoom = false)
     }
 
     private fun hideSearchOverlay() {
@@ -1949,31 +1982,51 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Animate the camera to [target] at [zoom].
+     * Animate the camera to [target].
      *
-     * [zoom] defaults to the current camera zoom — callers that want a specific
-     * level (e.g. re-centering from a cold state) must pass one explicitly.
-     *
+     * [zoom] defaults to the current camera zoom.
+     * [tilt] defaults to the current camera tilt — pass a value to override
+     *   (e.g. 45.0 for NAVIGATE mode).
+     * [padding] defaults to the current camera padding — pass a value to override.
+     * [enableZoom] controls whether the two-phase zoom-out/zoom-in animation plays.
+     *   Pass `false` to pan without changing zoom (e.g. search-result pan or mode
+     *   transitions that should not zoom).
      * [onFinish] is invoked when the animation completes (or is cancelled).
-     * Used by [flyToCurrentLocationThen] to chain a mode transition after the fly.
      *
-     * If the target is within FLYTO_THRESHOLD_M the camera eases directly.
-     * If farther away it first animates to a context zoom that shows enough
-     * geography to orient the user, then eases in to the target — the same
-     * "zoom out → pan → zoom in" pattern used by most navigation apps.
+     * When [enableZoom] is true and the target is beyond FLYTO_THRESHOLD_M, the
+     * camera first zooms to a context level that shows the route geography, then
+     * eases in to [zoom] at [target] — the same "zoom out → pan → zoom in"
+     * pattern used by most navigation apps.  For nearby targets the camera eases
+     * directly without the intermediate zoom.
+     *
+     * When [enableZoom] is false a single 600 ms animation is used regardless of
+     * distance, keeping the current zoom level throughout.
      */
     private fun flyToLocation(
         m: MapLibreMap,
         target: LatLng,
         zoom: Double = m.cameraPosition.zoom,
+        tilt: Double = m.cameraPosition.tilt,
+        padding: DoubleArray? = null,
+        enableZoom: Boolean = true,
         onFinish: (() -> Unit)? = null,
     ) {
+        val resolvedPadding = padding ?: m.cameraPosition.padding ?: doubleArrayOf(0.0, 0.0, 0.0, 0.0)
         val from     = m.cameraPosition.target ?: run { onFinish?.invoke(); return }
         val distance = from.distanceTo(target)
 
-        if (distance < FLYTO_THRESHOLD_M) {
+        // Build the final CameraPosition (used by both the direct and phase-2 paths).
+        fun finalPos() = CameraPosition.Builder()
+            .target(target)
+            .zoom(zoom)
+            .tilt(tilt)
+            .bearing(m.cameraPosition.bearing)
+            .padding(resolvedPadding)
+            .build()
+
+        if (!enableZoom || distance < FLYTO_THRESHOLD_M) {
             m.animateCamera(
-                CameraUpdateFactory.newLatLngZoom(target, zoom),
+                CameraUpdateFactory.newCameraPosition(finalPos()),
                 600,
                 object : MapLibreMap.CancelableCallback {
                     override fun onFinish() { onFinish?.invoke() }
@@ -1998,9 +2051,9 @@ class MapActivity : ComponentActivity() {
             600,
             object : MapLibreMap.CancelableCallback {
                 override fun onFinish() {
-                    // Phase 2: ease into the final zoom level.
+                    // Phase 2: ease into the final zoom, tilt, and padding.
                     m.animateCamera(
-                        CameraUpdateFactory.newLatLngZoom(target, zoom),
+                        CameraUpdateFactory.newCameraPosition(finalPos()),
                         500,
                         object : MapLibreMap.CancelableCallback {
                             override fun onFinish() { onFinish?.invoke() }
