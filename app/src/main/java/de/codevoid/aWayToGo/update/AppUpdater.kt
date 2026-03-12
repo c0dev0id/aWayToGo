@@ -130,6 +130,11 @@ class AppUpdater(private val context: Context) {
      */
     suspend fun downloadApk(url: String, onProgress: (DownloadProgress) -> Unit): File =
         withContext(Dispatchers.IO) {
+            // If a completed download for this exact URL already exists, reuse it.
+            if (apkFile.exists() && urlFile.exists() && urlFile.readText().trim() == url) {
+                return@withContext apkFile
+            }
+
             // Remember which URL this partial belongs to.
             urlFile.writeText(url)
 
@@ -190,8 +195,7 @@ class AppUpdater(private val context: Context) {
                 }
             }
 
-            partFile.renameTo(apkFile)
-            urlFile.delete()
+            if (!partFile.renameTo(apkFile)) throw java.io.IOException("Failed to rename download")
             apkFile
         }
 
