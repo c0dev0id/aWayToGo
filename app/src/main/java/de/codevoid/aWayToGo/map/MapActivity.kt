@@ -1501,9 +1501,11 @@ class MapActivity : ComponentActivity() {
         val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
         val startW    = lp.width
         val startH    = lp.height
-        // Capture each bar's current rotation so the animator can interpolate from
-        // wherever the animation was interrupted (e.g. rapid open→close→open).
-        val barStartR = FloatArray(3) { hamburgerBars[it].rotation }
+        // Capture each bar's current rotation and scaleX so the animator can
+        // interpolate from wherever the animation was interrupted (e.g. rapid
+        // open→close→open, or close from back-arrow state).
+        val barStartR  = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartSX = FloatArray(3) { hamburgerBars[it].scaleX }
         // Top bar is fastest: it reaches 90° at ~65% of the animation, giving a
         // staggered cascade where bar 0 leads and bar 2 trails.
         val openSpeeds = floatArrayOf(1.4f, 1.2f, 1.0f)
@@ -1519,6 +1521,7 @@ class MapActivity : ComponentActivity() {
                 hamburgerBars.forEachIndexed { i, bar ->
                     val p = (t * openSpeeds[i]).coerceAtMost(1f)
                     bar.rotation = barStartR[i] + (90f - barStartR[i]) * p
+                    bar.scaleX   = barStartSX[i] + (1f - barStartSX[i]) * p
                 }
             }
             start()
