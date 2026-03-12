@@ -350,12 +350,11 @@ class MapActivity : ComponentActivity() {
         // SurfaceView mode (the default — do NOT pass textureMode): gives MapLibre its own
         // hardware layer, so the GL thread runs at the display's native refresh rate
         // independently of the main thread.
-        // pixelRatio=3.0: benchmark-derived optimum. Higher pixelRatio causes MapLibre to
-        // satisfy tile quality from a lower zoom tier → fewer, larger tiles per viewport →
-        // less tile-fetch congestion during pan → higher and more stable gl_fps.
-        // Tested values 1.0–4.0 at zoom 14/16; 3.0 gave best avg+min gl_fps on this device.
+        // pixelRatio: do NOT set. MapLibre 13 changed how this interacts with the rendering
+        // surface — a non-default value causes the map to render at 1/pixelRatio of the
+        // screen size and appear in a corner. The v11 benchmark optimum of 3.0 no longer
+        // applies. Re-evaluate tile-fetch tuning via a different mechanism once stable.
         val mapOptions = MapLibreMapOptions.createFromAttributes(this)
-            .pixelRatio(3.0f)
         mapView = MapView(this, mapOptions)
         root.addView(
             mapView,
