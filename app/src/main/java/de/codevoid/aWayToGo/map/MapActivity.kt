@@ -2680,6 +2680,40 @@ class MapActivity : ComponentActivity() {
         benchmarkStatusLabel = null
     }
 
+    private fun formatBenchmarkResults(results: List<BenchmarkResult>): String {
+        val sb = StringBuilder()
+        sb.appendLine("aWayToGo Benchmark Results")
+        sb.appendLine("Build: ${BuildConfig.GIT_COMMIT}  (${BuildConfig.BUILD_TIME})")
+        sb.appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})")
+        sb.appendLine()
+        for (r in results) {
+            sb.appendLine("Zoom ${r.zoom}")
+            sb.appendLine("  GL:   avg ${"%.0f".format(r.glStats.avg)}  min ${"%.0f".format(r.glStats.min)}  max ${"%.0f".format(r.glStats.max)} fps")
+            sb.appendLine("  Main: avg ${"%.0f".format(r.mainAvg)}  min ${"%.0f".format(r.mainMin)}  max ${"%.0f".format(r.mainMax)} fps")
+            sb.appendLine("  dt:   avg ${r.dtAvgMs}  min ${r.dtMinMs}  max ${r.dtMaxMs} ms")
+        }
+        return sb.toString()
+    }
+
+    private fun shareBenchmarkResults(text: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "aWayToGo Benchmark Results")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(intent, "Share benchmark results"))
+    }
+
+    private fun saveBenchmarkResults(text: String) {
+        val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val file = java.io.File(getExternalFilesDir(null), "benchmark_$ts.txt")
+        file.writeText(text)
+        android.widget.Toast.makeText(
+            this, "Saved to ${file.name}", android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+
     private fun showBenchmarkResultsOverlay(results: List<BenchmarkResult>) {
         val d = resources.displayMetrics.density
 
@@ -2730,11 +2764,36 @@ class MapActivity : ComponentActivity() {
             content.addView(dtLine)
         }
 
+        val resultText = formatBenchmarkResults(results)
+
+        val shareBtn = TextView(this).apply {
+            text = "Share"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
+        val saveBtn = TextView(this).apply {
+            text = "Save"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
         val closeBtn = TextView(this).apply {
             text = "Close"
             setTextColor(Color.argb(220, 180, 180, 255))
             textSize = 15f
             gravity = Gravity.CENTER
+        }
+
+        val buttonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(shareBtn, lp)
+            addView(saveBtn, lp)
+            addView(closeBtn, lp)
         }
 
         val container = LinearLayout(this).apply {
@@ -2750,7 +2809,7 @@ class MapActivity : ComponentActivity() {
                     LinearLayout.LayoutParams.MATCH_PARENT, (300 * d).toInt(),
                 ),
             )
-            addView(closeBtn, LinearLayout.LayoutParams(
+            addView(buttonRow, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = (12 * d).toInt() })
             isClickable = true
@@ -2766,6 +2825,8 @@ class MapActivity : ComponentActivity() {
             ))
         }
 
+        shareBtn.setOnClickListener { shareBenchmarkResults(resultText) }
+        saveBtn.setOnClickListener { saveBenchmarkResults(resultText) }
         closeBtn.setOnClickListener {
             (window.decorView as? ViewGroup)?.removeView(overlay)
         }
