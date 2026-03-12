@@ -51,6 +51,7 @@ class MapViewModel : ViewModel() {
                 mode             = mode,
                 isMenuOpen       = false,
                 isInSettingsMenu = false,
+                isInDebugMenu    = false,
                 isSearchOpen     = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
                 isInPanningMode  = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
@@ -86,7 +87,7 @@ class MapViewModel : ViewModel() {
 
     /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -121,7 +122,17 @@ class MapViewModel : ViewModel() {
 
     /** Return from the Settings submenu to the main menu layer. */
     fun exitSettingsMenu() {
-        _uiState.update { it.copy(isInSettingsMenu = false) }
+        _uiState.update { it.copy(isInSettingsMenu = false, isInDebugMenu = false) }
+    }
+
+    /** Enter the Debug submenu layer (Settings menu must already be open). */
+    fun enterDebugMenu() {
+        _uiState.update { it.copy(isInDebugMenu = true) }
+    }
+
+    /** Return from the Debug submenu to the Settings layer. */
+    fun exitDebugMenu() {
+        _uiState.update { it.copy(isInDebugMenu = false) }
     }
 
     /** Toggle the debug OSD overlay on/off. */

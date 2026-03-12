@@ -29,13 +29,19 @@ import de.codevoid.aWayToGo.R
  * [settingsGhostHeader] is a full-width clone of the Settings row placed at
  * the panel's top (y=0), initially GONE.  During the enter-settings animation
  * it slides up from the list position and becomes the visible header.
- * [settingsContent] is the LinearLayout that holds settings items (Debug Mode
- * toggle, etc.), initially GONE.
- * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
- * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
+ * [settingsContent] is the LinearLayout that holds the "Debug" entry row,
+ * initially GONE.
  * [settingsRowIcon] is the icon ImageView inside [settingsRowInList]; faded
  * out during the enter-settings animation so the icon appears to teleport
  * from the left side of the list row to the right side of the ghost header.
+ * [debugRowInSettings] is the "Debug" row inside [settingsContent]; its click
+ * enters the Debug submenu layer.
+ * [debugGhostHeader] is a full-width clone of the Debug row placed at the
+ * panel's top (y=0), initially GONE.  Animates in when entering the Debug layer.
+ * [debugContent] is the LinearLayout that holds Debug submenu items (Debug Mode
+ * toggle and Run Benchmark), initially GONE.
+ * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
+ * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
  */
 data class MenuPanelResult(
     val root: View,
@@ -45,6 +51,9 @@ data class MenuPanelResult(
     val settingsRowIcon: ImageView,
     val settingsGhostHeader: View,
     val settingsContent: LinearLayout,
+    val debugRowInSettings: View,
+    val debugGhostHeader: View,
+    val debugContent: LinearLayout,
     val debugToggleLabel: TextView,
 ) {
     override fun equals(other: Any?): Boolean {
@@ -62,16 +71,17 @@ data class MenuPanelResult(
  *   ├── mainMenuScroll (ScrollView, topMargin=64dp)
  *   │     └── 6 menu items including Settings at the bottom
  *   ├── settingsContent (LinearLayout, topMargin=64dp, initially GONE)
- *   │     └── Debug Mode toggle
+ *   │     └── Debug entry row
+ *   ├── debugContent (LinearLayout, topMargin=64dp, initially GONE)
+ *   │     ├── Debug Mode toggle
+ *   │     └── Run Benchmark row
  *   ├── settingsGhostHeader (280×64dp row, gravity=TOP|START, initially GONE)
+ *   ├── debugGhostHeader (280×64dp row, gravity=TOP|START, initially GONE)
  *   └── hamburgerBtn (FrameLayout 64×64dp, gravity=TOP|START — on top of ghost)
  *
- * The ghost header starts with translationY set by MapActivity before the
- * enter-settings animation so it appears to rise from the list into the header.
- *
  * @param onToggleMenu  Called when the user taps the hamburger/back-arrow button.
- *                      MapActivity passes a lambda that checks [isInSettingsMenu]
- *                      and either exits the settings layer or toggles the menu.
+ *                      MapActivity passes a lambda that checks submenu state
+ *                      and navigates back or toggles the menu.
  */
 fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult {
     val d       = context.resources.displayMetrics.density
@@ -178,6 +188,17 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
     val mainMenuScroll = ScrollView(context).apply { addView(contentList) }
 
     // ── Settings submenu content ───────────────────────────────────────────────
+    // Contains a single "Debug" row that opens the Debug submenu layer.
+    val debugRowInSettings = menuItem(R.drawable.ic_menu_settings, "Debug")
+
+    val settingsContent = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(debugRowInSettings, LinearLayout.LayoutParams(panelW, itemH))
+    }
+
+    // ── Debug submenu content ──────────────────────────────────────────────────
     val debugToggleLabel = TextView(context).apply {
         text = "Debug Mode: OFF"
         setTextColor(Color.WHITE)
@@ -213,18 +234,19 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         )
     }
 
-    val settingsContent = LinearLayout(context).apply {
+    val runBenchmarkItem = menuItem(R.drawable.ic_menu_settings, "Run Benchmark")
+
+    val debugContent = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
         alpha       = 0f
-        addView(debugToggleItem, LinearLayout.LayoutParams(panelW, itemH))
+        addView(debugToggleItem,    LinearLayout.LayoutParams(panelW, itemH))
+        addView(runBenchmarkItem,   LinearLayout.LayoutParams(panelW, itemH))
     }
 
-    // ── Ghost header — header layout for the settings submenu, not clickable ────
+    // ── Ghost header — Settings layer ──────────────────────────────────────────
     // Layout: [text fills middle, right-aligned] [gap] [icon on RIGHT]
     // The hamburgerBtn (back arrow, 64dp) overlays the left portion of this row.
-    // Positioned at the panel top (y=0..64dp).  MapActivity sets translationY
-    // before the animation so it starts at the Settings item's list position.
     val settingsGhostHeader = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity     = Gravity.CENTER_VERTICAL
@@ -234,6 +256,32 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(
             TextView(context).apply {
                 text = "Settings"
+                setTextColor(Color.WHITE)
+                textSize = 20f
+                gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_settings))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
+    }
+
+    // ── Ghost header — Debug layer ─────────────────────────────────────────────
+    val debugGhostHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(
+            TextView(context).apply {
+                text = "Debug"
                 setTextColor(Color.WHITE)
                 textSize = 20f
                 gravity  = Gravity.END or Gravity.CENTER_VERTICAL
@@ -267,8 +315,16 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
             topMargin = itemH
         })
 
-        // Ghost header added BEFORE hamburgerBtn so the button renders on top.
+        addView(debugContent, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = itemH
+        })
+
+        // Ghost headers added BEFORE hamburgerBtn so the button renders on top.
         addView(settingsGhostHeader, FrameLayout.LayoutParams(panelW, itemH).apply {
+            gravity = Gravity.TOP or Gravity.START
+        })
+
+        addView(debugGhostHeader, FrameLayout.LayoutParams(panelW, itemH).apply {
             gravity = Gravity.TOP or Gravity.START
         })
 
@@ -285,6 +341,9 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         settingsRowIcon     = settingsRowIcon,
         settingsGhostHeader = settingsGhostHeader,
         settingsContent     = settingsContent,
+        debugRowInSettings  = debugRowInSettings,
+        debugGhostHeader    = debugGhostHeader,
+        debugContent        = debugContent,
         debugToggleLabel    = debugToggleLabel,
     )
 }
