@@ -1,12 +1,5 @@
 package de.codevoid.aWayToGo.search
 
-data class BoundingBox(
-    val minLon: Double,
-    val minLat: Double,
-    val maxLon: Double,
-    val maxLat: Double,
-)
-
 data class SearchResult(
     val displayName: String,
     val lat: Double,
@@ -17,4 +10,6 @@ data class SearchResult(
     val city: String? = null,
     val state: String? = null,
     val country: String? = null,
+    val distanceMeters: Float? = null,
+    val bearingDeg: Float? = null,
 )

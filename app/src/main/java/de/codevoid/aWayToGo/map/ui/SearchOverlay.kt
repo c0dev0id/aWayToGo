@@ -7,7 +7,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
-import android.location.Location
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -68,7 +67,6 @@ class SearchOverlayResult(
  *
  * @param context          Activity context.
  * @param recentSearches   Storage for recent queries and visited locations.
- * @param locationProvider Returns the current GPS position (lat, lon) or null if unavailable.
  * @param onClose          Called when the ✕ button is tapped.
  * @param onSearch         Called with the query string when Go is tapped / IME action fired.
  * @param onResultClick    Called when the user taps a result row.
@@ -76,7 +74,6 @@ class SearchOverlayResult(
 fun buildSearchOverlay(
     context: Context,
     recentSearches: RecentSearches,
-    locationProvider: () -> Pair<Double, Double>?,
     onClose: () -> Unit,
     onSearch: (String) -> Unit,
     onResultClick: (SearchResult) -> Unit,
@@ -191,13 +188,9 @@ fun buildSearchOverlay(
         val rightColumn = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            val loc = locationProvider()
-            if (loc != null) {
-                val results = FloatArray(2)
-                Location.distanceBetween(loc.first, loc.second, result.lat, result.lon, results)
-                val distMeters = results[0]
-                val bearing = results[1]  // degrees east of true north
-
+            val distMeters = result.distanceMeters
+            val bearing = result.bearingDeg
+            if (distMeters != null && bearing != null) {
                 addView(TextView(context).apply {
                     text = "➤"
                     setTextColor(Color.WHITE)

@@ -6,6 +6,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 
+data class BoundingBox(
+    val minLon: Double,
+    val minLat: Double,
+    val maxLon: Double,
+    val maxLat: Double,
+)
+
 class GeocodingRepository {
 
     private val client = OkHttpClient()

@@ -12,6 +12,7 @@ import android.graphics.PointF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.location.Location
 import android.os.Bundle
 import android.view.Choreographer
 import android.view.Gravity
@@ -532,18 +533,11 @@ class MapActivity : ComponentActivity() {
         // Added before the menu dismiss overlay so the menu still sits on top.
         recentSearches = RecentSearches(getSharedPreferences("search", MODE_PRIVATE))
         searchOverlayResult = buildSearchOverlay(
-            context       = this,
+            context        = this,
             recentSearches = recentSearches,
-            locationProvider = {
-                if (searchOverlayResult.isGpsAnchor()) {
-                    map?.locationComponent?.lastKnownLocation?.let { it.latitude to it.longitude }
-                } else {
-                    map?.cameraPosition?.target?.let { it.latitude to it.longitude }
-                }
-            },
-            onClose       = { closeSearch() },
-            onSearch      = { query -> performSearch(query) },
-            onResultClick = { result -> onSearchResultSelected(result) },
+            onClose        = { closeSearch() },
+            onSearch       = { query -> performSearch(query) },
+            onResultClick  = { result -> onSearchResultSelected(result) },
         )
         root.addView(
             searchOverlayResult.root.apply { visibility = View.GONE },
@@ -1573,19 +1567,23 @@ class MapActivity : ComponentActivity() {
                     } else null
                 } else null
 
-                val results = geocoding.search(
+                val rawResults = geocoding.search(
                     query,
                     viewbox = viewbox,
                     bounded = searchOverlayResult.isLocalSearch(),
                 )
 
-                // Sort results by distance to anchor point
-                val sorted = if (anchor != null) {
-                    results.sortedBy { anchor.distanceTo(LatLng(it.lat, it.lon)) }
+                // Enrich each result with distance/bearing from the anchor, then sort
+                val results = if (anchor != null) {
+                    rawResults.map { r ->
+                        val out = FloatArray(2)
+                        Location.distanceBetween(anchor.latitude, anchor.longitude, r.lat, r.lon, out)
+                        r.copy(distanceMeters = out[0], bearingDeg = out[1])
+                    }.sortedBy { it.distanceMeters }
                 } else {
-                    results
+                    rawResults
                 }
-                searchOverlayResult.showResults(sorted)
+                searchOverlayResult.showResults(results)
             } catch (_: Exception) {
                 searchOverlayResult.showError()
             }
