@@ -13,7 +13,7 @@ class GeocodingRepository {
     suspend fun search(query: String): List<SearchResult> = withContext(Dispatchers.IO) {
         val url = "https://nominatim.openstreetmap.org/search" +
             "?q=${java.net.URLEncoder.encode(query, "UTF-8")}" +
-            "&format=json&limit=10&addressdetails=0"
+            "&format=json&limit=10&addressdetails=1"
 
         val request = Request.Builder()
             .url(url)
@@ -29,10 +29,20 @@ class GeocodingRepository {
         buildList {
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
+                val addr = obj.optJSONObject("address")
                 add(SearchResult(
                     displayName = obj.getString("display_name"),
                     lat = obj.getString("lat").toDouble(),
                     lon = obj.getString("lon").toDouble(),
+                    road = addr?.optString("road", null),
+                    houseNumber = addr?.optString("house_number", null),
+                    postcode = addr?.optString("postcode", null),
+                    city = addr?.optString("city", null)
+                        ?: addr?.optString("town", null)
+                        ?: addr?.optString("village", null)
+                        ?: addr?.optString("municipality", null),
+                    state = addr?.optString("state", null),
+                    country = addr?.optString("country", null),
                 ))
             }
         }

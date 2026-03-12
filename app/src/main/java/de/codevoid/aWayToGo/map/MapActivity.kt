@@ -533,6 +533,9 @@ class MapActivity : ComponentActivity() {
         searchOverlayResult = buildSearchOverlay(
             context       = this,
             recentSearches = recentSearches,
+            locationProvider = {
+                map?.locationComponent?.lastKnownLocation?.let { it.latitude to it.longitude }
+            },
             onClose       = { closeSearch() },
             onSearch      = { query -> performSearch(query) },
             onResultClick = { result -> onSearchResultSelected(result) },

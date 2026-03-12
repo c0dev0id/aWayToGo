@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.location.Location
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -63,15 +64,17 @@ class SearchOverlayResult(
  * reopened — the caller must explicitly call [SearchOverlayResult.clearResults] to
  * reset them.
  *
- * @param context         Activity context.
- * @param recentSearches  Storage for recent queries and visited locations.
- * @param onClose         Called when the ✕ button is tapped.
- * @param onSearch        Called with the query string when Go is tapped / IME action fired.
- * @param onResultClick   Called when the user taps a result row.
+ * @param context          Activity context.
+ * @param recentSearches   Storage for recent queries and visited locations.
+ * @param locationProvider Returns the current GPS position (lat, lon) or null if unavailable.
+ * @param onClose          Called when the ✕ button is tapped.
+ * @param onSearch         Called with the query string when Go is tapped / IME action fired.
+ * @param onResultClick    Called when the user taps a result row.
  */
 fun buildSearchOverlay(
     context: Context,
     recentSearches: RecentSearches,
+    locationProvider: () -> Pair<Double, Double>?,
     onClose: () -> Unit,
     onSearch: (String) -> Unit,
     onResultClick: (SearchResult) -> Unit,
@@ -119,33 +122,99 @@ fun buildSearchOverlay(
         }
     }
 
+    // ── Helper: format distance for display ────────────────────────────────────
+    fun formatDistance(meters: Float): String = when {
+        meters < 1000 -> "${meters.toInt()} m"
+        meters < 10_000 -> "%.1f km".format(meters / 1000f)
+        else -> "${(meters / 1000f).toInt()} km"
+    }
+
     // ── Helper: result row ────────────────────────────────────────────────────
-    fun makeResultRow(result: SearchResult, onClick: () -> Unit): TextView {
+    fun makeResultRow(result: SearchResult, onClick: () -> Unit): View {
         val hPad = (16 * d).toInt()
         val vPad = (12 * d).toInt()
-        // Split at first comma for a 2-line effect: bold primary name, smaller detail
-        val comma = result.displayName.indexOf(',')
-        val primary = if (comma > 0) result.displayName.substring(0, comma) else result.displayName
-        val detail  = if (comma > 0) result.displayName.substring(comma + 1).trim() else ""
+
+        // Build formatted address lines from structured data, falling back to
+        // display_name when structured fields are not available.
+        val line1: String
+        val line2: String?
+        val line3: String?
+        if (result.road != null) {
+            line1 = if (result.houseNumber != null) "${result.road} ${result.houseNumber}" else result.road
+            line2 = listOfNotNull(result.postcode, result.city).takeIf { it.isNotEmpty() }?.joinToString(" ")
+            line3 = listOfNotNull(result.state, result.country).takeIf { it.isNotEmpty() }?.joinToString(", ")
+        } else {
+            // Fallback: split display_name at first comma
+            val comma = result.displayName.indexOf(',')
+            line1 = if (comma > 0) result.displayName.substring(0, comma) else result.displayName
+            line2 = if (comma > 0) result.displayName.substring(comma + 1).trim() else null
+            line3 = null
+        }
+
+        // Build styled text
+        val dimColor = Color.argb(180, 255, 255, 255)
+        val dimmerColor = Color.argb(130, 255, 255, 255)
         val span = android.text.SpannableStringBuilder().apply {
-            append(primary, android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+            append(line1, android.text.style.StyleSpan(Typeface.BOLD),
                 android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            if (detail.isNotEmpty()) {
+            if (!line2.isNullOrEmpty()) {
                 append("\n")
                 val start = length
-                append(detail)
+                append(line2)
                 setSpan(android.text.style.RelativeSizeSpan(0.8f), start, length,
                     android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                setSpan(android.text.style.ForegroundColorSpan(Color.argb(180, 255, 255, 255)),
+                setSpan(android.text.style.ForegroundColorSpan(dimColor),
+                    start, length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            if (!line3.isNullOrEmpty()) {
+                append("\n")
+                val start = length
+                append(line3)
+                setSpan(android.text.style.RelativeSizeSpan(0.7f), start, length,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(android.text.style.ForegroundColorSpan(dimmerColor),
                     start, length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
-        return TextView(context).apply {
+
+        val addressView = TextView(context).apply {
             text = span
             setTextColor(Color.WHITE)
             textSize = 18f
-            maxLines = 2
+            maxLines = 3
             ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+
+        // Right side: direction arrow + distance
+        val rightColumn = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            val loc = locationProvider()
+            if (loc != null) {
+                val results = FloatArray(2)
+                Location.distanceBetween(loc.first, loc.second, result.lat, result.lon, results)
+                val distMeters = results[0]
+                val bearing = results[1]  // degrees east of true north
+
+                addView(TextView(context).apply {
+                    text = "➤"
+                    setTextColor(Color.WHITE)
+                    textSize = 22f
+                    gravity = Gravity.CENTER
+                    rotation = bearing - 90f  // ➤ points right (east) by default, subtract 90 to align with north=up
+                })
+                addView(TextView(context).apply {
+                    text = formatDistance(distMeters)
+                    setTextColor(dimColor)
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                })
+            }
+        }
+
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(hPad, vPad, hPad, vPad)
             background = RippleDrawable(
                 ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
@@ -155,6 +224,11 @@ fun buildSearchOverlay(
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
+            addView(addressView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(rightColumn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins((8 * d).toInt(), 0, 0, 0) })
         }
     }
 
