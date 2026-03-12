@@ -22,4 +22,6 @@ data class MapUiState(
     val isSearchOpen: Boolean = false,
     val isSatelliteEnabled: Boolean = false,
     val isDarkMode: Boolean = false,
+    val isInSettingsMenu: Boolean = false,
+    val isDebugMode: Boolean = false,
 )

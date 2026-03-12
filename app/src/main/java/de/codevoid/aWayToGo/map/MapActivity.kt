@@ -42,11 +42,13 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
+import de.codevoid.aWayToGo.map.ui.Anim
 import de.codevoid.aWayToGo.map.ui.AnimationLatch
 import de.codevoid.aWayToGo.map.ui.AnimatorBag
 import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
 import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
+import de.codevoid.aWayToGo.map.ui.MenuPanelResult
 import de.codevoid.aWayToGo.map.ui.buildMenuPanel
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
@@ -150,9 +152,12 @@ class MapActivity : ComponentActivity() {
     // All three share the same rotation pivot: the centre of the 64×64dp button area.
     private lateinit var hamburgerBars: Array<View>
     private lateinit var menuPanel: View
+    private lateinit var menuPanelResult: MenuPanelResult
     private lateinit var menuDismissOverlay: View
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
+    private var settingsMenuHeight = -1            // measured on first enter; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
+    private var settingsMenuAnimator: ValueAnimator? = null
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
@@ -234,29 +239,29 @@ class MapActivity : ComponentActivity() {
                 }
             }
 
-            // ── OSD (DEBUG builds only) ────────────────────────────────────────
-            if (BuildConfig.DEBUG) {
-                osdLastDtMs = dtNs / 1_000_000L
+            // ── OSD ───────────────────────────────────────────────────────────
+            osdLastDtMs = dtNs / 1_000_000L
 
-                osdFrameCount++
-                if (osdWindowNs == 0L) osdWindowNs = frameTimeNanos
-                val elapsed = frameTimeNanos - osdWindowNs
-                if (elapsed >= 1_000_000_000L) {
-                    osdLastFps    = (osdFrameCount * 1_000_000_000L / elapsed).toInt()
-                    osdFrameCount = 0
-                    osdWindowNs   = frameTimeNanos
+            osdFrameCount++
+            if (osdWindowNs == 0L) osdWindowNs = frameTimeNanos
+            val elapsed = frameTimeNanos - osdWindowNs
+            if (elapsed >= 1_000_000_000L) {
+                osdLastFps    = (osdFrameCount * 1_000_000_000L / elapsed).toInt()
+                osdFrameCount = 0
+                osdWindowNs   = frameTimeNanos
 
-                    // Network rate — sampled once per second
-                    val rx = TrafficStats.getTotalRxBytes()
-                    val tx = TrafficStats.getTotalTxBytes()
-                    if (osdRxLast != 0L) {
-                        osdRxRate = rx - osdRxLast
-                        osdTxRate = tx - osdTxLast
-                    }
-                    osdRxLast = rx
-                    osdTxLast = tx
+                // Network rate — sampled once per second
+                val rx = TrafficStats.getTotalRxBytes()
+                val tx = TrafficStats.getTotalTxBytes()
+                if (osdRxLast != 0L) {
+                    osdRxRate = rx - osdRxLast
+                    osdTxRate = tx - osdTxLast
                 }
+                osdRxLast = rx
+                osdTxLast = tx
+            }
 
+            if (osdView.visibility == View.VISIBLE) {
                 val zoom   = map?.cameraPosition?.zoom ?: 0.0
                 val loc    = map?.locationComponent?.lastKnownLocation
                 val hasFix = loc != null
@@ -356,7 +361,7 @@ class MapActivity : ComponentActivity() {
             typeface = Typeface.MONOSPACE
             setBackgroundColor(Color.argb(140, 0, 0, 0))
             setPadding(16, 8, 16, 8)
-            visibility = if (BuildConfig.DEBUG) View.VISIBLE else View.GONE
+            visibility = View.GONE
         }
         topRightContainer.addView(
             osdView,
@@ -604,12 +609,23 @@ class MapActivity : ComponentActivity() {
         // Starts at button size (64×64dp); runOpenMenuAnimation/runCloseMenuAnimation
         // animate the layout params to expand/collapse it.
         // cornerRadius=32dp gives a perfect circle at button size.
+        //
+        // The hamburger click lambda checks whether we're inside the settings layer:
+        // if so, it acts as a "back" button; otherwise it toggles the menu open/closed.
         buildMenuPanel(
-            context       = this,
-            onToggleMenu  = { toggleMenu() },
+            context      = this,
+            onToggleMenu = {
+                if (viewModel.uiState.value.isInSettingsMenu) viewModel.exitSettingsMenu()
+                else toggleMenu()
+            },
         ).also { result ->
-            menuPanel      = result.root
-            hamburgerBars  = result.hamburgerBars
+            menuPanelResult = result
+            menuPanel       = result.root
+            hamburgerBars   = result.hamburgerBars
+            // Settings row in main list → enters the settings submenu layer.
+            result.settingsRowInList.setOnClickListener { viewModel.enterSettingsMenu() }
+            // Debug Mode toggle → flips isDebugMode in state.
+            result.settingsContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
         }
         root.addView(
             menuPanel,
@@ -1199,10 +1215,12 @@ class MapActivity : ComponentActivity() {
      * (e.g. only [MapUiState.isInPanningMode] changing) do the minimum work.
      */
     private fun renderUiState(new: MapUiState, old: MapUiState?) {
-        val modeChanged    = old?.mode != new.mode
-        val panningChanged = old?.isInPanningMode != new.isInPanningMode
-        val menuChanged    = old?.isMenuOpen != new.isMenuOpen
-        val searchChanged  = old?.isSearchOpen != new.isSearchOpen
+        val modeChanged         = old?.mode != new.mode
+        val panningChanged      = old?.isInPanningMode != new.isInPanningMode
+        val menuChanged         = old?.isMenuOpen != new.isMenuOpen
+        val searchChanged       = old?.isSearchOpen != new.isSearchOpen
+        val settingsMenuChanged = old?.isInSettingsMenu != new.isInSettingsMenu
+        val debugModeChanged    = old?.isDebugMode != new.isDebugMode
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1243,10 +1261,35 @@ class MapActivity : ComponentActivity() {
             if (new.isMenuOpen) {
                 runOpenMenuAnimation()
             } else {
+                // Closing: reset settings layer views instantly so the panel collapses cleanly.
+                if (old.isInSettingsMenu) {
+                    settingsMenuAnimator?.cancel()
+                    menuPanelResult.settingsGhostHeader.visibility = View.GONE
+                    menuPanelResult.settingsGhostHeader.alpha = 0f
+                    menuPanelResult.settingsContent.visibility = View.GONE
+                    menuPanelResult.settingsContent.alpha = 0f
+                    menuPanelResult.mainMenuScroll.visibility = View.VISIBLE
+                    menuPanelResult.mainMenuScroll.alpha = 1f
+                    hamburgerBars.forEach { it.scaleX = 1f }
+                }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
                 runCloseMenuAnimation(instant = modeChanged)
             }
+        }
+
+        // ── Settings submenu transition ────────────────────────────────────────
+        // Only animate when the menu is open and the settings layer changes.
+        if (old != null && settingsMenuChanged && new.isMenuOpen) {
+            if (new.isInSettingsMenu) runEnterSettingsAnimation()
+            else runExitSettingsAnimation()
+        }
+
+        // ── Debug overlay ──────────────────────────────────────────────────────
+        if (debugModeChanged || old == null) {
+            osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
+            menuPanelResult.debugToggleLabel.text =
+                "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -1502,14 +1545,15 @@ class MapActivity : ComponentActivity() {
             lp.width  = btnSz
             lp.height = btnSz
             menuPanel.layoutParams = lp
-            hamburgerBars.forEach { it.rotation = 0f }
+            hamburgerBars.forEach { it.rotation = 0f; it.scaleX = 1f }
             menuDismissOverlay.visibility = View.GONE
             return
         }
 
-        val startW    = lp.width
-        val startH    = lp.height
-        val barStartR = FloatArray(3) { hamburgerBars[it].rotation }
+        val startW      = lp.width
+        val startH      = lp.height
+        val barStartR   = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartS   = FloatArray(3) { hamburgerBars[it].scaleX }
         // Reverse of open: bottom bar now fastest, top bar slowest.
         val closeSpeeds = floatArrayOf(1.0f, 1.2f, 1.4f)
 
@@ -1524,6 +1568,7 @@ class MapActivity : ComponentActivity() {
                 hamburgerBars.forEachIndexed { i, bar ->
                     val p = (t * closeSpeeds[i]).coerceAtMost(1f)
                     bar.rotation = barStartR[i] + (0f - barStartR[i]) * p
+                    bar.scaleX   = barStartS[i] + (1f - barStartS[i]) * p
                 }
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -1552,6 +1597,146 @@ class MapActivity : ComponentActivity() {
         menuPanel.measure(wSpec, hSpec)
         panelFullHeight = menuPanel.measuredHeight
         return panelFullHeight
+    }
+
+    /**
+     * Returns the settings panel height in pixels (64dp header + settings items).
+     *
+     * Measured on first call by forcing a layout pass on settingsContent.
+     * Cached thereafter.
+     */
+    private fun getOrMeasureSettingsHeight(): Int {
+        if (settingsMenuHeight > 0) return settingsMenuHeight
+        val d      = resources.displayMetrics.density
+        val itemH  = (64 * d).toInt()
+        val panelW = (280 * d).toInt()
+        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec  = View.MeasureSpec.makeMeasureSpec(
+            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
+        )
+        menuPanelResult.settingsContent.measure(wSpec, hSpec)
+        settingsMenuHeight = itemH + menuPanelResult.settingsContent.measuredHeight
+        return settingsMenuHeight
+    }
+
+    /**
+     * Animate from the main menu into the settings submenu layer.
+     *
+     * Sequence (all concurrent, [Anim.NORMAL] duration):
+     * - Ghost header slides up from list position (y=6×itemH) to header (y=0) and fades in.
+     * - Main menu ScrollView fades out.
+     * - Settings content fades in (starts at t=0.3 to stagger behind the fade-out).
+     * - Panel height shrinks from full-menu height to settings height.
+     * - Hamburger bars transform to back arrow:
+     *     bar 0 → +45°, scaleX → 0.5   (upper arrowhead `/`)
+     *     bar 1 → 0°,   scaleX → 1.0   (horizontal body)
+     *     bar 2 → −45°, scaleX → 0.5   (lower arrowhead `\`)
+     */
+    private fun runEnterSettingsAnimation() {
+        settingsMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost           = menuPanelResult.settingsGhostHeader
+        val scroll          = menuPanelResult.mainMenuScroll
+        val settingsContent = menuPanelResult.settingsContent
+
+        val ghostStartY = (6 * itemH).toFloat()
+        ghost.translationY = ghostStartY
+        ghost.alpha        = 0f
+        ghost.visibility   = View.VISIBLE
+
+        settingsContent.visibility = View.VISIBLE
+        settingsContent.alpha      = 0f
+
+        val targetH   = getOrMeasureSettingsHeight()
+        val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH    = lp.height
+
+        val barTargetRot   = floatArrayOf(+45f, 0f, -45f)
+        val barTargetScale = floatArrayOf(0.5f, 1.0f, 0.5f)
+        val barStartRot    = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale  = FloatArray(3) { hamburgerBars[it].scaleX }
+
+        settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY = ghostStartY * (1f - t)
+                ghost.alpha        = t
+                scroll.alpha       = 1f - t
+                settingsContent.alpha = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation = barStartRot[i] + (barTargetRot[i] - barStartRot[i]) * t
+                    bar.scaleX   = barStartScale[i] + (barTargetScale[i] - barStartScale[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    scroll.visibility = View.GONE
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Animate back from the settings submenu layer to the main menu.
+     *
+     * Reverses [runEnterSettingsAnimation]: ghost header slides back down, scroll fades in,
+     * settings content fades out, panel expands to full height, bars return to 90° (open state).
+     */
+    private fun runExitSettingsAnimation() {
+        settingsMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost           = menuPanelResult.settingsGhostHeader
+        val scroll          = menuPanelResult.mainMenuScroll
+        val settingsContent = menuPanelResult.settingsContent
+
+        val ghostEndY = (6 * itemH).toFloat()
+        scroll.alpha      = 0f
+        scroll.visibility = View.VISIBLE
+
+        val targetH   = getOrMeasurePanelHeight()
+        val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH    = lp.height
+
+        val barTargetRot   = floatArrayOf(90f, 90f, 90f)
+        val barTargetScale = floatArrayOf(1.0f, 1.0f, 1.0f)
+        val barStartRot    = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale  = FloatArray(3) { hamburgerBars[it].scaleX }
+
+        settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY     = ghostEndY * t
+                ghost.alpha            = 1f - t
+                scroll.alpha           = t
+                settingsContent.alpha  = (1f - t / 0.7f).coerceIn(0f, 1f)
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation = barStartRot[i] + (barTargetRot[i] - barStartRot[i]) * t
+                    bar.scaleX   = barStartScale[i] + (barTargetScale[i] - barStartScale[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    ghost.visibility           = View.GONE
+                    ghost.alpha                = 0f
+                    settingsContent.visibility = View.GONE
+                    settingsContent.alpha      = 0f
+                }
+            })
+            start()
+        })
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────
