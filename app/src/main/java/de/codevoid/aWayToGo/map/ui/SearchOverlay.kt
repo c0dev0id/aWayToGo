@@ -349,8 +349,8 @@ fun buildSearchOverlay(
         setColor(if (active) Color.argb(200, 220, 50, 50) else Color.argb(80, 255, 255, 255))
     }
 
-    val localToggle = TextView(context).apply {
-        text = "Local"
+    fun makeToggle(label: String) = TextView(context).apply {
+        text = label
         setTextColor(Color.WHITE)
         textSize = 14f
         typeface = Typeface.DEFAULT_BOLD
@@ -367,23 +367,8 @@ fun buildSearchOverlay(
         isFocusable = true
     }
 
-    val anchorToggle = TextView(context).apply {
-        text = "GPS"
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        typeface = Typeface.DEFAULT_BOLD
-        gravity = Gravity.CENTER
-        background = RippleDrawable(
-            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-            makeToggleBg(true),
-            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = toggleRadius; setColor(Color.WHITE) },
-        )
-        val hp = (14 * d).toInt()
-        val vp = (6 * d).toInt()
-        setPadding(hp, vp, hp, vp)
-        isClickable = true
-        isFocusable = true
-    }
+    val localToggle = makeToggle("Local")
+    val anchorToggle = makeToggle("GPS")
 
     fun updateToggleAppearance(view: TextView, active: Boolean, activeLabel: String, inactiveLabel: String) {
         view.text = if (active) activeLabel else inactiveLabel
