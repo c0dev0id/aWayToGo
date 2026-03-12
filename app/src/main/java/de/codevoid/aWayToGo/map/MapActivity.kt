@@ -2509,9 +2509,14 @@ class MapActivity : ComponentActivity() {
     /**
      * Closes the menu and runs pan benchmarks at zoom levels 8, 10, 14, 16.
      *
+     * Uses central Tokyo (Shinjuku) as the benchmark location — one of the
+     * densest OSM-mapped areas globally (roads, buildings, transit, POIs).
+     * Camera is tilted 45° so the perspective frustum covers more geometry,
+     * maximising rendering load.
+     *
      * For each zoom level:
      *  1. Evicts the tile disk cache so tiles must be fetched fresh.
-     *  2. Moves the camera to the current location at the target zoom.
+     *  2. Moves the camera to Shinjuku at the target zoom with 45° tilt.
      *  3. Pans east continuously for 5 seconds while collecting GL FPS and
      *     main-thread FPS / frame-dt metrics.
      *
@@ -2525,10 +2530,10 @@ class MapActivity : ComponentActivity() {
 
         benchmarkJob = lifecycleScope.launch {
             val results = mutableListOf<BenchmarkResult>()
-            val startTarget = m.cameraPosition.target ?: run {
-                dismissBenchmarkProgressOverlay()
-                return@launch
-            }
+
+            // Central Tokyo / Shinjuku — extremely dense OSM data.
+            val startTarget = LatLng(35.6896, 139.7006)
+            val benchTilt = 45.0
 
             for (zoom in listOf(8, 10, 14, 16)) {
                 updateBenchmarkStatus("Zoom $zoom / 16…")
@@ -2536,8 +2541,14 @@ class MapActivity : ComponentActivity() {
                 // Clear tile cache on IO thread.
                 withContext(Dispatchers.IO) { TileCache.clearCache() }
 
-                // Move to start position at this zoom (instant, no animation).
-                m.moveCamera(CameraUpdateFactory.newLatLngZoom(startTarget, zoom.toDouble()))
+                // Move to start position at this zoom with 45° tilt (instant).
+                m.moveCamera(CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder()
+                        .target(startTarget)
+                        .zoom(zoom.toDouble())
+                        .tilt(benchTilt)
+                        .build()
+                ))
                 delay(800)
 
                 // Prepare collectors.
@@ -2567,8 +2578,12 @@ class MapActivity : ComponentActivity() {
                     // ~200m per step at the equator, adjusted for latitude.
                     lng += 0.002 / cosLat
                     m.animateCamera(
-                        CameraUpdateFactory.newLatLngZoom(
-                            LatLng(startTarget.latitude, lng), zoom.toDouble()
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder()
+                                .target(LatLng(startTarget.latitude, lng))
+                                .zoom(zoom.toDouble())
+                                .tilt(benchTilt)
+                                .build()
                         ),
                         100,
                     )
