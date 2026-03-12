@@ -69,8 +69,13 @@ dependencies {
     // Lifecycle — provides lifecycleScope on ComponentActivity
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 
-    // MapLibre
-    implementation("org.maplibre.gl:android-sdk:13.0.0")
+    // MapLibre — using the OpenGL ES package instead of the default Vulkan package.
+    // The Vulkan backend (android-sdk:13.0.0) miscalculates the render surface dimensions
+    // on this device: the map renders at 1/density of the screen size (appears in a corner).
+    // android-sdk-opengl:13.0.0 keeps the OpenGL ES pipeline from v11, which sizes the
+    // surface correctly.  No API changes — swap back to android-sdk when the upstream
+    // Vulkan surface-sizing bug is fixed.
+    implementation("org.maplibre.gl:android-sdk-opengl:13.0.0")
 
     // GeoJSON — declared explicitly because MapLibre uses `implementation` scope
     // (not `api`), so the library is not available at our compile time transitively.
