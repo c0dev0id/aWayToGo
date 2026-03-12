@@ -89,6 +89,7 @@ import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.sources.TileSet
@@ -1545,7 +1546,7 @@ class MapActivity : ComponentActivity() {
             return
         }
 
-        s.addSource(GeoJsonSource(SOURCE_SEARCH_PIN, collection))
+        s.addSource(GeoJsonSource(SOURCE_SEARCH_PIN, collection, GeoJsonOptions().withSynchronousUpdate(true)))
         s.addLayer(
             CircleLayer(LAYER_SEARCH_PIN, SOURCE_SEARCH_PIN).apply {
                 setProperties(
@@ -2420,7 +2421,7 @@ class MapActivity : ComponentActivity() {
             return
         }
 
-        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE, collection))
+        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE, collection, GeoJsonOptions().withSynchronousUpdate(true)))
 
         // Casing — dark-red, wider than the fill so 1.5dp sticks out on each side.
         // Original: 10dp.  Reduced by 25%: 7.5dp.

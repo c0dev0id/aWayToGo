@@ -70,7 +70,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 
     // MapLibre
-    implementation("org.maplibre.gl:android-sdk:11.13.0")
+    implementation("org.maplibre.gl:android-sdk:13.0.0")
+
     // GeoJSON — declared explicitly because MapLibre uses `implementation` scope
     // (not `api`), so the library is not available at our compile time transitively.
     implementation("org.maplibre.gl:android-sdk-geojson:6.0.1")
