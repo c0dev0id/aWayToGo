@@ -1306,6 +1306,7 @@ class MapActivity : ComponentActivity() {
                     menuPanelResult.settingsContent.alpha = 0f
                     menuPanelResult.mainMenuScroll.visibility = View.VISIBLE
                     menuPanelResult.mainMenuScroll.alpha = 1f
+                    menuPanelResult.settingsRowIcon.alpha = 1f
                     hamburgerBars.forEach { it.scaleX = 1f }
                 }
                 // Close instantly when a mode change is also happening so the menu
@@ -1663,10 +1664,12 @@ class MapActivity : ComponentActivity() {
      * - Main menu ScrollView fades out.
      * - Settings content fades in (starts at t=0.3 to stagger behind the fade-out).
      * - Panel height shrinks from full-menu height to settings height.
-     * - Hamburger bars transform to back arrow:
-     *     bar 0 → +45°, scaleX → 0.5   (upper arrowhead `/`)
+     * - Hamburger bars transform to back arrow (←):
+     *     bar 0 → −45°, scaleX → 0.5   (upper arrowhead `/`)
      *     bar 1 → 0°,   scaleX → 1.0   (horizontal body)
-     *     bar 2 → −45°, scaleX → 0.5   (lower arrowhead `\`)
+     *     bar 2 → +45°, scaleX → 0.5   (lower arrowhead `\`)
+     * - Settings row icon fades out so it appears to teleport from left to right
+     *   (the ghost header shows the icon on the right side).
      */
     private fun runEnterSettingsAnimation() {
         settingsMenuAnimator?.cancel()
@@ -1676,6 +1679,7 @@ class MapActivity : ComponentActivity() {
         val ghost           = menuPanelResult.settingsGhostHeader
         val scroll          = menuPanelResult.mainMenuScroll
         val settingsContent = menuPanelResult.settingsContent
+        val rowIcon         = menuPanelResult.settingsRowIcon
 
         val ghostStartY = (6 * itemH).toFloat()
         ghost.translationY = ghostStartY
@@ -1689,10 +1693,11 @@ class MapActivity : ComponentActivity() {
         val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
         val startH    = lp.height
 
-        val barTargetRot   = floatArrayOf(+45f, 0f, -45f)
+        val barTargetRot   = floatArrayOf(-45f, 0f, +45f)
         val barTargetScale = floatArrayOf(0.5f, 1.0f, 0.5f)
         val barStartRot    = FloatArray(3) { hamburgerBars[it].rotation }
         val barStartScale  = FloatArray(3) { hamburgerBars[it].scaleX }
+        val iconStartAlpha = rowIcon.alpha
 
         settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = Anim.NORMAL
@@ -1705,6 +1710,8 @@ class MapActivity : ComponentActivity() {
                 ghost.alpha        = t
                 scroll.alpha       = 1f - t
                 settingsContent.alpha = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                // Icon fades out so it appears to teleport to the right side of the header.
+                rowIcon.alpha = iconStartAlpha * (1f - t)
                 hamburgerBars.forEachIndexed { i, bar ->
                     bar.rotation = barStartRot[i] + (barTargetRot[i] - barStartRot[i]) * t
                     bar.scaleX   = barStartScale[i] + (barTargetScale[i] - barStartScale[i]) * t
@@ -1733,6 +1740,7 @@ class MapActivity : ComponentActivity() {
         val ghost           = menuPanelResult.settingsGhostHeader
         val scroll          = menuPanelResult.mainMenuScroll
         val settingsContent = menuPanelResult.settingsContent
+        val rowIcon         = menuPanelResult.settingsRowIcon
 
         val ghostEndY = (6 * itemH).toFloat()
         scroll.alpha      = 0f
@@ -1746,6 +1754,7 @@ class MapActivity : ComponentActivity() {
         val barTargetScale = floatArrayOf(1.0f, 1.0f, 1.0f)
         val barStartRot    = FloatArray(3) { hamburgerBars[it].rotation }
         val barStartScale  = FloatArray(3) { hamburgerBars[it].scaleX }
+        val iconStartAlpha = rowIcon.alpha  // typically 0f (was faded out on enter)
 
         settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = Anim.NORMAL
@@ -1758,6 +1767,8 @@ class MapActivity : ComponentActivity() {
                 ghost.alpha            = 1f - t
                 scroll.alpha           = t
                 settingsContent.alpha  = (1f - t / 0.7f).coerceIn(0f, 1f)
+                // Fade the settings row icon back in as we return to the main menu.
+                rowIcon.alpha = iconStartAlpha + (1f - iconStartAlpha) * t
                 hamburgerBars.forEachIndexed { i, bar ->
                     bar.rotation = barStartRot[i] + (barTargetRot[i] - barStartRot[i]) * t
                     bar.scaleX   = barStartScale[i] + (barTargetScale[i] - barStartScale[i]) * t
@@ -1769,6 +1780,7 @@ class MapActivity : ComponentActivity() {
                     ghost.alpha                = 0f
                     settingsContent.visibility = View.GONE
                     settingsContent.alpha      = 0f
+                    rowIcon.alpha              = 1f
                 }
             })
             start()
