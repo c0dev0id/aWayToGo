@@ -55,6 +55,7 @@ class MapViewModel : ViewModel() {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
                 },
+                isNorthUp = if (mode == AppMode.NAVIGATE) false else current.isNorthUp,
             )
         }
     }
