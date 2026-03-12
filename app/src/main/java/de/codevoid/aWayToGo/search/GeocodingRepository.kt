@@ -10,10 +10,20 @@ class GeocodingRepository {
 
     private val client = OkHttpClient()
 
-    suspend fun search(query: String): List<SearchResult> = withContext(Dispatchers.IO) {
-        val url = "https://nominatim.openstreetmap.org/search" +
-            "?q=${java.net.URLEncoder.encode(query, "UTF-8")}" +
-            "&format=json&limit=10&addressdetails=1"
+    suspend fun search(
+        query: String,
+        viewbox: BoundingBox? = null,
+        bounded: Boolean = false,
+    ): List<SearchResult> = withContext(Dispatchers.IO) {
+        val url = buildString {
+            append("https://nominatim.openstreetmap.org/search")
+            append("?q=${java.net.URLEncoder.encode(query, "UTF-8")}")
+            append("&format=json&limit=10&addressdetails=1")
+            if (viewbox != null) {
+                append("&viewbox=${viewbox.minLon},${viewbox.maxLat},${viewbox.maxLon},${viewbox.minLat}")
+                if (bounded) append("&bounded=1")
+            }
+        }
 
         val request = Request.Builder()
             .url(url)

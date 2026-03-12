@@ -50,6 +50,7 @@ import de.codevoid.aWayToGo.map.ui.buildMenuPanel
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
 import de.codevoid.aWayToGo.map.ui.makePillButton
+import de.codevoid.aWayToGo.search.BoundingBox
 import de.codevoid.aWayToGo.search.GeocodingRepository
 import de.codevoid.aWayToGo.search.RecentSearches
 import de.codevoid.aWayToGo.search.SearchResult
@@ -534,7 +535,11 @@ class MapActivity : ComponentActivity() {
             context       = this,
             recentSearches = recentSearches,
             locationProvider = {
-                map?.locationComponent?.lastKnownLocation?.let { it.latitude to it.longitude }
+                if (searchOverlayResult.isGpsAnchor()) {
+                    map?.locationComponent?.lastKnownLocation?.let { it.latitude to it.longitude }
+                } else {
+                    map?.cameraPosition?.target?.let { it.latitude to it.longitude }
+                }
             },
             onClose       = { closeSearch() },
             onSearch      = { query -> performSearch(query) },
@@ -1545,10 +1550,38 @@ class MapActivity : ComponentActivity() {
         lifecycleScope.launch {
             searchOverlayResult.showLoading()
             try {
-                val results = geocoding.search(query)
-                val center = map?.cameraPosition?.target
-                val sorted = if (center != null) {
-                    results.sortedBy { center.distanceTo(LatLng(it.lat, it.lon)) }
+                // Determine anchor point based on GPS/Map toggle
+                val anchor: LatLng? = if (searchOverlayResult.isGpsAnchor()) {
+                    map?.locationComponent?.lastKnownLocation?.let {
+                        LatLng(it.latitude, it.longitude)
+                    }
+                } else {
+                    map?.cameraPosition?.target
+                }
+
+                // Compute viewbox when local search is enabled
+                val viewbox: BoundingBox? = if (searchOverlayResult.isLocalSearch() && anchor != null) {
+                    // Use the visible map region as the bounding box
+                    val bounds = map?.projection?.visibleRegion?.latLngBounds
+                    if (bounds != null) {
+                        BoundingBox(
+                            minLon = bounds.longitudeWest,
+                            minLat = bounds.latitudeSouth,
+                            maxLon = bounds.longitudeEast,
+                            maxLat = bounds.latitudeNorth,
+                        )
+                    } else null
+                } else null
+
+                val results = geocoding.search(
+                    query,
+                    viewbox = viewbox,
+                    bounded = searchOverlayResult.isLocalSearch(),
+                )
+
+                // Sort results by distance to anchor point
+                val sorted = if (anchor != null) {
+                    results.sortedBy { anchor.distanceTo(LatLng(it.lat, it.lon)) }
                 } else {
                     results
                 }
