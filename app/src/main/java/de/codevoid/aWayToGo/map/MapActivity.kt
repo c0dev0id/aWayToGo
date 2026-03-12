@@ -599,6 +599,7 @@ class MapActivity : ComponentActivity() {
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
         menuDismissOverlay = View(this).apply {
+            background = null   // suppress theme-default pressed-state highlight (would flicker on tap)
             isClickable = true
             isFocusable = false
             visibility = View.GONE
@@ -1534,8 +1535,8 @@ class MapActivity : ComponentActivity() {
      * The hamburger icon rotates 90° during the expansion with a staggered cascade.
      */
     private fun runOpenMenuAnimation() {
-        menuDismissOverlay.visibility = View.VISIBLE
         menuAnimator?.cancel()
+        menuDismissOverlay.visibility = View.VISIBLE
 
         val d      = resources.displayMetrics.density
         val panelW = (280 * d).toInt()
