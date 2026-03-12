@@ -1571,15 +1571,18 @@ class MapActivity : ComponentActivity() {
                     query,
                     viewbox = viewbox,
                     bounded = searchOverlayResult.isLocalSearch(),
+                    lat = anchor?.latitude,
+                    lon = anchor?.longitude,
                 )
 
-                // Enrich each result with distance/bearing from the anchor, then sort
+                // Enrich each result with distance/bearing from the anchor.
+                // Ordering is provided by Nominatim's proximity bias (lat/lon params above).
                 val results = if (anchor != null) {
                     rawResults.map { r ->
                         val out = FloatArray(2)
                         Location.distanceBetween(anchor.latitude, anchor.longitude, r.lat, r.lon, out)
                         r.copy(distanceMeters = out[0], bearingDeg = out[1])
-                    }.sortedBy { it.distanceMeters }
+                    }
                 } else {
                     rawResults
                 }

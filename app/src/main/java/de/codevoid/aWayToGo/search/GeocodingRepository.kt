@@ -21,6 +21,8 @@ class GeocodingRepository {
         query: String,
         viewbox: BoundingBox? = null,
         bounded: Boolean = false,
+        lat: Double? = null,
+        lon: Double? = null,
     ): List<SearchResult> = withContext(Dispatchers.IO) {
         val url = buildString {
             append("https://nominatim.openstreetmap.org/search")
@@ -30,6 +32,7 @@ class GeocodingRepository {
                 append("&viewbox=${viewbox.minLon},${viewbox.maxLat},${viewbox.maxLon},${viewbox.minLat}")
                 if (bounded) append("&bounded=1")
             }
+            if (lat != null && lon != null) append("&lat=$lat&lon=$lon")
         }
 
         val request = Request.Builder()
