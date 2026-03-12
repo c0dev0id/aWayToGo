@@ -40,6 +40,18 @@ private const val MERCATOR_CIRCUMFERENCE = 156543.03392
 private const val METERS_PER_DEGREE_LAT = 111320.0
 
 /**
+ * Linear start-ramp: 0 → 1 over [durationMs].
+ *
+ * Apply as: `speed = maxSpeed * (0.5f + 0.5f * startRamp(...))`
+ * to get a 50 % → 100 % speed progression over the ramp window.
+ *
+ * Used by both the pan and zoom key loops so any tuning to the
+ * ramp curve benefits all key-driven movement at once.
+ */
+private fun startRamp(frameTimeNanos: Long, startNs: Long, durationMs: Long = 2000L): Float =
+    ((frameTimeNanos - startNs) / 1_000_000L / durationMs.toFloat()).coerceIn(0f, 1f)
+
+/**
  * Owns all D-pad / joystick panning and zoom-key state, and drives
  * the per-frame camera update.
  *
@@ -173,9 +185,7 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
         var totalZoom = 0f
 
         for ((key, startNs) in panStartNs) {
-            val elapsedMs = (frameTimeNanos - startNs) / 1_000_000L
-            // Linear ramp: 50 % speed at t=0, 100 % at t=2 s.
-            val ramp = (elapsedMs / 2000f).coerceAtMost(1f)
+            val ramp = startRamp(frameTimeNanos, startNs)
             when (key) {
                 RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {
                     val speed = PAN_SPEED_PX_PER_SEC * (0.5f + 0.5f * ramp)
