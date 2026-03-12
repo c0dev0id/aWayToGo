@@ -22,6 +22,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
@@ -65,11 +66,13 @@ import de.codevoid.aWayToGo.update.ConnectivityChecker
 import de.codevoid.aWayToGo.update.DownloadProgress
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -157,8 +160,10 @@ class MapActivity : ComponentActivity() {
     private lateinit var menuDismissOverlay: View
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
     private var settingsMenuHeight = -1            // measured on first enter; -1 = not yet measured
+    private var debugMenuHeight = -1               // measured on first enter; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
     private var settingsMenuAnimator: ValueAnimator? = null
+    private var debugMenuAnimator: ValueAnimator? = null
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
@@ -179,6 +184,12 @@ class MapActivity : ComponentActivity() {
     private var downloadJob: Job? = null
     private var isDownloadOverlayVisible = false
     private var lastDownloadProgress: DownloadProgress? = null
+
+    // ── Benchmark ─────────────────────────────────────────────────────────────
+    private var benchmarkJob: Job? = null
+    private var benchmarkOverlay: View? = null
+    private var benchmarkStatusLabel: TextView? = null
+    @Volatile private var benchmarkGlFrameNanos: MutableList<Long>? = null
 
     private val appUpdater by lazy { AppUpdater(this) }
 
@@ -623,8 +634,12 @@ class MapActivity : ComponentActivity() {
         buildMenuPanel(
             context      = this,
             onToggleMenu = {
-                if (viewModel.uiState.value.isInSettingsMenu) viewModel.exitSettingsMenu()
-                else toggleMenu()
+                val s = viewModel.uiState.value
+                when {
+                    s.isInDebugMenu    -> viewModel.exitDebugMenu()
+                    s.isInSettingsMenu -> viewModel.exitSettingsMenu()
+                    else               -> toggleMenu()
+                }
             },
         ).also { result ->
             menuPanelResult = result
@@ -632,8 +647,12 @@ class MapActivity : ComponentActivity() {
             hamburgerBars   = result.hamburgerBars
             // Settings row in main list → enters the settings submenu layer.
             result.settingsRowInList.setOnClickListener { viewModel.enterSettingsMenu() }
+            // Debug row in settings → enters the debug submenu layer.
+            result.debugRowInSettings.setOnClickListener { viewModel.enterDebugMenu() }
             // Debug Mode toggle → flips isDebugMode in state.
-            result.settingsContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
+            result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
+            // Run Benchmark → starts the benchmark.
+            result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
         }
         root.addView(
             menuPanel,
@@ -1266,6 +1285,7 @@ class MapActivity : ComponentActivity() {
         val menuChanged         = old?.isMenuOpen != new.isMenuOpen
         val searchChanged       = old?.isSearchOpen != new.isSearchOpen
         val settingsMenuChanged = old?.isInSettingsMenu != new.isInSettingsMenu
+        val debugMenuChanged    = old?.isInDebugMenu != new.isInDebugMenu
         val debugModeChanged    = old?.isDebugMode != new.isDebugMode
 
         // ── Crosshair ──────────────────────────────────────────────────────────
@@ -1307,7 +1327,14 @@ class MapActivity : ComponentActivity() {
             if (new.isMenuOpen) {
                 runOpenMenuAnimation()
             } else {
-                // Closing: reset settings layer views instantly so the panel collapses cleanly.
+                // Closing: reset debug layer views first (outermost), then settings layer.
+                if (old.isInDebugMenu) {
+                    debugMenuAnimator?.cancel()
+                    menuPanelResult.debugGhostHeader.visibility = View.GONE
+                    menuPanelResult.debugGhostHeader.alpha = 0f
+                    menuPanelResult.debugContent.visibility = View.GONE
+                    menuPanelResult.debugContent.alpha = 0f
+                }
                 if (old.isInSettingsMenu) {
                     settingsMenuAnimator?.cancel()
                     menuPanelResult.settingsGhostHeader.visibility = View.GONE
@@ -1330,6 +1357,13 @@ class MapActivity : ComponentActivity() {
         if (old != null && settingsMenuChanged && new.isMenuOpen) {
             if (new.isInSettingsMenu) runEnterSettingsAnimation()
             else runExitSettingsAnimation()
+        }
+
+        // ── Debug submenu transition ───────────────────────────────────────────
+        // Only animate when the menu is open and the debug layer changes.
+        if (old != null && debugMenuChanged && new.isMenuOpen) {
+            if (new.isInDebugMenu) runEnterDebugAnimation()
+            else runExitDebugAnimation()
         }
 
         // ── Debug overlay ──────────────────────────────────────────────────────
@@ -1664,6 +1698,131 @@ class MapActivity : ComponentActivity() {
         menuPanelResult.settingsContent.measure(wSpec, hSpec)
         settingsMenuHeight = itemH + menuPanelResult.settingsContent.measuredHeight
         return settingsMenuHeight
+    }
+
+    /**
+     * Returns the debug panel height in pixels (64dp header + debug items).
+     *
+     * Measured on first call by forcing a layout pass on debugContent.
+     * Cached thereafter.
+     */
+    private fun getOrMeasureDebugHeight(): Int {
+        if (debugMenuHeight > 0) return debugMenuHeight
+        val d      = resources.displayMetrics.density
+        val itemH  = (64 * d).toInt()
+        val panelW = (280 * d).toInt()
+        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec  = View.MeasureSpec.makeMeasureSpec(
+            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
+        )
+        menuPanelResult.debugContent.measure(wSpec, hSpec)
+        debugMenuHeight = itemH + menuPanelResult.debugContent.measuredHeight
+        return debugMenuHeight
+    }
+
+    /**
+     * Animate from the Settings submenu into the Debug submenu layer.
+     *
+     * Sequence (all concurrent, [Anim.NORMAL] duration):
+     * - Debug ghost header slides up from Debug row position (y=1×itemH) to header (y=0) and fades in.
+     * - Settings content and Settings ghost header fade out.
+     * - Debug content fades in (starts at t=0.3 to stagger behind the fade-out).
+     * - Panel height shrinks from settings height to debug height.
+     * - Hamburger bars stay in back-arrow shape (already set).
+     */
+    private fun runEnterDebugAnimation() {
+        debugMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val debugGhost      = menuPanelResult.debugGhostHeader
+        val settingsGhost   = menuPanelResult.settingsGhostHeader
+        val settingsContent = menuPanelResult.settingsContent
+        val debugContent    = menuPanelResult.debugContent
+
+        val ghostStartY = itemH.toFloat()
+        debugGhost.translationY = ghostStartY
+        debugGhost.alpha        = 0f
+        debugGhost.visibility   = View.VISIBLE
+
+        debugContent.visibility = View.VISIBLE
+        debugContent.alpha      = 0f
+
+        val targetH = getOrMeasureDebugHeight()
+        val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH  = lp.height
+
+        debugMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams     = lp
+                debugGhost.translationY    = ghostStartY * (1f - t)
+                debugGhost.alpha           = t
+                settingsGhost.alpha        = 1f - t
+                settingsContent.alpha      = 1f - t
+                debugContent.alpha         = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    settingsGhost.visibility   = View.GONE
+                    settingsContent.visibility = View.GONE
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Animate back from the Debug submenu to the Settings layer.
+     *
+     * Reverses [runEnterDebugAnimation].
+     */
+    private fun runExitDebugAnimation() {
+        debugMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val debugGhost      = menuPanelResult.debugGhostHeader
+        val settingsGhost   = menuPanelResult.settingsGhostHeader
+        val settingsContent = menuPanelResult.settingsContent
+        val debugContent    = menuPanelResult.debugContent
+
+        val ghostEndY = itemH.toFloat()
+        settingsGhost.alpha      = 0f
+        settingsGhost.visibility = View.VISIBLE
+        settingsContent.alpha      = 0f
+        settingsContent.visibility = View.VISIBLE
+
+        val targetH = getOrMeasureSettingsHeight()
+        val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH  = lp.height
+
+        debugMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams     = lp
+                debugGhost.translationY    = ghostEndY * t
+                debugGhost.alpha           = 1f - t
+                settingsGhost.alpha        = t
+                settingsContent.alpha      = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                debugContent.alpha         = (1f - t / 0.7f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    debugGhost.visibility   = View.GONE
+                    debugGhost.alpha        = 0f
+                    debugContent.visibility = View.GONE
+                    debugContent.alpha      = 0f
+                }
+            })
+            start()
+        })
     }
 
     /**
@@ -2303,6 +2462,301 @@ class MapActivity : ComponentActivity() {
         )
     }
 
+    // ── Benchmark ─────────────────────────────────────────────────────────────
+
+    private data class FpsStats(val avg: Float, val min: Float, val max: Float)
+
+    private data class BenchmarkResult(
+        val zoom: Int,
+        val glStats: FpsStats,
+        val mainAvg: Float, val mainMin: Float, val mainMax: Float,
+        val dtAvgMs: Long, val dtMinMs: Long, val dtMaxMs: Long,
+    )
+
+    /**
+     * Computes per-second FPS windows from a list of GL frame timestamps (nanoseconds).
+     * Returns average, min, and max across all complete 1-second windows.
+     */
+    private fun computeFpsStats(nanos: List<Long>): FpsStats {
+        if (nanos.size < 2) return FpsStats(0f, 0f, 0f)
+        val windowFps = mutableListOf<Float>()
+        var windowStart = nanos.first()
+        var count = 0
+        for (t in nanos.drop(1)) {
+            count++
+            val elapsed = t - windowStart
+            if (elapsed >= 1_000_000_000L) {
+                windowFps.add(count * 1_000_000_000f / elapsed)
+                count = 0
+                windowStart = t
+            }
+        }
+        if (windowFps.isEmpty()) {
+            val totalFps = (nanos.size - 1) * 1_000_000_000f / (nanos.last() - nanos.first())
+            return FpsStats(totalFps, totalFps, totalFps)
+        }
+        return FpsStats(
+            avg = windowFps.average().toFloat(),
+            min = windowFps.minOrNull() ?: 0f,
+            max = windowFps.maxOrNull() ?: 0f,
+        )
+    }
+
+    /**
+     * Closes the menu and runs pan benchmarks at zoom levels 8, 10, 14, 16.
+     *
+     * For each zoom level:
+     *  1. Evicts the tile disk cache so tiles must be fetched fresh.
+     *  2. Moves the camera to the current location at the target zoom.
+     *  3. Pans east continuously for 5 seconds while collecting GL FPS and
+     *     main-thread FPS / frame-dt metrics.
+     *
+     * Results are shown in a custom overlay when all four runs complete.
+     */
+    private fun startBenchmark() {
+        val m = map ?: return
+        benchmarkJob?.cancel()
+        closeMenu()
+        showBenchmarkProgressOverlay()
+
+        benchmarkJob = lifecycleScope.launch {
+            val results = mutableListOf<BenchmarkResult>()
+            val startTarget = m.cameraPosition.target
+
+            for (zoom in listOf(8, 10, 14, 16)) {
+                updateBenchmarkStatus("Zoom $zoom / 16…")
+
+                // Clear tile cache on IO thread.
+                withContext(Dispatchers.IO) { TileCache.clearCache() }
+
+                // Move to start position at this zoom (instant, no animation).
+                m.moveCamera(CameraUpdateFactory.newLatLngZoom(startTarget, zoom.toDouble()))
+                delay(800)
+
+                // Prepare collectors.
+                val glNanos = mutableListOf<Long>()
+                benchmarkGlFrameNanos = glNanos
+
+                val glListener = MapView.OnDidFinishRenderingFrameListener { _, _, _ ->
+                    benchmarkGlFrameNanos?.add(System.nanoTime())
+                }
+                mapView.addOnDidFinishRenderingFrameListener(glListener)
+
+                val mainFpsSamples = mutableListOf<Int>()
+                val dtMsSamples    = mutableListOf<Long>()
+                val sampleJob = launch {
+                    while (isActive) {
+                        delay(200)
+                        mainFpsSamples.add(osdLastFps)
+                        dtMsSamples.add(osdLastDtMs)
+                    }
+                }
+
+                // Pan east continuously for 5 seconds in 50ms steps.
+                val benchEnd = System.currentTimeMillis() + 5_000L
+                var lng = startTarget.longitude
+                val cosLat = Math.cos(Math.toRadians(startTarget.latitude))
+                while (System.currentTimeMillis() < benchEnd) {
+                    // ~200m per step at the equator, adjusted for latitude.
+                    lng += 0.002 / cosLat
+                    m.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(
+                            LatLng(startTarget.latitude, lng), zoom.toDouble()
+                        ),
+                        100,
+                    )
+                    delay(50)
+                }
+
+                sampleJob.cancel()
+                mapView.removeOnDidFinishRenderingFrameListener(glListener)
+                benchmarkGlFrameNanos = null
+
+                val mainAvg = if (mainFpsSamples.isEmpty()) 0f else mainFpsSamples.average().toFloat()
+                val mainMin = mainFpsSamples.minOrNull()?.toFloat() ?: 0f
+                val mainMax = mainFpsSamples.maxOrNull()?.toFloat() ?: 0f
+                val dtAvg   = if (dtMsSamples.isEmpty()) 0L else dtMsSamples.average().toLong()
+                val dtMin   = dtMsSamples.minOrNull() ?: 0L
+                val dtMax   = dtMsSamples.maxOrNull() ?: 0L
+
+                results.add(
+                    BenchmarkResult(
+                        zoom     = zoom,
+                        glStats  = computeFpsStats(glNanos),
+                        mainAvg  = mainAvg,
+                        mainMin  = mainMin,
+                        mainMax  = mainMax,
+                        dtAvgMs  = dtAvg,
+                        dtMinMs  = dtMin,
+                        dtMaxMs  = dtMax,
+                    )
+                )
+            }
+
+            dismissBenchmarkProgressOverlay()
+            showBenchmarkResultsOverlay(results)
+        }
+    }
+
+    private fun showBenchmarkProgressOverlay() {
+        dismissBenchmarkProgressOverlay()
+        val d = resources.displayMetrics.density
+
+        val statusLabel = TextView(this).apply {
+            text = "Starting benchmark…"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+        }
+        benchmarkStatusLabel = statusLabel
+
+        val cancelBtn = TextView(this).apply {
+            text = "Cancel"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            setPadding(0, (12 * d).toInt(), 0, 0)
+            setOnClickListener {
+                benchmarkJob?.cancel()
+                dismissBenchmarkProgressOverlay()
+            }
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.argb(230, 24, 24, 24))
+                cornerRadius = 16f * d
+            }
+            setPadding((24 * d).toInt(), (20 * d).toInt(), (24 * d).toInt(), (20 * d).toInt())
+            addView(statusLabel)
+            addView(cancelBtn)
+            isClickable = true
+        }
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            isClickable = true
+            addView(container, FrameLayout.LayoutParams(
+                (280 * d).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+        benchmarkOverlay = overlay
+        (window.decorView as ViewGroup).addView(
+            overlay,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+    }
+
+    private fun updateBenchmarkStatus(msg: String) {
+        benchmarkStatusLabel?.text = msg
+    }
+
+    private fun dismissBenchmarkProgressOverlay() {
+        benchmarkOverlay?.let { (window.decorView as? ViewGroup)?.removeView(it) }
+        benchmarkOverlay     = null
+        benchmarkStatusLabel = null
+    }
+
+    private fun showBenchmarkResultsOverlay(results: List<BenchmarkResult>) {
+        val d = resources.displayMetrics.density
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val title = TextView(this).apply {
+            text = "Benchmark Results"
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        content.addView(title, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = (12 * d).toInt() })
+
+        for (r in results) {
+            val zoomLabel = TextView(this).apply {
+                text = "Zoom ${r.zoom}"
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+            val glLine = TextView(this).apply {
+                text = "  GL:   avg ${"%.0f".format(r.glStats.avg)}  min ${"%.0f".format(r.glStats.min)}  max ${"%.0f".format(r.glStats.max)} fps"
+                setTextColor(Color.argb(220, 200, 220, 255))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            val mainLine = TextView(this).apply {
+                text = "  Main: avg ${"%.0f".format(r.mainAvg)}  min ${"%.0f".format(r.mainMin)}  max ${"%.0f".format(r.mainMax)} fps"
+                setTextColor(Color.argb(220, 200, 255, 200))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            val dtLine = TextView(this).apply {
+                text = "  dt:   avg ${r.dtAvgMs}  min ${r.dtMinMs}  max ${r.dtMaxMs} ms"
+                setTextColor(Color.argb(200, 220, 220, 220))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            content.addView(zoomLabel, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (8 * d).toInt() })
+            content.addView(glLine)
+            content.addView(mainLine)
+            content.addView(dtLine)
+        }
+
+        val closeBtn = TextView(this).apply {
+            text = "Close"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.argb(235, 24, 24, 24))
+                cornerRadius = 16f * d
+            }
+            setPadding((20 * d).toInt(), (20 * d).toInt(), (20 * d).toInt(), (16 * d).toInt())
+            addView(
+                ScrollView(this@MapActivity).apply { addView(content) },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, (300 * d).toInt(),
+                ),
+            )
+            addView(closeBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (12 * d).toInt() })
+            isClickable = true
+        }
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            isClickable = true
+            addView(container, FrameLayout.LayoutParams(
+                (320 * d).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+
+        closeBtn.setOnClickListener {
+            (window.decorView as? ViewGroup)?.removeView(overlay)
+        }
+        overlay.setOnClickListener {
+            (window.decorView as? ViewGroup)?.removeView(overlay)
+        }
+
+        (window.decorView as ViewGroup).addView(
+            overlay,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+    }
+
     override fun onStart() {
         super.onStart()
         mapView.onStart()
@@ -2332,6 +2786,7 @@ class MapActivity : ComponentActivity() {
     override fun onDestroy() {
         animBag.cancelAll()
         updateAnimJob?.cancel()
+        benchmarkJob?.cancel()
         super.onDestroy()
         mapView.onDestroy()
     }

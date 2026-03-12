@@ -66,6 +66,7 @@ object TileCache {
     val gate = TileGateInterceptor()
 
     private var initialised = false
+    private var diskCache: Cache? = null
 
     /**
      * Build the OkHttp client and hand it to MapLibre.
@@ -75,18 +76,24 @@ object TileCache {
         if (initialised) return
         initialised = true
 
-        val diskCache = Cache(
+        val cache = Cache(
             directory = File(context.cacheDir, "maplibre_tiles"),
             maxSize   = 50L * 1024 * 1024,   // 50 MB
         )
+        diskCache = cache
 
         val client = OkHttpClient.Builder()
-            .cache(diskCache)
+            .cache(cache)
             // Network interceptor: runs AFTER OkHttp's cache check, so
             // disk-cached tiles bypass the gate and return immediately.
             .addNetworkInterceptor(gate)
             .build()
 
         HttpRequestUtil.setOkHttpClient(client)
+    }
+
+    /** Evicts all cached tiles. Call on an IO thread (performs disk I/O). */
+    fun clearCache() {
+        try { diskCache?.evictAll() } catch (_: Exception) { }
     }
 }

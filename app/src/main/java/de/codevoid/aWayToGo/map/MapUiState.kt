@@ -23,5 +23,6 @@ data class MapUiState(
     val isSatelliteEnabled: Boolean = false,
     val isDarkMode: Boolean = false,
     val isInSettingsMenu: Boolean = false,
+    val isInDebugMenu: Boolean = false,
     val isDebugMode: Boolean = false,
 )
