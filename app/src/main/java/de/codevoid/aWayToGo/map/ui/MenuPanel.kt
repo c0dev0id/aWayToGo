@@ -33,12 +33,16 @@ import de.codevoid.aWayToGo.R
  * toggle, etc.), initially GONE.
  * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
  * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
+ * [settingsRowIcon] is the icon ImageView inside [settingsRowInList]; faded
+ * out during the enter-settings animation so the icon appears to teleport
+ * from the left side of the list row to the right side of the ghost header.
  */
 data class MenuPanelResult(
     val root: View,
     val hamburgerBars: Array<View>,
     val mainMenuScroll: ScrollView,
     val settingsRowInList: View,
+    val settingsRowIcon: ImageView,
     val settingsGhostHeader: View,
     val settingsContent: LinearLayout,
     val debugToggleLabel: TextView,
@@ -157,6 +161,9 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
 
     // ── Main menu items ────────────────────────────────────────────────────────
     val settingsRowInList = menuItem(R.drawable.ic_menu_settings, "Settings")
+    // Icon is child 0 of settingsRowInList; exposed so MapActivity can fade it out
+    // during the enter-settings animation (icon appears to teleport left→right).
+    val settingsRowIcon = settingsRowInList.getChildAt(0) as ImageView
 
     val contentList = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -213,12 +220,34 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(debugToggleItem, LinearLayout.LayoutParams(panelW, itemH))
     }
 
-    // ── Ghost header — visually identical to settingsRowInList, not clickable ──
+    // ── Ghost header — header layout for the settings submenu, not clickable ────
+    // Layout: [text fills middle, right-aligned] [gap] [icon on RIGHT]
+    // The hamburgerBtn (back arrow, 64dp) overlays the left portion of this row.
     // Positioned at the panel top (y=0..64dp).  MapActivity sets translationY
     // before the animation so it starts at the Settings item's list position.
-    val settingsGhostHeader = menuItem(R.drawable.ic_menu_settings, "Settings", clickable = false).apply {
-        visibility = View.GONE
-        alpha      = 0f
+    val settingsGhostHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(
+            TextView(context).apply {
+                text = "Settings"
+                setTextColor(Color.WHITE)
+                textSize = 20f
+                gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_settings))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
     }
 
     // ── Root panel ────────────────────────────────────────────────────────────
@@ -253,6 +282,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         hamburgerBars       = hamburgerBars,
         mainMenuScroll      = mainMenuScroll,
         settingsRowInList   = settingsRowInList,
+        settingsRowIcon     = settingsRowIcon,
         settingsGhostHeader = settingsGhostHeader,
         settingsContent     = settingsContent,
         debugToggleLabel    = debugToggleLabel,
