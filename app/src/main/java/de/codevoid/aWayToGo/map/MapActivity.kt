@@ -944,8 +944,9 @@ class MapActivity : ComponentActivity() {
                 ?: return
             flyToLocation(
                 m, gpsTarget,
+                zoom    = 17.0,
                 tilt    = 45.0,
-                padding = doubleArrayOf(0.0, screenH * 0.8, 0.0, 0.0),
+                padding = doubleArrayOf(0.0, screenH * 0.5, 0.0, 0.0),
                 enableZoom = true,
             )
             return
@@ -954,14 +955,14 @@ class MapActivity : ComponentActivity() {
         val targetTilt: Double
         val topPad: Double
         when (mode) {
-            AppMode.NAVIGATE -> { targetTilt = 45.0; topPad = screenH * 0.8 }
+            AppMode.NAVIGATE -> { targetTilt = 45.0; topPad = screenH * 0.5 }
             else             -> { targetTilt = 0.0;  topPad = 0.0 }
         }
 
         val cur    = m.cameraPosition
         val newPos = CameraPosition.Builder()
             .target(cur.target)
-            .zoom(cur.zoom)
+            .zoom(if (mode == AppMode.NAVIGATE) 17.0 else cur.zoom)
             .bearing(cur.bearing)
             .tilt(targetTilt)
             .padding(doubleArrayOf(0.0, topPad, 0.0, 0.0))
