@@ -347,22 +347,10 @@ class MapActivity : ComponentActivity() {
         val root = TwoFingerLockLayout(this)
 
         // MapView fills the screen.
-        // textureMode(true): required with the Vulkan backend (MapLibre 13+). The Vulkan
-        // SurfaceView creates its rendering surface at construction time, before MATCH_PARENT
-        // layout has been resolved, and ends up with the wrong (tiny) surface dimensions —
-        // visible as the map rendering only in the bottom-left corner.  TextureView is sized
-        // by the Android layout system after measurement/layout passes, so it always matches
-        // the view's actual bounds.  The main trade-off is that TextureView composites through
-        // the main thread rather than an independent hardware layer, but in practice fps impact
-        // is negligible on this device.
-        //
-        // pixelRatio=3.0: benchmark-derived optimum. Higher pixelRatio causes MapLibre to
-        // satisfy tile quality from a lower zoom tier → fewer, larger tiles per viewport →
-        // less tile-fetch congestion during pan → higher and more stable gl_fps.
-        // Tested values 1.0–4.0 at zoom 14/16; 3.0 gave best avg+min gl_fps on this device.
+        // SurfaceView mode (the default — do NOT pass textureMode): gives MapLibre its own
+        // hardware layer, so the GL thread runs at the display's native refresh rate
+        // independently of the main thread.
         val mapOptions = MapLibreMapOptions.createFromAttributes(this)
-            .textureMode(true)
-            .pixelRatio(3.0f)
         mapView = MapView(this, mapOptions)
         root.addView(
             mapView,
@@ -686,13 +674,6 @@ class MapActivity : ComponentActivity() {
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { m ->
             root.attachMap(m)
-            // maxFps=60: matches standard display refresh rate; allows the render scheduler
-            // more recovery slots than 30fps during tile-load stutter without the unnecessary
-            // GPU load of 120fps. Benchmark: gl_fps avg=28 min=18 vs avg=18 min=3 at 30fps.
-            mapView.setMaximumFps(60)
-            // prefetchDelta=2: prefetching 2 zoom levels out instead of 4 reduces concurrent
-            // tile requests competing with the current viewport, improving gl_fps during pan.
-            m.setPrefetchZoomDelta(2)
             m.uiSettings.apply {
                 isRotateGesturesEnabled = true
                 isTiltGesturesEnabled   = true
