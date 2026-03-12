@@ -1317,7 +1317,7 @@ class MapActivity : ComponentActivity() {
                     menuPanelResult.mainMenuScroll.visibility = View.VISIBLE
                     menuPanelResult.mainMenuScroll.alpha = 1f
                     menuPanelResult.settingsRowIcon.alpha = 1f
-                    hamburgerBars.forEach { it.scaleX = 1f }
+                    hamburgerBars.forEach { it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
                 }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
@@ -1601,6 +1601,8 @@ class MapActivity : ComponentActivity() {
         val startH      = lp.height
         val barStartR   = FloatArray(3) { hamburgerBars[it].rotation }
         val barStartS   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTY  = FloatArray(3) { hamburgerBars[it].translationY }
         // Reverse of open: bottom bar now fastest, top bar slowest.
         val closeSpeeds = floatArrayOf(1.0f, 1.2f, 1.4f)
 
@@ -1614,8 +1616,10 @@ class MapActivity : ComponentActivity() {
                 menuPanel.layoutParams = lp
                 hamburgerBars.forEachIndexed { i, bar ->
                     val p = (t * closeSpeeds[i]).coerceAtMost(1f)
-                    bar.rotation = barStartR[i] + (0f - barStartR[i]) * p
-                    bar.scaleX   = barStartS[i] + (1f - barStartS[i]) * p
+                    bar.rotation     = barStartR[i]  + (0f - barStartR[i])  * p
+                    bar.scaleX       = barStartS[i]  + (1f - barStartS[i])  * p
+                    bar.translationX = barStartTX[i] + (0f - barStartTX[i]) * p
+                    bar.translationY = barStartTY[i] + (0f - barStartTY[i]) * p
                 }
             }
             addListener(object : AnimatorListenerAdapter() {
