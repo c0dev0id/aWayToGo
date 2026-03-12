@@ -5,55 +5,58 @@ import android.content.Intent
 import androidx.core.content.FileProvider
 import de.codevoid.aWayToGo.BuildConfig
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okio.buffer
-import okio.sink
 import org.json.JSONArray
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.TimeUnit
 
 /**
- * Progress snapshot emitted during an APK download.
- */
-data class DownloadProgress(
-    val bytesDownloaded: Long,
-    val totalBytes: Long,
-    val bytesPerSecond: Long,
-)
-
-/**
- * Checks GitHub for a newer pre-release APK, downloads it, and hands it to the
- * system package installer.
+ * Checks GitHub for a newer pre-release APK, delegates the actual download to
+ * [Downloader], and hands the result to the system package installer.
  *
  * All network and file I/O runs on [Dispatchers.IO] inside suspend functions.
- * The class holds no state — it is safe to create on demand or inject as a singleton.
+ * The class holds no mutable state — it is safe to use as a singleton.
  *
  * ### Update detection
  * The CI pipeline embeds the short Git commit hash in the APK filename
  * (e.g. `aWayToGo-abc1234.apk`).  The app's own hash is in [BuildConfig.GIT_COMMIT].
  * If the most recent pre-release APK filename contains that hash, the build is current
- * and [checkForUpdate] returns null.  No timestamp or version-code comparison is needed.
+ * and [checkForUpdate] returns null.  No version-code comparison is needed.
  */
 class AppUpdater(private val context: Context) {
 
     companion object {
         private const val RELEASES_URL =
             "https://api.github.com/repos/c0dev0id/aWayToGo/releases"
+
+        /**
+         * Extracts the short git hash from a GitHub release APK download URL.
+         *
+         * Example: `"https://.../aWayToGo-abc1234.apk"` → `"abc1234"`
+         *
+         * Returns null if the URL does not follow the expected naming convention.
+         */
+        fun versionHashFromUrl(url: String): String? =
+            Regex("""aWayToGo-([0-9a-f]+)\.apk""")
+                .find(url.substringAfterLast('/'))
+                ?.groupValues?.get(1)
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+    // Short-lived check call: callTimeout caps the total round-trip so the UI
+    // never stalls indefinitely waiting for the GitHub releases API.
+    private val checkClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .build()
 
-    private val partFile get() = File(context.externalCacheDir, "update.apk.part")
-    private val apkFile  get() = File(context.externalCacheDir, "update.apk")
-    private val urlFile  get() = File(context.externalCacheDir, "update.url")
+    private val downloader = Downloader(context)
+    private val apkFile get() = File(context.externalCacheDir, "update.apk")
 
     /**
      * Fetches the GitHub releases list and returns the browser download URL of the APK
@@ -68,7 +71,7 @@ class AppUpdater(private val context: Context) {
                 .url(RELEASES_URL)
                 .header("Accept", "application/vnd.github.v3+json")
                 .build()
-            val body = httpClient.newCall(request).execute().use { response ->
+            val body = checkClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
                 response.body?.string() ?: return@withContext null
             }
@@ -106,98 +109,28 @@ class AppUpdater(private val context: Context) {
     }
 
     /**
-     * Removes partial/completed download files that do not belong to [currentUrl].
-     * Call after [checkForUpdate] so only the matching partial file is kept.
+     * Removes partial or completed download files that do not belong to [currentUrl].
+     * Delegates to [Downloader.cleanupStale] so the same policy (URL mismatch, 2-day
+     * age) is applied here as for all other download operations.
      */
     fun cleanupStaleFiles(currentUrl: String?) {
-        val storedUrl = if (urlFile.exists()) urlFile.readText().trim() else null
-        if (storedUrl != currentUrl) {
-            partFile.delete()
-            urlFile.delete()
-            apkFile.delete()
-        }
+        downloader.cleanupStale(currentUrl, apkFile)
     }
 
     /**
      * Downloads the APK at [url] to `externalCacheDir/update.apk`.
      *
-     * Resumes from a previous partial download if a `.part` file for the same URL exists.
-     * [onProgress] is invoked on [Dispatchers.Main] with download size, total, and speed.
+     * Delegates entirely to [Downloader.download], which handles connectivity
+     * pre-check, resume, atomic swap, and stall detection.
      *
-     * On cancellation the partial file is retained for later resume.
+     * [onProgress] is invoked on [Dispatchers.Main] during the download.
      *
-     * @throws Exception on any network or I/O error — let the caller decide how to surface it.
+     * @throws NoConnectionException  if no stable internet connection is available
+     * @throws CancellationException  on coroutine cancellation (partial preserved)
+     * @throws Exception              on HTTP errors or I/O failures
      */
     suspend fun downloadApk(url: String, onProgress: (DownloadProgress) -> Unit): File =
-        withContext(Dispatchers.IO) {
-            // If a completed download for this exact URL already exists, reuse it.
-            if (apkFile.exists() && urlFile.exists() && urlFile.readText().trim() == url) {
-                return@withContext apkFile
-            }
-
-            // Remember which URL this partial belongs to.
-            urlFile.writeText(url)
-
-            val existing = if (partFile.exists()) partFile.length() else 0L
-
-            val request = Request.Builder()
-                .url(url)
-                .apply { if (existing > 0) header("Range", "bytes=$existing-") }
-                .build()
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful && response.code != 206) {
-                throw Exception("HTTP ${response.code}")
-            }
-
-            val resumed = existing > 0 && response.code == 206
-            val serverBytes = response.body?.contentLength() ?: -1L
-            val alreadyDownloaded = if (resumed) existing else 0L
-            val total = if (serverBytes > 0) alreadyDownloaded + serverBytes else -1L
-
-            if (!resumed) {
-                // Server ignored Range or fresh start — overwrite.
-                partFile.delete()
-            }
-
-            // Speed tracking: bytes received since last speed sample.
-            var speedBytes = 0L
-            var speedStamp = System.nanoTime()
-            var currentSpeed = 0L
-
-            var downloaded = alreadyDownloaded
-
-            val body = response.body ?: throw Exception("Empty response body")
-            body.source().use { source ->
-                partFile.sink(append = resumed).buffer().use { sink ->
-                    val buf = okio.Buffer()
-                    while (true) {
-                        ensureActive()                        // honour cancellation
-                        val n = source.read(buf, 65_536)
-                        if (n == -1L) break
-                        sink.write(buf, n)
-                        downloaded += n
-                        speedBytes += n
-
-                        val now = System.nanoTime()
-                        val elapsed = now - speedStamp
-                        if (elapsed >= 500_000_000L) {        // update speed every 0.5 s
-                            currentSpeed = speedBytes * 1_000_000_000L / elapsed
-                            speedBytes = 0L
-                            speedStamp = now
-                        }
-
-                        if (total > 0) {
-                            withContext(Dispatchers.Main) {
-                                onProgress(DownloadProgress(downloaded, total, currentSpeed))
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!partFile.renameTo(apkFile)) throw java.io.IOException("Failed to rename download")
-            apkFile
-        }
+        downloader.download(url, apkFile, onProgress)
 
     /**
      * Opens the downloaded APK file with the system package installer.

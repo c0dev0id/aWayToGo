@@ -22,6 +22,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
@@ -42,11 +43,13 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
+import de.codevoid.aWayToGo.map.ui.Anim
 import de.codevoid.aWayToGo.map.ui.AnimationLatch
 import de.codevoid.aWayToGo.map.ui.AnimatorBag
 import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
 import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
+import de.codevoid.aWayToGo.map.ui.MenuPanelResult
 import de.codevoid.aWayToGo.map.ui.buildMenuPanel
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
@@ -59,20 +62,22 @@ import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
 import de.codevoid.aWayToGo.update.AppUpdater
+import de.codevoid.aWayToGo.update.ConnectivityChecker
 import de.codevoid.aWayToGo.update.DownloadProgress
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
-import org.maplibre.android.location.modes.CameraMode
-import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
@@ -112,15 +117,6 @@ private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
-private const val TILT_3D = 60.0
-
-// Speed thresholds for adaptive compass ↔ GPS heading mode.
-// Hysteresis avoids mode flipping at a stop light: higher threshold to enter
-// GPS mode, lower to return to compass mode.
-//   1.5 m/s ≈  5.4 km/h  → start rotating map with GPS course
-//   0.5 m/s ≈  1.8 km/h  → return to compass heading when nearly stopped
-private const val SPEED_TO_GPS_MS     = 1.5f
-private const val SPEED_TO_COMPASS_MS = 0.5f
 
 private const val LOCATION_PERMISSION_REQUEST = 1
 
@@ -161,9 +157,14 @@ class MapActivity : ComponentActivity() {
     // All three share the same rotation pivot: the centre of the 64×64dp button area.
     private lateinit var hamburgerBars: Array<View>
     private lateinit var menuPanel: View
+    private lateinit var menuPanelResult: MenuPanelResult
     private lateinit var menuDismissOverlay: View
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
+    private var settingsMenuHeight = -1            // measured on first enter; -1 = not yet measured
+    private var debugMenuHeight = -1               // measured on first enter; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
+    private var settingsMenuAnimator: ValueAnimator? = null
+    private var debugMenuAnimator: ValueAnimator? = null
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
@@ -185,7 +186,19 @@ class MapActivity : ComponentActivity() {
     private var isDownloadOverlayVisible = false
     private var lastDownloadProgress: DownloadProgress? = null
 
+    // ── Benchmark ─────────────────────────────────────────────────────────────
+    private var benchmarkJob: Job? = null
+    private var benchmarkOverlay: View? = null
+    private var benchmarkStatusLabel: TextView? = null
+    @Volatile private var benchmarkGlFrameNanos: MutableList<Long>? = null
+
     private val appUpdater by lazy { AppUpdater(this) }
+
+    // non-null when an update has been found but not yet downloaded.
+    private var pendingUpdateUrl: String? = null
+    // drives the version card blink loop while an update is pending.
+    private var updateAnimJob: Job? = null
+    private val prefs by lazy { getSharedPreferences("app_prefs", MODE_PRIVATE) }
 
     // ── Search ────────────────────────────────────────────────────────────────
     private lateinit var searchOverlayResult: SearchOverlayResult
@@ -201,10 +214,6 @@ class MapActivity : ComponentActivity() {
     private var map: MapLibreMap? = null
     private var style: Style? = null
     private var hasLocationPermission = false
-
-    // True while GPS speed exceeds SPEED_TO_GPS_MS; false below SPEED_TO_COMPASS_MS.
-    // Drives the adaptive compass ↔ GPS camera/render mode selection.
-    private var isMoving = false
 
     // Owns all D-pad / joystick / zoom-key state and drives per-frame camera updates.
     private val panController = PanController(onEnterPanningMode = { enterPanningMode() })
@@ -235,11 +244,6 @@ class MapActivity : ComponentActivity() {
             val dtNs = if (osdLastFrameNs != 0L) frameTimeNanos - osdLastFrameNs else 16_000_000L
             osdLastFrameNs = frameTimeNanos
 
-            // ── Adaptive heading (compass ↔ GPS) ───────────────────────────────
-            // Check GPS speed and switch CameraMode/RenderMode when the user
-            // crosses the moving/stationary threshold.  O(1) no-op most frames.
-            updateMovingState()
-
             // ── Pan + Zoom ─────────────────────────────────────────────────────
             // PanController owns all D-pad/joystick state and returns the current
             // pan speed for OSD display.
@@ -254,29 +258,29 @@ class MapActivity : ComponentActivity() {
                 }
             }
 
-            // ── OSD (DEBUG builds only) ────────────────────────────────────────
-            if (BuildConfig.DEBUG) {
-                osdLastDtMs = dtNs / 1_000_000L
+            // ── OSD ───────────────────────────────────────────────────────────
+            osdLastDtMs = dtNs / 1_000_000L
 
-                osdFrameCount++
-                if (osdWindowNs == 0L) osdWindowNs = frameTimeNanos
-                val elapsed = frameTimeNanos - osdWindowNs
-                if (elapsed >= 1_000_000_000L) {
-                    osdLastFps    = (osdFrameCount * 1_000_000_000L / elapsed).toInt()
-                    osdFrameCount = 0
-                    osdWindowNs   = frameTimeNanos
+            osdFrameCount++
+            if (osdWindowNs == 0L) osdWindowNs = frameTimeNanos
+            val elapsed = frameTimeNanos - osdWindowNs
+            if (elapsed >= 1_000_000_000L) {
+                osdLastFps    = (osdFrameCount * 1_000_000_000L / elapsed).toInt()
+                osdFrameCount = 0
+                osdWindowNs   = frameTimeNanos
 
-                    // Network rate — sampled once per second
-                    val rx = TrafficStats.getTotalRxBytes()
-                    val tx = TrafficStats.getTotalTxBytes()
-                    if (osdRxLast != 0L) {
-                        osdRxRate = rx - osdRxLast
-                        osdTxRate = tx - osdTxLast
-                    }
-                    osdRxLast = rx
-                    osdTxLast = tx
+                // Network rate — sampled once per second
+                val rx = TrafficStats.getTotalRxBytes()
+                val tx = TrafficStats.getTotalTxBytes()
+                if (osdRxLast != 0L) {
+                    osdRxRate = rx - osdRxLast
+                    osdTxRate = tx - osdTxLast
                 }
+                osdRxLast = rx
+                osdTxLast = tx
+            }
 
+            if (osdView.visibility == View.VISIBLE) {
                 val zoom   = map?.cameraPosition?.zoom ?: 0.0
                 val loc    = map?.locationComponent?.lastKnownLocation
                 val hasFix = loc != null
@@ -286,7 +290,7 @@ class MapActivity : ComponentActivity() {
                     append("fps  $osdLastFps  dt:${osdLastDtMs}ms\n")
                     append("zoom ${"%.1f".format(zoom)}  gl_fps ${"%.0f".format(osdGlFps)}\n")
                     append("net  rx:${osdRxRate / 1024}kB/s  tx:${osdTxRate / 1024}kB/s\n")
-                    append("gps  fix:${if (hasFix) "Y" else "N"}  mov:${if (isMoving) "Y" else "N"}  acc:${"%.0f".format(acc)}m")
+                    append("gps  fix:${if (hasFix) "Y" else "N"}  acc:${"%.0f".format(acc)}m")
                     if (panLine.isNotEmpty()) append(panLine)
                 }
             }
@@ -376,7 +380,7 @@ class MapActivity : ComponentActivity() {
             typeface = Typeface.MONOSPACE
             setBackgroundColor(Color.argb(140, 0, 0, 0))
             setPadding(16, 8, 16, 8)
-            visibility = if (BuildConfig.DEBUG) View.VISIBLE else View.GONE
+            visibility = View.GONE
         }
         topRightContainer.addView(
             osdView,
@@ -607,6 +611,7 @@ class MapActivity : ComponentActivity() {
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
         menuDismissOverlay = View(this).apply {
+            background = null   // suppress theme-default pressed-state highlight (would flicker on tap)
             isClickable = true
             isFocusable = false
             visibility = View.GONE
@@ -624,12 +629,31 @@ class MapActivity : ComponentActivity() {
         // Starts at button size (64×64dp); runOpenMenuAnimation/runCloseMenuAnimation
         // animate the layout params to expand/collapse it.
         // cornerRadius=32dp gives a perfect circle at button size.
+        //
+        // The hamburger click lambda checks whether we're inside the settings layer:
+        // if so, it acts as a "back" button; otherwise it toggles the menu open/closed.
         buildMenuPanel(
-            context       = this,
-            onToggleMenu  = { toggleMenu() },
+            context      = this,
+            onToggleMenu = {
+                val s = viewModel.uiState.value
+                when {
+                    s.isInDebugMenu    -> viewModel.exitDebugMenu()
+                    s.isInSettingsMenu -> viewModel.exitSettingsMenu()
+                    else               -> toggleMenu()
+                }
+            },
         ).also { result ->
-            menuPanel      = result.root
-            hamburgerBars  = result.hamburgerBars
+            menuPanelResult = result
+            menuPanel       = result.root
+            hamburgerBars   = result.hamburgerBars
+            // Settings row in main list → enters the settings submenu layer.
+            result.settingsRowInList.setOnClickListener { viewModel.enterSettingsMenu() }
+            // Debug row in settings → enters the debug submenu layer.
+            result.debugRowInSettings.setOnClickListener { viewModel.enterDebugMenu() }
+            // Debug Mode toggle → flips isDebugMode in state.
+            result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
+            // Run Benchmark → starts the benchmark.
+            result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
         }
         root.addView(
             menuPanel,
@@ -771,14 +795,6 @@ class MapActivity : ComponentActivity() {
                 LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
             )
             isLocationComponentEnabled = true
-            val uiState = viewModel.uiState.value
-            val shouldTrack = !uiState.isInPanningMode
-                && uiState.mode != AppMode.EDIT
-                && cameraMode != CameraMode.NONE  // don't override user-disabled state
-            if (shouldTrack) {
-                cameraMode = trackingCameraMode()
-                renderMode = trackingRenderMode()
-            }
         }
 
         m.locationComponent.lastKnownLocation?.let { loc ->
@@ -788,10 +804,6 @@ class MapActivity : ComponentActivity() {
                     14.0,
                 ),
                 600,
-                object : MapLibreMap.CancelableCallback {
-                    override fun onFinish() { reassertTrackingMode() }
-                    override fun onCancel() { reassertTrackingMode() }
-                },
             )
         }
     }
@@ -823,25 +835,8 @@ class MapActivity : ComponentActivity() {
 
                 RemoteKey.BACK ->
                     // In panning mode: exit panning → re-lock on GPS.
-                    // Outside panning mode: reset map bearing to north.
                     if (viewModel.uiState.value.isInPanningMode) {
                         exitPanningMode()
-                    } else {
-                        m.animateCamera(
-                            CameraUpdateFactory.newCameraPosition(
-                                CameraPosition.Builder()
-                                    .target(m.cameraPosition.target)
-                                    .zoom(m.cameraPosition.zoom)
-                                    .tilt(m.cameraPosition.tilt)
-                                    .bearing(0.0)
-                                    .build(),
-                            ),
-                            400,
-                            object : MapLibreMap.CancelableCallback {
-                                override fun onFinish() { reassertTrackingMode() }
-                                override fun onCancel() { reassertTrackingMode() }
-                            },
-                        )
                     }
             }
 
@@ -857,33 +852,7 @@ class MapActivity : ComponentActivity() {
                         m.locationComponent.lastKnownLocation?.let { loc ->
                             setDragLine(LatLng(loc.latitude, loc.longitude), target)
                         }
-                    } else {
-                        // Outside panning mode: toggle GPS camera tracking.
-                        m.locationComponent.cameraMode =
-                            if (m.locationComponent.cameraMode == CameraMode.NONE)
-                                trackingCameraMode()
-                            else
-                                CameraMode.NONE
                     }
-
-                RemoteKey.BACK -> {
-                    val currentTilt = m.cameraPosition.tilt
-                    m.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(
-                            CameraPosition.Builder()
-                                .target(m.cameraPosition.target)
-                                .zoom(m.cameraPosition.zoom)
-                                .bearing(m.cameraPosition.bearing)
-                                .tilt(if (currentTilt > 0.0) 0.0 else TILT_3D)
-                                .build(),
-                        ),
-                        400,
-                        object : MapLibreMap.CancelableCallback {
-                            override fun onFinish() { reassertTrackingMode() }
-                            override fun onCancel() { reassertTrackingMode() }
-                        },
-                    )
-                }
 
                 else -> {}
             }
@@ -911,88 +880,62 @@ class MapActivity : ComponentActivity() {
         viewModel.exitPanningMode()
     }
 
-    // ── Adaptive heading (compass ↔ GPS) ──────────────────────────────────────
+    // ── Map movement primitives ────────────────────────────────────────────────
 
     /**
-     * [CameraMode] that follows the user's position and, in heading-up mode, rotates
-     * the map so the device heading is always at the top of the screen:
+     * Smoothly animates the map tilt to [angle] degrees.
      *
-     * - North-up ([MapUiState.isNorthUp] == true): [CameraMode.TRACKING] — the map
-     *   stays fixed with north at the top; the location puck rotates to show heading.
-     * - Heading-up, stationary: [CameraMode.TRACKING_COMPASS] — the map heading
-     *   follows the device compass so "up" is wherever you're pointing.
-     * - Heading-up, moving:     [CameraMode.TRACKING_GPS] — the map heading follows
-     *   the GPS course-over-ground so "up" is the direction of travel.
+     * Default 45° gives a comfortable perspective view.  Pass 0.0 to flatten the map.
+     * All other camera properties (position, zoom, bearing, padding) are preserved.
      */
-    private fun trackingCameraMode(): Int {
-        if (viewModel.uiState.value.isNorthUp) return CameraMode.TRACKING
-        return if (isMoving) CameraMode.TRACKING_GPS else CameraMode.TRACKING_COMPASS
+    private fun tilt(angle: Double = 45.0, durationMs: Int = 400) {
+        val m = map ?: return
+        val cur = m.cameraPosition
+        m.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(cur.target)
+                    .zoom(cur.zoom)
+                    .bearing(cur.bearing)
+                    .tilt(angle)
+                    .padding(cur.padding)
+                    .build(),
+            ),
+            durationMs,
+        )
     }
 
     /**
-     * Always [RenderMode.GPS] so the puck arrow points "up" (direction of travel).
-     * The map rotation source (GPS course vs compass) is handled by [trackingCameraMode].
-     */
-    private fun trackingRenderMode() = RenderMode.GPS
-
-    /**
-     * Check GPS speed from the most recent location fix and, if the moving/stationary
-     * state has changed, switch [CameraMode] and [RenderMode] accordingly.
+     * Smoothly rotates the map so [bearing] degrees faces upward.
      *
-     * Called every Choreographer frame but is an O(1) no-op in the common case
-     * (no state change).  Hysteresis ([SPEED_TO_GPS_MS] / [SPEED_TO_COMPASS_MS])
-     * prevents mode flipping when the user is stopped at a traffic light with a
-     * speed reading hovering near zero.
+     * The animation duration scales with angular distance (100–600 ms) so both
+     * small corrections and large turns feel natural.  Calling this again while
+     * an animation is in-flight cancels it and starts toward the new target —
+     * sensor or GPS updates naturally chain into smooth continuous rotation.
      *
-     * Does nothing while panning or in EDIT mode — the location component's
-     * camera mode is [CameraMode.NONE] in those states and must not be overridden.
+     * All other camera properties (position, zoom, tilt, padding) are preserved.
      */
-    @SuppressLint("MissingPermission")
-    private fun updateMovingState() {
-        val uiState = viewModel.uiState.value
-        if (uiState.isInPanningMode || uiState.mode == AppMode.EDIT) return
-
-        val lc = map?.locationComponent?.takeIf { it.isLocationComponentActivated } ?: return
-        if (lc.cameraMode == CameraMode.NONE) return   // user manually detached tracking
-
-        val loc   = lc.lastKnownLocation ?: return
-        val speed = if (loc.hasSpeed()) loc.speed else 0f
-
-        // Hysteresis: once moving, require a lower speed before switching back,
-        // so a momentary slow-down at lights doesn't drop back to compass.
-        val nowMoving = if (isMoving) speed > SPEED_TO_COMPASS_MS else speed > SPEED_TO_GPS_MS
-        if (nowMoving == isMoving) return
-
-        isMoving = nowMoving
-        lc.cameraMode = trackingCameraMode()
-        lc.renderMode = trackingRenderMode()
+    private fun rotate(bearing: Double) {
+        val m = map ?: return
+        val cur = m.cameraPosition
+        m.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(cur.target)
+                    .zoom(cur.zoom)
+                    .bearing(bearing)
+                    .tilt(cur.tilt)
+                    .padding(cur.padding)
+                    .build(),
+            ),
+            angularDuration(cur.bearing, bearing),
+        )
     }
 
-    /**
-     * Re-establishes the correct [CameraMode] and [RenderMode] on the
-     * [LocationComponent] after any developer-initiated [MapLibreMap.animateCamera]
-     * or [MapLibreMap.moveCamera] call.
-     *
-     * In MapLibre, programmatic camera moves can internally disrupt the
-     * LocationComponent's camera-tracking state even though
-     * [LocationComponent.cameraMode] still reports the correct value.  Calling this
-     * method at the end of every animation re-arms tracking so rotation and
-     * position-following continue to work.
-     *
-     * No-ops when tracking is deliberately disabled (panning mode, EDIT mode, or
-     * [CameraMode.NONE]).
-     */
-    private fun reassertTrackingMode() {
-        val uiState = viewModel.uiState.value
-        if (uiState.isInPanningMode || uiState.mode == AppMode.EDIT) return
-        val lc = map?.locationComponent?.takeIf { it.isLocationComponentActivated } ?: return
-        if (lc.cameraMode == CameraMode.NONE) return
-        // MapLibre 11 treats reassigning the same cameraMode value as a no-op and never
-        // re-engages tracking after a programmatic animateCamera() call.  Cycling through
-        // NONE forces a real mode transition, re-attaching both position and heading following.
-        lc.cameraMode = CameraMode.NONE
-        lc.cameraMode = trackingCameraMode()
-        lc.renderMode  = trackingRenderMode()
+    /** Maps shortest angular distance (0–180°) to animation duration (100–600 ms). */
+    private fun angularDuration(from: Double, to: Double): Int {
+        val delta = Math.abs(((to - from + 540.0) % 360.0) - 180.0)
+        return (100 + (delta / 180.0) * 500).toInt()
     }
 
     // ── Mode management ───────────────────────────────────────────────────────
@@ -1000,55 +943,55 @@ class MapActivity : ComponentActivity() {
     /**
      * Apply (or animate) camera tilt and vertical focal-point offset for [mode].
      *
-     * Navigate mode:
-     *   - 30° tilt — gives a perspective view of the road ahead.
-     *   - Top padding = 60 % of screen height — moves the GPS anchor point to
-     *     80 % from the top (30 % lower than the default screen centre), so
-     *     more of the road ahead is visible above the user's position.
+     * Navigate mode: 45° tilt with top padding that anchors the GPS dot at ~90 %
+     * from the top, keeping more of the road ahead visible.  When [animated] is
+     * true the camera flies to the current GPS position (with zoom scaling for
+     * distance) before settling at the final tilt and padding.
      *
-     * All other modes: flat (0° tilt), no padding.
-     *
-     * Both tilt and padding are delivered as a single [CameraPosition] update
-     * so MapLibre interpolates them together in one smooth 400 ms animation.
+     * All other modes: flat (0° tilt), no padding, 400 ms smooth animation.
      */
     private fun applyCameraForMode(mode: AppMode, animated: Boolean) {
         val m = map ?: return
         val screenH = resources.displayMetrics.heightPixels
 
+        if (mode == AppMode.NAVIGATE && animated) {
+            // Fly to GPS position with tilt and focal-point padding applied at arrival.
+            // flyToLocation uses the two-phase zoom when far from GPS, a single smooth
+            // animation when nearby — the tilt/padding are always set in the final phase.
+            val gpsTarget = m.locationComponent.lastKnownLocation
+                ?.let { LatLng(it.latitude, it.longitude) }
+                ?: m.cameraPosition.target
+                ?: return
+            flyToLocation(
+                m, gpsTarget,
+                zoom    = 17.0,
+                tilt    = 45.0,
+                padding = doubleArrayOf(0.0, screenH * 0.5, 0.0, 0.0),
+                enableZoom = true,
+            )
+            return
+        }
+
         val targetTilt: Double
         val topPad: Double
         when (mode) {
-            AppMode.NAVIGATE -> {
-                targetTilt = 45.0
-                topPad     = screenH * 0.8   // GPS dot at ~90 % from top = 40 % below centre
-            }
-            else -> {
-                targetTilt = 0.0
-                topPad     = 0.0
-            }
+            AppMode.NAVIGATE -> { targetTilt = 45.0; topPad = screenH * 0.5 }
+            else             -> { targetTilt = 0.0;  topPad = 0.0 }
         }
 
         val cur    = m.cameraPosition
         val newPos = CameraPosition.Builder()
             .target(cur.target)
-            .zoom(cur.zoom)
+            .zoom(if (mode == AppMode.NAVIGATE) 17.0 else cur.zoom)
             .bearing(cur.bearing)
             .tilt(targetTilt)
             .padding(doubleArrayOf(0.0, topPad, 0.0, 0.0))
             .build()
 
         if (animated) {
-            m.animateCamera(
-                CameraUpdateFactory.newCameraPosition(newPos),
-                400,
-                object : MapLibreMap.CancelableCallback {
-                    override fun onFinish() { reassertTrackingMode() }
-                    override fun onCancel() { reassertTrackingMode() }
-                },
-            )
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(newPos), 400)
         } else {
             m.moveCamera(CameraUpdateFactory.newCameraPosition(newPos))
-            reassertTrackingMode()
         }
     }
 
@@ -1240,14 +1183,6 @@ class MapActivity : ComponentActivity() {
                 LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
             )
             isLocationComponentEnabled = true
-            val uiState = viewModel.uiState.value
-            val shouldTrack = !uiState.isInPanningMode
-                && uiState.mode != AppMode.EDIT
-                && cameraMode != CameraMode.NONE
-            if (shouldTrack) {
-                cameraMode = trackingCameraMode()
-                renderMode = trackingRenderMode()
-            }
         }
     }
 
@@ -1346,11 +1281,13 @@ class MapActivity : ComponentActivity() {
      * (e.g. only [MapUiState.isInPanningMode] changing) do the minimum work.
      */
     private fun renderUiState(new: MapUiState, old: MapUiState?) {
-        val modeChanged    = old?.mode != new.mode
-        val panningChanged = old?.isInPanningMode != new.isInPanningMode
-        val menuChanged    = old?.isMenuOpen != new.isMenuOpen
-        val searchChanged  = old?.isSearchOpen != new.isSearchOpen
-        val northUpChanged = old?.isNorthUp != new.isNorthUp
+        val modeChanged         = old?.mode != new.mode
+        val panningChanged      = old?.isInPanningMode != new.isInPanningMode
+        val menuChanged         = old?.isMenuOpen != new.isMenuOpen
+        val searchChanged       = old?.isSearchOpen != new.isSearchOpen
+        val settingsMenuChanged = old?.isInSettingsMenu != new.isInSettingsMenu
+        val debugMenuChanged    = old?.isInDebugMenu != new.isInDebugMenu
+        val debugModeChanged    = old?.isDebugMode != new.isDebugMode
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1360,50 +1297,12 @@ class MapActivity : ComponentActivity() {
             else                                            -> View.GONE
         }
 
-        // ── Camera tracking ────────────────────────────────────────────────────
-        // Only update when something that affects tracking actually changed.
-        if (modeChanged || panningChanged || northUpChanged) {
-            when {
-                // Entering NAVIGATE always re-enables GPS tracking (may override panning).
-                modeChanged && new.mode == AppMode.NAVIGATE -> {
-                    map?.locationComponent?.cameraMode = trackingCameraMode()
-                    map?.locationComponent?.renderMode  = trackingRenderMode()
-                }
-
-                // Entering EDIT always disables tracking (panning state also cleared by ViewModel).
-                modeChanged && new.mode == AppMode.EDIT ->
-                    map?.locationComponent?.cameraMode = CameraMode.NONE
-
-                // Starting to pan (any non-EDIT mode): suspend tracking.
-                panningChanged && new.isInPanningMode ->
-                    map?.locationComponent?.cameraMode = CameraMode.NONE
-
-                // Stopping panning: re-enable tracking and fly back to current position.
-                panningChanged && !new.isInPanningMode && old?.isInPanningMode == true -> {
-                    val m   = map
-                    val loc = m?.locationComponent?.lastKnownLocation
-                    if (m != null && loc != null) {
-                        m.locationComponent.cameraMode = trackingCameraMode()
-                        m.locationComponent.renderMode  = trackingRenderMode()
-                        flyToLocation(m, LatLng(loc.latitude, loc.longitude))
-                    }
-                }
-
-                // Entering EXPLORE: always re-enable tracking.
-                //
-                // EDIT sets cameraMode = NONE, and reassertTrackingMode() bails early when
-                // it sees NONE — so without this branch, rotation stays permanently broken
-                // after any EDIT-mode visit.  Re-enabling here is also safe when coming from
-                // NAVIGATE (where tracking was already on) — it is just a harmless no-op.
-                modeChanged && new.mode == AppMode.EXPLORE -> {
-                    map?.locationComponent?.cameraMode = trackingCameraMode()
-                    map?.locationComponent?.renderMode  = trackingRenderMode()
-                }
-
-                // North-up ↔ heading-up toggle: switch camera mode while keeping tracking.
-                // reassertTrackingMode() does the NONE→new-mode dance needed by MapLibre 11.
-                northUpChanged && !new.isInPanningMode && new.mode != AppMode.EDIT ->
-                    reassertTrackingMode()
+        // ── Fly-to on panning exit ─────────────────────────────────────────────
+        if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true) {
+            val m   = map
+            val loc = m?.locationComponent?.lastKnownLocation
+            if (m != null && loc != null) {
+                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
             }
         }
 
@@ -1429,10 +1328,50 @@ class MapActivity : ComponentActivity() {
             if (new.isMenuOpen) {
                 runOpenMenuAnimation()
             } else {
+                // Closing: reset debug layer views first (outermost), then settings layer.
+                if (old.isInDebugMenu) {
+                    debugMenuAnimator?.cancel()
+                    menuPanelResult.debugGhostHeader.visibility = View.GONE
+                    menuPanelResult.debugGhostHeader.alpha = 0f
+                    menuPanelResult.debugContent.visibility = View.GONE
+                    menuPanelResult.debugContent.alpha = 0f
+                }
+                if (old.isInSettingsMenu) {
+                    settingsMenuAnimator?.cancel()
+                    menuPanelResult.settingsGhostHeader.visibility = View.GONE
+                    menuPanelResult.settingsGhostHeader.alpha = 0f
+                    menuPanelResult.settingsContent.visibility = View.GONE
+                    menuPanelResult.settingsContent.alpha = 0f
+                    menuPanelResult.mainMenuScroll.visibility = View.VISIBLE
+                    menuPanelResult.mainMenuScroll.alpha = 1f
+                    menuPanelResult.settingsRowIcon.alpha = 1f
+                    hamburgerBars.forEach { it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
+                }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
                 runCloseMenuAnimation(instant = modeChanged)
             }
+        }
+
+        // ── Settings submenu transition ────────────────────────────────────────
+        // Only animate when the menu is open and the settings layer changes.
+        if (old != null && settingsMenuChanged && new.isMenuOpen) {
+            if (new.isInSettingsMenu) runEnterSettingsAnimation()
+            else runExitSettingsAnimation()
+        }
+
+        // ── Debug submenu transition ───────────────────────────────────────────
+        // Only animate when the menu is open and the debug layer changes.
+        if (old != null && debugMenuChanged && new.isMenuOpen) {
+            if (new.isInDebugMenu) runEnterDebugAnimation()
+            else runExitDebugAnimation()
+        }
+
+        // ── Debug overlay ──────────────────────────────────────────────────────
+        if (debugModeChanged || old == null) {
+            osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
+            menuPanelResult.debugToggleLabel.text =
+                "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -1519,14 +1458,7 @@ class MapActivity : ComponentActivity() {
         val newCameraScreen = PointF(w / 2f + dx, h / 2f + dy)
         val newCameraTarget = m.projection.fromScreenLocation(newCameraScreen)
 
-        m.animateCamera(
-            CameraUpdateFactory.newLatLngZoom(newCameraTarget, m.cameraPosition.zoom),
-            350,
-            object : MapLibreMap.CancelableCallback {
-                override fun onFinish() { reassertTrackingMode() }
-                override fun onCancel() { reassertTrackingMode() }
-            },
-        )
+        flyToLocation(m, newCameraTarget, enableZoom = false)
     }
 
     private fun hideSearchOverlay() {
@@ -1639,8 +1571,8 @@ class MapActivity : ComponentActivity() {
      * The hamburger icon rotates 90° during the expansion with a staggered cascade.
      */
     private fun runOpenMenuAnimation() {
-        menuDismissOverlay.visibility = View.VISIBLE
         menuAnimator?.cancel()
+        menuDismissOverlay.visibility = View.VISIBLE
 
         val d      = resources.displayMetrics.density
         val panelW = (280 * d).toInt()
@@ -1648,9 +1580,11 @@ class MapActivity : ComponentActivity() {
         val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
         val startW    = lp.width
         val startH    = lp.height
-        // Capture each bar's current rotation so the animator can interpolate from
-        // wherever the animation was interrupted (e.g. rapid open→close→open).
-        val barStartR = FloatArray(3) { hamburgerBars[it].rotation }
+        // Capture each bar's current rotation and scaleX so the animator can
+        // interpolate from wherever the animation was interrupted (e.g. rapid
+        // open→close→open, or close from back-arrow state).
+        val barStartR  = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartSX = FloatArray(3) { hamburgerBars[it].scaleX }
         // Top bar is fastest: it reaches 90° at ~65% of the animation, giving a
         // staggered cascade where bar 0 leads and bar 2 trails.
         val openSpeeds = floatArrayOf(1.4f, 1.2f, 1.0f)
@@ -1666,6 +1600,7 @@ class MapActivity : ComponentActivity() {
                 hamburgerBars.forEachIndexed { i, bar ->
                     val p = (t * openSpeeds[i]).coerceAtMost(1f)
                     bar.rotation = barStartR[i] + (90f - barStartR[i]) * p
+                    bar.scaleX   = barStartSX[i] + (1f - barStartSX[i]) * p
                 }
             }
             start()
@@ -1692,14 +1627,17 @@ class MapActivity : ComponentActivity() {
             lp.width  = btnSz
             lp.height = btnSz
             menuPanel.layoutParams = lp
-            hamburgerBars.forEach { it.rotation = 0f }
+            hamburgerBars.forEach { it.rotation = 0f; it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
             menuDismissOverlay.visibility = View.GONE
             return
         }
 
-        val startW    = lp.width
-        val startH    = lp.height
-        val barStartR = FloatArray(3) { hamburgerBars[it].rotation }
+        val startW      = lp.width
+        val startH      = lp.height
+        val barStartR   = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartS   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTY  = FloatArray(3) { hamburgerBars[it].translationY }
         // Reverse of open: bottom bar now fastest, top bar slowest.
         val closeSpeeds = floatArrayOf(1.0f, 1.2f, 1.4f)
 
@@ -1713,7 +1651,10 @@ class MapActivity : ComponentActivity() {
                 menuPanel.layoutParams = lp
                 hamburgerBars.forEachIndexed { i, bar ->
                     val p = (t * closeSpeeds[i]).coerceAtMost(1f)
-                    bar.rotation = barStartR[i] + (0f - barStartR[i]) * p
+                    bar.rotation     = barStartR[i]  + (0f - barStartR[i])  * p
+                    bar.scaleX       = barStartS[i]  + (1f - barStartS[i])  * p
+                    bar.translationX = barStartTX[i] + (0f - barStartTX[i]) * p
+                    bar.translationY = barStartTY[i] + (0f - barStartTY[i]) * p
                 }
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -1744,13 +1685,372 @@ class MapActivity : ComponentActivity() {
         return panelFullHeight
     }
 
+    /**
+     * Returns the settings panel height in pixels (64dp header + settings items).
+     *
+     * Measured on first call by forcing a layout pass on settingsContent.
+     * Cached thereafter.
+     */
+    private fun getOrMeasureSettingsHeight(): Int {
+        if (settingsMenuHeight > 0) return settingsMenuHeight
+        val d      = resources.displayMetrics.density
+        val itemH  = (64 * d).toInt()
+        val panelW = (280 * d).toInt()
+        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec  = View.MeasureSpec.makeMeasureSpec(
+            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
+        )
+        menuPanelResult.settingsContent.measure(wSpec, hSpec)
+        settingsMenuHeight = itemH + menuPanelResult.settingsContent.measuredHeight
+        return settingsMenuHeight
+    }
+
+    /**
+     * Returns the debug panel height in pixels (64dp header + debug items).
+     *
+     * Measured on first call by forcing a layout pass on debugContent.
+     * Cached thereafter.
+     */
+    private fun getOrMeasureDebugHeight(): Int {
+        if (debugMenuHeight > 0) return debugMenuHeight
+        val d      = resources.displayMetrics.density
+        val itemH  = (64 * d).toInt()
+        val panelW = (280 * d).toInt()
+        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec  = View.MeasureSpec.makeMeasureSpec(
+            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
+        )
+        menuPanelResult.debugContent.measure(wSpec, hSpec)
+        debugMenuHeight = itemH + menuPanelResult.debugContent.measuredHeight
+        return debugMenuHeight
+    }
+
+    /**
+     * Animate from the Settings submenu into the Debug submenu layer.
+     *
+     * Sequence (all concurrent, [Anim.NORMAL] duration):
+     * - Debug ghost header slides up from Debug row position (y=1×itemH) to header (y=0) and fades in.
+     * - Settings content and Settings ghost header fade out.
+     * - Debug content fades in (starts at t=0.3 to stagger behind the fade-out).
+     * - Panel height shrinks from settings height to debug height.
+     * - Hamburger bars stay in back-arrow shape (already set).
+     */
+    private fun runEnterDebugAnimation() {
+        debugMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val debugGhost      = menuPanelResult.debugGhostHeader
+        val settingsGhost   = menuPanelResult.settingsGhostHeader
+        val settingsContent = menuPanelResult.settingsContent
+        val debugContent    = menuPanelResult.debugContent
+
+        val ghostStartY = itemH.toFloat()
+        debugGhost.translationY = ghostStartY
+        debugGhost.alpha        = 0f
+        debugGhost.visibility   = View.VISIBLE
+
+        debugContent.visibility = View.VISIBLE
+        debugContent.alpha      = 0f
+
+        val targetH = getOrMeasureDebugHeight()
+        val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH  = lp.height
+
+        debugMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams     = lp
+                debugGhost.translationY    = ghostStartY * (1f - t)
+                debugGhost.alpha           = t
+                settingsGhost.alpha        = 1f - t
+                settingsContent.alpha      = 1f - t
+                debugContent.alpha         = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    settingsGhost.visibility   = View.GONE
+                    settingsContent.visibility = View.GONE
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Animate back from the Debug submenu to the Settings layer.
+     *
+     * Reverses [runEnterDebugAnimation].
+     */
+    private fun runExitDebugAnimation() {
+        debugMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val debugGhost      = menuPanelResult.debugGhostHeader
+        val settingsGhost   = menuPanelResult.settingsGhostHeader
+        val settingsContent = menuPanelResult.settingsContent
+        val debugContent    = menuPanelResult.debugContent
+
+        val ghostEndY = itemH.toFloat()
+        settingsGhost.alpha      = 0f
+        settingsGhost.visibility = View.VISIBLE
+        settingsContent.alpha      = 0f
+        settingsContent.visibility = View.VISIBLE
+
+        val targetH = getOrMeasureSettingsHeight()
+        val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH  = lp.height
+
+        debugMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams     = lp
+                debugGhost.translationY    = ghostEndY * t
+                debugGhost.alpha           = 1f - t
+                settingsGhost.alpha        = t
+                settingsContent.alpha      = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                debugContent.alpha         = (1f - t / 0.7f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    debugGhost.visibility   = View.GONE
+                    debugGhost.alpha        = 0f
+                    debugContent.visibility = View.GONE
+                    debugContent.alpha      = 0f
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Animate from the main menu into the settings submenu layer.
+     *
+     * Sequence (all concurrent, [Anim.NORMAL] duration):
+     * - Ghost header slides up from list position (y=6×itemH) to header (y=0) and fades in.
+     * - Main menu ScrollView fades out.
+     * - Settings content fades in (starts at t=0.3 to stagger behind the fade-out).
+     * - Panel height shrinks from full-menu height to settings height.
+     * - Hamburger bars transform to back arrow (←):
+     *     bar 0 → −45°, scaleX → 0.5   (upper arrowhead `/`)
+     *     bar 1 → 0°,   scaleX → 1.0   (horizontal body)
+     *     bar 2 → +45°, scaleX → 0.5   (lower arrowhead `\`)
+     * - Settings row icon fades out so it appears to teleport from left to right
+     *   (the ghost header shows the icon on the right side).
+     */
+    private fun runEnterSettingsAnimation() {
+        settingsMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost           = menuPanelResult.settingsGhostHeader
+        val scroll          = menuPanelResult.mainMenuScroll
+        val settingsContent = menuPanelResult.settingsContent
+        val rowIcon         = menuPanelResult.settingsRowIcon
+
+        val ghostStartY = (6 * itemH).toFloat()
+        ghost.translationY = ghostStartY
+        ghost.alpha        = 0f
+        ghost.visibility   = View.VISIBLE
+
+        settingsContent.visibility = View.VISIBLE
+        settingsContent.alpha      = 0f
+
+        val targetH   = getOrMeasureSettingsHeight()
+        val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH    = lp.height
+
+        val barTargetRot    = floatArrayOf(-45f, 0f, +45f)
+        val barTargetScale  = floatArrayOf(0.5f, 1.0f, 0.5f)
+        val barTargetTransX = floatArrayOf(-1.5f * d, +2f * d, -1.5f * d)
+        val barTargetTransY = floatArrayOf(+1.5f * d,  0f,     -1.5f * d)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
+        val iconStartAlpha = rowIcon.alpha
+
+        settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY = ghostStartY * (1f - t)
+                ghost.alpha        = t
+                scroll.alpha       = 1f - t
+                settingsContent.alpha = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                // Icon fades out so it appears to teleport to the right side of the header.
+                rowIcon.alpha = iconStartAlpha * (1f - t)
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    scroll.visibility = View.GONE
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Animate back from the settings submenu layer to the main menu.
+     *
+     * Reverses [runEnterSettingsAnimation]: ghost header slides back down, scroll fades in,
+     * settings content fades out, panel expands to full height, bars return to 90° (open state).
+     */
+    private fun runExitSettingsAnimation() {
+        settingsMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost           = menuPanelResult.settingsGhostHeader
+        val scroll          = menuPanelResult.mainMenuScroll
+        val settingsContent = menuPanelResult.settingsContent
+        val rowIcon         = menuPanelResult.settingsRowIcon
+
+        val ghostEndY = (6 * itemH).toFloat()
+        scroll.alpha      = 0f
+        scroll.visibility = View.VISIBLE
+
+        val targetH   = getOrMeasurePanelHeight()
+        val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startH    = lp.height
+
+        val barTargetRot    = floatArrayOf(90f, 90f, 90f)
+        val barTargetScale  = floatArrayOf(1.0f, 1.0f, 1.0f)
+        val barTargetTransX = floatArrayOf(0f, 0f, 0f)
+        val barTargetTransY = floatArrayOf(0f, 0f, 0f)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
+        val iconStartAlpha = rowIcon.alpha  // typically 0f (was faded out on enter)
+
+        settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY     = ghostEndY * t
+                ghost.alpha            = 1f - t
+                scroll.alpha           = t
+                settingsContent.alpha  = (1f - t / 0.7f).coerceIn(0f, 1f)
+                // Fade the settings row icon back in as we return to the main menu.
+                rowIcon.alpha = iconStartAlpha + (1f - iconStartAlpha) * t
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    ghost.visibility           = View.GONE
+                    ghost.alpha                = 0f
+                    settingsContent.visibility = View.GONE
+                    settingsContent.alpha      = 0f
+                    rowIcon.alpha              = 1f
+                }
+            })
+            start()
+        })
+    }
+
     // ── Self-update ───────────────────────────────────────────────────────────
+
+    /**
+     * Silently checks for an update at most once every 24 hours on resume.
+     *
+     * - Requires a validated internet connection ([ConnectivityChecker.isStableOnline]).
+     * - If an update has already been found this session, just (re-)starts the animation.
+     * - The 24 h rate-limit only applies to automatic checks; manual taps bypass it.
+     * - On success, sets [pendingUpdateUrl] and starts [startUpdateAvailableAnimation].
+     */
+    private fun checkUpdateIfDue() {
+        // Already found an update this session — restore the animation only.
+        pendingUpdateUrl?.let { url ->
+            AppUpdater.versionHashFromUrl(url)?.let { hash -> startUpdateAvailableAnimation(hash) }
+            return
+        }
+        val lastCheck = prefs.getLong("last_update_check_ms", 0L)
+        if (System.currentTimeMillis() - lastCheck < 24 * 60 * 60 * 1_000L) return
+        if (!ConnectivityChecker.isStableOnline(this)) return
+
+        lifecycleScope.launch {
+            prefs.edit().putLong("last_update_check_ms", System.currentTimeMillis()).apply()
+            val url = appUpdater.checkForUpdate() ?: return@launch
+            appUpdater.cleanupStaleFiles(url)
+            pendingUpdateUrl = url
+            AppUpdater.versionHashFromUrl(url)?.let { hash -> startUpdateAvailableAnimation(hash) }
+        }
+    }
+
+    /**
+     * Colours the version card with the blue accent and starts the blink loop:
+     * old hash (5 s) → 500 ms fade → [newHash] (2 s) → 500 ms fade → repeat.
+     */
+    private fun startUpdateAvailableAnimation(newHash: String) {
+        stopUpdateAvailableAnimation()
+        val d = resources.displayMetrics.density
+        versionCardView.background = GradientDrawable().apply {
+            setColor(Color.argb(220, 0, 80, 160))
+            cornerRadius = 16f * d
+        }
+        updateAnimJob = lifecycleScope.launch {
+            while (isActive) {
+                versionCardView.alpha = 1f
+                versionCardView.text = BuildConfig.GIT_COMMIT
+                delay(5_000)
+
+                versionCardView.animate().alpha(0f).setDuration(500).start()
+                delay(500)
+                versionCardView.text = newHash
+                versionCardView.animate().alpha(1f).setDuration(200).start()
+                delay(2_000)
+
+                versionCardView.animate().alpha(0f).setDuration(500).start()
+                delay(500)
+                versionCardView.text = BuildConfig.GIT_COMMIT
+                versionCardView.animate().alpha(1f).setDuration(200).start()
+            }
+        }
+    }
+
+    /** Cancels the update blink loop and restores the card to full opacity. */
+    private fun stopUpdateAvailableAnimation() {
+        updateAnimJob?.cancel()
+        updateAnimJob = null
+        versionCardView.animate().cancel()
+        versionCardView.alpha = 1f
+    }
 
     /**
      * Tap handler for the version card.
      *
-     * Delegates network and file I/O to [AppUpdater]; this method only manages
-     * the card label and the download progress overlay.
+     * **Path A — card is flashing (update already found):**
+     * Starts the download immediately without re-checking GitHub.
+     * On cancel or error the animation resumes, since the update is still available.
+     *
+     * **Path B — card is not flashing (manual check):**
+     * Shows "checking…", calls [AppUpdater.checkForUpdate], then either "up to date"
+     * or starts the download.  Not rate-limited — always runs when tapped.
      */
     private fun onVersionCardTapped() {
         // If downloading with the overlay hidden, re-show it.
@@ -1760,7 +2060,38 @@ class MapActivity : ComponentActivity() {
             return
         }
 
-        // Ignore taps while already busy (text is not the commit hash).
+        // ── Path A: update already found, card is flashing ───────────────────
+        val url = pendingUpdateUrl
+        if (url != null && downloadJob?.isActive != true) {
+            stopUpdateAvailableAnimation()
+            resetVersionCard()
+            showDownloadOverlay()
+            downloadJob = lifecycleScope.launch {
+                try {
+                    val apk = appUpdater.downloadApk(url) { progress ->
+                        lastDownloadProgress = progress
+                        updateDownloadUi(progress)
+                    }
+                    pendingUpdateUrl = null
+                    dismissDownloadOverlay()
+                    resetVersionCard()
+                    appUpdater.installApk(apk)
+                } catch (_: CancellationException) {
+                    dismissDownloadOverlay()
+                    resetVersionCard()
+                    AppUpdater.versionHashFromUrl(url)?.let { startUpdateAvailableAnimation(it) }
+                } catch (_: Exception) {
+                    dismissDownloadOverlay()
+                    versionCardView.text = "error"
+                    delay(2_000)
+                    resetVersionCard()
+                    AppUpdater.versionHashFromUrl(url)?.let { startUpdateAvailableAnimation(it) }
+                }
+            }
+            return
+        }
+
+        // ── Path B: manual check (card not flashing, not downloading) ─────────
         if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
         versionCardView.text = "checking…"
 
@@ -1773,8 +2104,8 @@ class MapActivity : ComponentActivity() {
                 return@launch
             }
 
-            // Remove stale files from a different update.
             appUpdater.cleanupStaleFiles(apkUrl)
+            pendingUpdateUrl = apkUrl
 
             showDownloadOverlay()
             downloadJob = launch {
@@ -1783,18 +2114,20 @@ class MapActivity : ComponentActivity() {
                         lastDownloadProgress = progress
                         updateDownloadUi(progress)
                     }
+                    pendingUpdateUrl = null
                     dismissDownloadOverlay()
                     resetVersionCard()
                     appUpdater.installApk(apk)
                 } catch (_: CancellationException) {
-                    // User cancelled — partial file kept for resume.
                     dismissDownloadOverlay()
                     resetVersionCard()
+                    AppUpdater.versionHashFromUrl(apkUrl)?.let { startUpdateAvailableAnimation(it) }
                 } catch (_: Exception) {
                     dismissDownloadOverlay()
                     versionCardView.text = "error"
                     delay(2_000)
                     resetVersionCard()
+                    AppUpdater.versionHashFromUrl(apkUrl)?.let { startUpdateAvailableAnimation(it) }
                 }
             }
         }
@@ -1842,6 +2175,7 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun resetVersionCard() {
+        stopUpdateAvailableAnimation()
         val d = resources.displayMetrics.density
         versionCardView.text = BuildConfig.GIT_COMMIT
         versionCardView.background = GradientDrawable().apply {
@@ -1951,35 +2285,55 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Animate the camera to [target] at [zoom].
+     * Animate the camera to [target].
      *
-     * [zoom] defaults to the current camera zoom — callers that want a specific
-     * level (e.g. re-centering from a cold state) must pass one explicitly.
-     *
+     * [zoom] defaults to the current camera zoom.
+     * [tilt] defaults to the current camera tilt — pass a value to override
+     *   (e.g. 45.0 for NAVIGATE mode).
+     * [padding] defaults to the current camera padding — pass a value to override.
+     * [enableZoom] controls whether the two-phase zoom-out/zoom-in animation plays.
+     *   Pass `false` to pan without changing zoom (e.g. search-result pan or mode
+     *   transitions that should not zoom).
      * [onFinish] is invoked when the animation completes (or is cancelled).
-     * Used by [flyToCurrentLocationThen] to chain a mode transition after the fly.
      *
-     * If the target is within FLYTO_THRESHOLD_M the camera eases directly.
-     * If farther away it first animates to a context zoom that shows enough
-     * geography to orient the user, then eases in to the target — the same
-     * "zoom out → pan → zoom in" pattern used by most navigation apps.
+     * When [enableZoom] is true and the target is beyond FLYTO_THRESHOLD_M, the
+     * camera first zooms to a context level that shows the route geography, then
+     * eases in to [zoom] at [target] — the same "zoom out → pan → zoom in"
+     * pattern used by most navigation apps.  For nearby targets the camera eases
+     * directly without the intermediate zoom.
+     *
+     * When [enableZoom] is false a single 600 ms animation is used regardless of
+     * distance, keeping the current zoom level throughout.
      */
     private fun flyToLocation(
         m: MapLibreMap,
         target: LatLng,
         zoom: Double = m.cameraPosition.zoom,
+        tilt: Double = m.cameraPosition.tilt,
+        padding: DoubleArray? = null,
+        enableZoom: Boolean = true,
         onFinish: (() -> Unit)? = null,
     ) {
+        val resolvedPadding = padding ?: m.cameraPosition.padding ?: doubleArrayOf(0.0, 0.0, 0.0, 0.0)
         val from     = m.cameraPosition.target ?: run { onFinish?.invoke(); return }
         val distance = from.distanceTo(target)
 
-        if (distance < FLYTO_THRESHOLD_M) {
+        // Build the final CameraPosition (used by both the direct and phase-2 paths).
+        fun finalPos() = CameraPosition.Builder()
+            .target(target)
+            .zoom(zoom)
+            .tilt(tilt)
+            .bearing(m.cameraPosition.bearing)
+            .padding(resolvedPadding)
+            .build()
+
+        if (!enableZoom || distance < FLYTO_THRESHOLD_M) {
             m.animateCamera(
-                CameraUpdateFactory.newLatLngZoom(target, zoom),
+                CameraUpdateFactory.newCameraPosition(finalPos()),
                 600,
                 object : MapLibreMap.CancelableCallback {
-                    override fun onFinish() { reassertTrackingMode(); onFinish?.invoke() }
-                    override fun onCancel() { reassertTrackingMode(); onFinish?.invoke() }
+                    override fun onFinish() { onFinish?.invoke() }
+                    override fun onCancel() { onFinish?.invoke() }
                 },
             )
             return
@@ -2000,18 +2354,17 @@ class MapActivity : ComponentActivity() {
             600,
             object : MapLibreMap.CancelableCallback {
                 override fun onFinish() {
-                    reassertTrackingMode()
-                    // Phase 2: ease into the final zoom level.
+                    // Phase 2: ease into the final zoom, tilt, and padding.
                     m.animateCamera(
-                        CameraUpdateFactory.newLatLngZoom(target, zoom),
+                        CameraUpdateFactory.newCameraPosition(finalPos()),
                         500,
                         object : MapLibreMap.CancelableCallback {
-                            override fun onFinish() { reassertTrackingMode(); onFinish?.invoke() }
-                            override fun onCancel() { reassertTrackingMode(); onFinish?.invoke() }
+                            override fun onFinish() { onFinish?.invoke() }
+                            override fun onCancel() { onFinish?.invoke() }
                         },
                     )
                 }
-                override fun onCancel() { reassertTrackingMode(); onFinish?.invoke() }
+                override fun onCancel() { onFinish?.invoke() }
             },
         )
     }
@@ -2114,6 +2467,383 @@ class MapActivity : ComponentActivity() {
         )
     }
 
+    // ── Benchmark ─────────────────────────────────────────────────────────────
+
+    private data class FpsStats(val avg: Float, val min: Float, val max: Float)
+
+    private data class BenchmarkResult(
+        val zoom: Int,
+        val glStats: FpsStats,
+        val mainAvg: Float, val mainMin: Float, val mainMax: Float,
+        val dtAvgMs: Long, val dtMinMs: Long, val dtMaxMs: Long,
+    )
+
+    /**
+     * Computes per-second FPS windows from a list of GL frame timestamps (nanoseconds).
+     * Returns average, min, and max across all complete 1-second windows.
+     */
+    private fun computeFpsStats(nanos: List<Long>): FpsStats {
+        if (nanos.size < 2) return FpsStats(0f, 0f, 0f)
+        val windowFps = mutableListOf<Float>()
+        var windowStart = nanos.first()
+        var count = 0
+        for (t in nanos.drop(1)) {
+            count++
+            val elapsed = t - windowStart
+            if (elapsed >= 1_000_000_000L) {
+                windowFps.add(count * 1_000_000_000f / elapsed)
+                count = 0
+                windowStart = t
+            }
+        }
+        if (windowFps.isEmpty()) {
+            val totalFps = (nanos.size - 1) * 1_000_000_000f / (nanos.last() - nanos.first())
+            return FpsStats(totalFps, totalFps, totalFps)
+        }
+        return FpsStats(
+            avg = windowFps.average().toFloat(),
+            min = windowFps.minOrNull() ?: 0f,
+            max = windowFps.maxOrNull() ?: 0f,
+        )
+    }
+
+    /**
+     * Closes the menu and runs pan benchmarks at zoom levels 8, 10, 14, 16.
+     *
+     * Uses central Tokyo (Shinjuku) as the benchmark location — one of the
+     * densest OSM-mapped areas globally (roads, buildings, transit, POIs).
+     * Camera is tilted 45° so the perspective frustum covers more geometry,
+     * maximising rendering load.
+     *
+     * For each zoom level:
+     *  1. Evicts the tile disk cache so tiles must be fetched fresh.
+     *  2. Moves the camera to Shinjuku at the target zoom with 45° tilt.
+     *  3. Pans east continuously for 5 seconds while collecting GL FPS and
+     *     main-thread FPS / frame-dt metrics.
+     *
+     * Results are shown in a custom overlay when all four runs complete.
+     */
+    private fun startBenchmark() {
+        val m = map ?: return
+        benchmarkJob?.cancel()
+        closeMenu()
+        showBenchmarkProgressOverlay()
+
+        benchmarkJob = lifecycleScope.launch {
+            val results = mutableListOf<BenchmarkResult>()
+
+            // Central Tokyo / Shinjuku — extremely dense OSM data.
+            val startTarget = LatLng(35.6896, 139.7006)
+            val benchTilt = 45.0
+
+            for (zoom in listOf(8, 10, 14, 16)) {
+                updateBenchmarkStatus("Zoom $zoom / 16…")
+
+                // Clear tile cache on IO thread.
+                withContext(Dispatchers.IO) { TileCache.clearCache() }
+
+                // Move to start position at this zoom with 45° tilt (instant).
+                m.moveCamera(CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder()
+                        .target(startTarget)
+                        .zoom(zoom.toDouble())
+                        .tilt(benchTilt)
+                        .build()
+                ))
+                delay(800)
+
+                // Prepare collectors.
+                val glNanos = mutableListOf<Long>()
+                benchmarkGlFrameNanos = glNanos
+
+                val glListener = MapView.OnDidFinishRenderingFrameListener { _, _, _ ->
+                    benchmarkGlFrameNanos?.add(System.nanoTime())
+                }
+                mapView.addOnDidFinishRenderingFrameListener(glListener)
+
+                val mainFpsSamples = mutableListOf<Int>()
+                val dtMsSamples    = mutableListOf<Long>()
+                val sampleJob = launch {
+                    while (isActive) {
+                        delay(200)
+                        mainFpsSamples.add(osdLastFps)
+                        dtMsSamples.add(osdLastDtMs)
+                    }
+                }
+
+                // Pan east continuously for 5 seconds in 50ms steps.
+                // Target 600 logical pixels/second. In web-mercator with 512px
+                // tiles, one logical pixel = 360 / (512 * 2^zoom) degrees of
+                // longitude (independent of latitude).
+                val degPerPx = 360.0 / (512.0 * Math.pow(2.0, zoom.toDouble()))
+                val degPerStep = 600.0 * degPerPx * 0.05  // 50ms step
+                val benchEnd = System.currentTimeMillis() + 5_000L
+                var lng = startTarget.longitude
+                while (System.currentTimeMillis() < benchEnd) {
+                    lng += degPerStep
+                    m.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder()
+                                .target(LatLng(startTarget.latitude, lng))
+                                .zoom(zoom.toDouble())
+                                .tilt(benchTilt)
+                                .build()
+                        ),
+                        100,
+                    )
+                    delay(50)
+                }
+
+                sampleJob.cancel()
+                mapView.removeOnDidFinishRenderingFrameListener(glListener)
+                benchmarkGlFrameNanos = null
+
+                val mainAvg = if (mainFpsSamples.isEmpty()) 0f else mainFpsSamples.average().toFloat()
+                val mainMin = mainFpsSamples.minOrNull()?.toFloat() ?: 0f
+                val mainMax = mainFpsSamples.maxOrNull()?.toFloat() ?: 0f
+                val dtAvg   = if (dtMsSamples.isEmpty()) 0L else dtMsSamples.average().toLong()
+                val dtMin   = dtMsSamples.minOrNull() ?: 0L
+                val dtMax   = dtMsSamples.maxOrNull() ?: 0L
+
+                results.add(
+                    BenchmarkResult(
+                        zoom     = zoom,
+                        glStats  = computeFpsStats(glNanos),
+                        mainAvg  = mainAvg,
+                        mainMin  = mainMin,
+                        mainMax  = mainMax,
+                        dtAvgMs  = dtAvg,
+                        dtMinMs  = dtMin,
+                        dtMaxMs  = dtMax,
+                    )
+                )
+            }
+
+            dismissBenchmarkProgressOverlay()
+            showBenchmarkResultsOverlay(results)
+        }
+    }
+
+    private fun showBenchmarkProgressOverlay() {
+        dismissBenchmarkProgressOverlay()
+        val d = resources.displayMetrics.density
+
+        val statusLabel = TextView(this).apply {
+            text = "Starting benchmark…"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+        }
+        benchmarkStatusLabel = statusLabel
+
+        val cancelBtn = TextView(this).apply {
+            text = "Cancel"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            setPadding(0, (12 * d).toInt(), 0, 0)
+            setOnClickListener {
+                benchmarkJob?.cancel()
+                dismissBenchmarkProgressOverlay()
+            }
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.argb(230, 24, 24, 24))
+                cornerRadius = 16f * d
+            }
+            setPadding((24 * d).toInt(), (20 * d).toInt(), (24 * d).toInt(), (20 * d).toInt())
+            addView(statusLabel)
+            addView(cancelBtn)
+            isClickable = true
+        }
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            isClickable = true
+            addView(container, FrameLayout.LayoutParams(
+                (280 * d).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+        benchmarkOverlay = overlay
+        (window.decorView as ViewGroup).addView(
+            overlay,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+    }
+
+    private fun updateBenchmarkStatus(msg: String) {
+        benchmarkStatusLabel?.text = msg
+    }
+
+    private fun dismissBenchmarkProgressOverlay() {
+        benchmarkOverlay?.let { (window.decorView as? ViewGroup)?.removeView(it) }
+        benchmarkOverlay     = null
+        benchmarkStatusLabel = null
+    }
+
+    private fun formatBenchmarkResults(results: List<BenchmarkResult>): String {
+        val sb = StringBuilder()
+        sb.appendLine("aWayToGo Benchmark Results")
+        sb.appendLine("Build: ${BuildConfig.GIT_COMMIT}  (${BuildConfig.BUILD_TIME})")
+        sb.appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})")
+        sb.appendLine()
+        for (r in results) {
+            sb.appendLine("Zoom ${r.zoom}")
+            sb.appendLine("  GL:   avg ${"%.0f".format(r.glStats.avg)}  min ${"%.0f".format(r.glStats.min)}  max ${"%.0f".format(r.glStats.max)} fps")
+            sb.appendLine("  Main: avg ${"%.0f".format(r.mainAvg)}  min ${"%.0f".format(r.mainMin)}  max ${"%.0f".format(r.mainMax)} fps")
+            sb.appendLine("  dt:   avg ${r.dtAvgMs}  min ${r.dtMinMs}  max ${r.dtMaxMs} ms")
+        }
+        return sb.toString()
+    }
+
+    private fun shareBenchmarkResults(text: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "aWayToGo Benchmark Results")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(intent, "Share benchmark results"))
+    }
+
+    private fun saveBenchmarkResults(text: String) {
+        val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val file = java.io.File(getExternalFilesDir(null), "benchmark_$ts.txt")
+        file.writeText(text)
+        android.widget.Toast.makeText(
+            this, "Saved to ${file.name}", android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun showBenchmarkResultsOverlay(results: List<BenchmarkResult>) {
+        val d = resources.displayMetrics.density
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val title = TextView(this).apply {
+            text = "Benchmark Results"
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        content.addView(title, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = (12 * d).toInt() })
+
+        for (r in results) {
+            val zoomLabel = TextView(this).apply {
+                text = "Zoom ${r.zoom}"
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+            val glLine = TextView(this).apply {
+                text = "  GL:   avg ${"%.0f".format(r.glStats.avg)}  min ${"%.0f".format(r.glStats.min)}  max ${"%.0f".format(r.glStats.max)} fps"
+                setTextColor(Color.argb(220, 200, 220, 255))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            val mainLine = TextView(this).apply {
+                text = "  Main: avg ${"%.0f".format(r.mainAvg)}  min ${"%.0f".format(r.mainMin)}  max ${"%.0f".format(r.mainMax)} fps"
+                setTextColor(Color.argb(220, 200, 255, 200))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            val dtLine = TextView(this).apply {
+                text = "  dt:   avg ${r.dtAvgMs}  min ${r.dtMinMs}  max ${r.dtMaxMs} ms"
+                setTextColor(Color.argb(200, 220, 220, 220))
+                textSize = 13f
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            content.addView(zoomLabel, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (8 * d).toInt() })
+            content.addView(glLine)
+            content.addView(mainLine)
+            content.addView(dtLine)
+        }
+
+        val resultText = formatBenchmarkResults(results)
+
+        val shareBtn = TextView(this).apply {
+            text = "Share"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
+        val saveBtn = TextView(this).apply {
+            text = "Save"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
+        val closeBtn = TextView(this).apply {
+            text = "Close"
+            setTextColor(Color.argb(220, 180, 180, 255))
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }
+
+        val buttonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(shareBtn, lp)
+            addView(saveBtn, lp)
+            addView(closeBtn, lp)
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.argb(235, 24, 24, 24))
+                cornerRadius = 16f * d
+            }
+            setPadding((20 * d).toInt(), (20 * d).toInt(), (20 * d).toInt(), (16 * d).toInt())
+            addView(
+                ScrollView(this@MapActivity).apply { addView(content) },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, (300 * d).toInt(),
+                ),
+            )
+            addView(buttonRow, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (12 * d).toInt() })
+            isClickable = true
+        }
+
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(160, 0, 0, 0))
+            isClickable = true
+            addView(container, FrameLayout.LayoutParams(
+                (320 * d).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ))
+        }
+
+        shareBtn.setOnClickListener { shareBenchmarkResults(resultText) }
+        saveBtn.setOnClickListener { saveBenchmarkResults(resultText) }
+        closeBtn.setOnClickListener {
+            (window.decorView as? ViewGroup)?.removeView(overlay)
+        }
+        overlay.setOnClickListener {
+            (window.decorView as? ViewGroup)?.removeView(overlay)
+        }
+
+        (window.decorView as ViewGroup).addView(
+            overlay,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+    }
+
     override fun onStart() {
         super.onStart()
         mapView.onStart()
@@ -2124,12 +2854,14 @@ class MapActivity : ComponentActivity() {
         mapView.onResume()
         remoteControl.register()
         Choreographer.getInstance().postFrameCallback(frameCallback)
+        checkUpdateIfDue()
     }
 
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
         mapView.onPause()
+        stopUpdateAvailableAnimation()
         super.onPause()
     }
 
@@ -2140,6 +2872,8 @@ class MapActivity : ComponentActivity() {
 
     override fun onDestroy() {
         animBag.cancelAll()
+        updateAnimJob?.cancel()
+        benchmarkJob?.cancel()
         super.onDestroy()
         mapView.onDestroy()
     }

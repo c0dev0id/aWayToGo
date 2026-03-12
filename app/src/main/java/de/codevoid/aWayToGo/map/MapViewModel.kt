@@ -48,14 +48,15 @@ class MapViewModel : ViewModel() {
     fun setMode(mode: AppMode) {
         _uiState.update { current ->
             current.copy(
-                mode        = mode,
-                isMenuOpen  = false,
-                isSearchOpen = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
-                isInPanningMode = when (mode) {
+                mode             = mode,
+                isMenuOpen       = false,
+                isInSettingsMenu = false,
+                isInDebugMenu    = false,
+                isSearchOpen     = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
+                isInPanningMode  = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
                 },
-                isNorthUp = if (mode == AppMode.NAVIGATE) false else current.isNorthUp,
             )
         }
     }
@@ -84,9 +85,9 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isMenuOpen = true) }
     }
 
-    /** Collapse the hamburger panel. */
+    /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -114,15 +115,29 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isDarkMode = !it.isDarkMode) }
     }
 
-    /**
-     * Toggle between heading-up (default, false) and north-up (true) map orientation.
-     *
-     * Heading-up: the map rotates so the device's heading is always at the top of
-     * the screen; the location puck arrow points straight up.
-     * North-up: the map stays fixed with north at the top; the location puck arrow
-     * rotates to show the actual heading direction.
-     */
-    fun toggleNorthUp() {
-        _uiState.update { it.copy(isNorthUp = !it.isNorthUp) }
+    /** Enter the Settings submenu layer (menu must already be open). */
+    fun enterSettingsMenu() {
+        _uiState.update { it.copy(isInSettingsMenu = true) }
     }
+
+    /** Return from the Settings submenu to the main menu layer. */
+    fun exitSettingsMenu() {
+        _uiState.update { it.copy(isInSettingsMenu = false, isInDebugMenu = false) }
+    }
+
+    /** Enter the Debug submenu layer (Settings menu must already be open). */
+    fun enterDebugMenu() {
+        _uiState.update { it.copy(isInDebugMenu = true) }
+    }
+
+    /** Return from the Debug submenu to the Settings layer. */
+    fun exitDebugMenu() {
+        _uiState.update { it.copy(isInDebugMenu = false) }
+    }
+
+    /** Toggle the debug OSD overlay on/off. */
+    fun toggleDebugMode() {
+        _uiState.update { it.copy(isDebugMode = !it.isDebugMode) }
+    }
+
 }
