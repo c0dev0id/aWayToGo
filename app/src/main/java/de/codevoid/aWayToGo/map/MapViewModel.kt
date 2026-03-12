@@ -48,26 +48,29 @@ class MapViewModel : ViewModel() {
     fun setMode(mode: AppMode) {
         _uiState.update { current ->
             current.copy(
-                mode             = mode,
-                isMenuOpen       = false,
-                isInSettingsMenu = false,
-                isInDebugMenu    = false,
-                isSearchOpen     = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
-                isInPanningMode  = when (mode) {
+                mode               = mode,
+                isMenuOpen         = false,
+                isInSettingsMenu   = false,
+                isInDebugMenu      = false,
+                isSearchOpen       = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
+                isInPanningMode    = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
                 },
+                // NAVIGATE enables follow mode automatically; other modes disable it.
+                isFollowModeActive = mode == AppMode.NAVIGATE,
             )
         }
     }
 
     /**
      * Enter panning mode: crosshair becomes visible, GPS camera tracking suspends.
+     * Also disables follow mode — the user taking manual control breaks the GPS lock.
      *
      * Idempotent — calling when already in panning mode emits no state change.
      */
     fun enterPanningMode() {
-        _uiState.update { it.copy(isInPanningMode = true) }
+        _uiState.update { it.copy(isInPanningMode = true, isFollowModeActive = false) }
     }
 
     /**
@@ -78,6 +81,21 @@ class MapViewModel : ViewModel() {
      */
     fun exitPanningMode() {
         _uiState.update { it.copy(isInPanningMode = false) }
+    }
+
+    /**
+     * Enable follow mode: camera locks on to the GPS puck and tracks every position
+     * update. Also clears panning mode so the crosshair is hidden.
+     *
+     * Idempotent — repeated calls while already following produce no extra emissions.
+     */
+    fun enableFollowMode() {
+        _uiState.update { it.copy(isFollowModeActive = true, isInPanningMode = false) }
+    }
+
+    /** Disable follow mode: camera stops tracking the GPS puck. */
+    fun disableFollowMode() {
+        _uiState.update { it.copy(isFollowModeActive = false) }
     }
 
     /** Expand the hamburger panel. */

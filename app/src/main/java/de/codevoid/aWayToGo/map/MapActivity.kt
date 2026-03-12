@@ -124,6 +124,10 @@ private const val LOCATION_PERMISSION_REQUEST = 1
 // Above this, it zooms out to a context level first, then zooms back in.
 private const val FLYTO_THRESHOLD_M = 10_000.0
 
+// Animation duration (ms) used to pan the camera toward each new GPS fix in follow mode.
+// Matches typical GPS update intervals so the camera arrives just as the next fix lands.
+private const val FOLLOW_LOOK_AHEAD_MS = 1000
+
 /**
  * Main map screen — zero Compose overhead.
  *
@@ -223,6 +227,12 @@ class MapActivity : ComponentActivity() {
     // connects the user's current GPS position with this anchored target.
     private var dragLineAnchor: LatLng? = null
 
+    // ── Follow mode ───────────────────────────────────────────────────────────
+    // Last GPS coordinates that were applied to the camera while following.
+    // NaN signals "not yet applied" so the first fix always triggers a camera move.
+    private var followLastLat = Double.NaN
+    private var followLastLon = Double.NaN
+
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
     private var osdFrameCount  = 0
@@ -255,6 +265,36 @@ class MapActivity : ComponentActivity() {
             dragLineAnchor?.let { anchor ->
                 map?.locationComponent?.lastKnownLocation?.let { loc ->
                     setDragLine(LatLng(loc.latitude, loc.longitude), anchor)
+                }
+            }
+
+            // ── GPS Follow ───────────────────────────────────────────────────
+            // When follow mode is active, animate the camera toward the current
+            // GPS fix whenever the position changes.  The look-ahead duration
+            // matches the typical GPS update interval so the camera arrives
+            // smoothly as the next fix lands, with no visible lag or jumps.
+            if (viewModel.uiState.value.isFollowModeActive) {
+                map?.locationComponent?.lastKnownLocation?.let { loc ->
+                    if (loc.latitude != followLastLat || loc.longitude != followLastLon) {
+                        followLastLat = loc.latitude
+                        followLastLon = loc.longitude
+                        val m   = map
+                        val cur = m?.cameraPosition
+                        if (m != null && cur != null) {
+                            m.animateCamera(
+                                CameraUpdateFactory.newCameraPosition(
+                                    CameraPosition.Builder()
+                                        .target(LatLng(loc.latitude, loc.longitude))
+                                        .zoom(cur.zoom)
+                                        .bearing(cur.bearing)
+                                        .tilt(cur.tilt)
+                                        .padding(cur.padding)
+                                        .build(),
+                                ),
+                                FOLLOW_LOOK_AHEAD_MS,
+                            )
+                        }
+                    }
                 }
             }
 
@@ -438,7 +478,7 @@ class MapActivity : ComponentActivity() {
             setPadding(btnPad, btnPad, btnPad, btnPad)
             isClickable = true
             isFocusable = true
-            setOnClickListener { exitPanningMode() }
+            setOnClickListener { viewModel.enableFollowMode() }
         }
         root.addView(
             myLocationButton,
@@ -1281,6 +1321,7 @@ class MapActivity : ComponentActivity() {
     private fun renderUiState(new: MapUiState, old: MapUiState?) {
         val modeChanged         = old?.mode != new.mode
         val panningChanged      = old?.isInPanningMode != new.isInPanningMode
+        val followChanged       = old?.isFollowModeActive != new.isFollowModeActive
         val menuChanged         = old?.isMenuOpen != new.isMenuOpen
         val searchChanged       = old?.isSearchOpen != new.isSearchOpen
         val settingsMenuChanged = old?.isInSettingsMenu != new.isInSettingsMenu
@@ -1295,8 +1336,36 @@ class MapActivity : ComponentActivity() {
             else                                            -> View.GONE
         }
 
-        // ── Fly-to on panning exit ─────────────────────────────────────────────
-        if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true) {
+        // ── Follow mode button indicator ───────────────────────────────────────
+        // Tint the location button blue when follow mode is active so the user
+        // can see at a glance whether the camera is locked to the GPS puck.
+        if (followChanged || old == null) {
+            myLocationButton.imageTintList = if (new.isFollowModeActive) {
+                android.content.res.ColorStateList.valueOf(android.graphics.Color.argb(255, 100, 180, 255))
+            } else {
+                android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
+            }
+        }
+
+        // ── Fly-to on follow mode enable ───────────────────────────────────────
+        // Snap the camera to GPS immediately when follow mode is turned on so
+        // there is no visible delay before the Choreographer tracking takes over.
+        if (followChanged && new.isFollowModeActive) {
+            followLastLat = Double.NaN   // force a fresh camera move on next frame
+            followLastLon = Double.NaN
+            val m   = map
+            val loc = m?.locationComponent?.lastKnownLocation
+            if (m != null && loc != null) {
+                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+            }
+        }
+
+        // ── Fly-to on panning exit (without follow mode) ──────────────────────
+        // When panning exits and follow mode is NOT active, fly back to GPS once.
+        // If follow mode IS active, the snap above (or the Choreographer loop)
+        // already handles re-centering.
+        if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true
+            && !new.isFollowModeActive) {
             val m   = map
             val loc = m?.locationComponent?.lastKnownLocation
             if (m != null && loc != null) {

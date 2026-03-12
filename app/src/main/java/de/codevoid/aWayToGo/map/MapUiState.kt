@@ -10,6 +10,7 @@ package de.codevoid.aWayToGo.map
  * |---------------------|--------------------------------------------------------------|
  * | [mode]              | Which overlay set is visible (Explore / Navigate / Edit).   |
  * | [isInPanningMode]   | Crosshair visible, GPS tracking suspended.                  |
+ * | [isFollowModeActive]| Camera locked to GPS puck; tracks position each frame.      |
  * | [isMenuOpen]        | Hamburger panel expanded.                                   |
  * | [isSearchOpen]      | Search overlay visible (Explore mode only).                 |
  * | [isSatelliteEnabled]| Map style switched to hybrid satellite+labels.              |
@@ -18,6 +19,7 @@ package de.codevoid.aWayToGo.map
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
     val isInPanningMode: Boolean = false,
+    val isFollowModeActive: Boolean = false,
     val isMenuOpen: Boolean = false,
     val isSearchOpen: Boolean = false,
     val isSatelliteEnabled: Boolean = false,
