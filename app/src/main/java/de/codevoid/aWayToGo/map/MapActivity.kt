@@ -2571,12 +2571,15 @@ class MapActivity : ComponentActivity() {
                 }
 
                 // Pan east continuously for 5 seconds in 50ms steps.
+                // Target 600 logical pixels/second. In web-mercator with 512px
+                // tiles, one logical pixel = 360 / (512 * 2^zoom) degrees of
+                // longitude (independent of latitude).
+                val degPerPx = 360.0 / (512.0 * Math.pow(2.0, zoom.toDouble()))
+                val degPerStep = 600.0 * degPerPx * 0.05  // 50ms step
                 val benchEnd = System.currentTimeMillis() + 5_000L
                 var lng = startTarget.longitude
-                val cosLat = Math.cos(Math.toRadians(startTarget.latitude))
                 while (System.currentTimeMillis() < benchEnd) {
-                    // ~200m per step at the equator, adjusted for latitude.
-                    lng += 0.002 / cosLat
+                    lng += degPerStep
                     m.animateCamera(
                         CameraUpdateFactory.newCameraPosition(
                             CameraPosition.Builder()
