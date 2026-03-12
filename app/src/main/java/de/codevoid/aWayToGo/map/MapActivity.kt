@@ -124,13 +124,6 @@ private const val LOCATION_PERMISSION_REQUEST = 1
 // Above this, it zooms out to a context level first, then zooms back in.
 private const val FLYTO_THRESHOLD_M = 10_000.0
 
-// Follow mode animation bounds (ms).
-// The actual duration is measured from the observed GPS update interval so it
-// adapts automatically to any receiver rate (1 Hz … 5 Hz).
-// The floor prevents jitter from unusually short bursts; the ceiling prevents
-// the camera drifting far behind on a very slow fix or after a GPS gap.
-private const val FOLLOW_ANIM_MIN_MS = 100
-private const val FOLLOW_ANIM_MAX_MS = 2000
 
 /**
  * Main map screen — zero Compose overhead.
@@ -236,10 +229,6 @@ class MapActivity : ComponentActivity() {
     // NaN signals "not yet applied" so the first fix always triggers a camera move.
     private var followLastLat = Double.NaN
     private var followLastLon = Double.NaN
-    // Elapsed-realtime (ms) when the last GPS fix was applied.  Used to measure
-    // the actual update interval so the animation duration adapts to any GPS rate
-    // (1 Hz, 2 Hz, 4 Hz, 5 Hz, …) without hardcoding an assumption.
-    private var followLastFixMs = 0L
 
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
@@ -277,25 +266,19 @@ class MapActivity : ComponentActivity() {
             }
 
             // ── GPS Follow ───────────────────────────────────────────────────
-            // When follow mode is active, animate the camera toward the current
-            // GPS fix whenever the position changes.  The animation duration is
-            // derived from the measured interval between fixes so it adapts to
-            // whatever update rate the GPS receiver uses (1 Hz, 2 Hz, 4 Hz, …).
+            // When follow mode is active, snap the camera to each new GPS fix
+            // instantly with moveCamera.  No animation duration is needed or
+            // assumed — this works correctly regardless of receiver update rate
+            // (1 Hz, 2 Hz, 4 Hz, 5 Hz, …) or whether that rate changes mid-ride.
             if (viewModel.uiState.value.isFollowModeActive) {
                 map?.locationComponent?.lastKnownLocation?.let { loc ->
                     if (loc.latitude != followLastLat || loc.longitude != followLastLon) {
-                        val nowMs   = android.os.SystemClock.uptimeMillis()
-                        val animMs  = if (followLastFixMs == 0L) FOLLOW_ANIM_MAX_MS
-                                      else (nowMs - followLastFixMs)
-                                              .coerceIn(FOLLOW_ANIM_MIN_MS.toLong(),
-                                                        FOLLOW_ANIM_MAX_MS.toLong()).toInt()
-                        followLastLat   = loc.latitude
-                        followLastLon   = loc.longitude
-                        followLastFixMs = nowMs
+                        followLastLat = loc.latitude
+                        followLastLon = loc.longitude
                         val m   = map
                         val cur = m?.cameraPosition
                         if (m != null && cur != null) {
-                            m.animateCamera(
+                            m.moveCamera(
                                 CameraUpdateFactory.newCameraPosition(
                                     CameraPosition.Builder()
                                         .target(LatLng(loc.latitude, loc.longitude))
@@ -305,7 +288,6 @@ class MapActivity : ComponentActivity() {
                                         .padding(cur.padding)
                                         .build(),
                                 ),
-                                animMs,
                             )
                         }
                     }
@@ -1365,9 +1347,8 @@ class MapActivity : ComponentActivity() {
         // Snap the camera to GPS immediately when follow mode is turned on so
         // there is no visible delay before the Choreographer tracking takes over.
         if (followChanged && new.isFollowModeActive) {
-            followLastLat   = Double.NaN   // force a fresh camera move on next frame
-            followLastLon   = Double.NaN
-            followLastFixMs = 0L           // unknown interval until first fix arrives
+            followLastLat = Double.NaN   // force a fresh camera move on next frame
+            followLastLon = Double.NaN
             val m   = map
             val loc = m?.locationComponent?.lastKnownLocation
             if (m != null && loc != null) {
