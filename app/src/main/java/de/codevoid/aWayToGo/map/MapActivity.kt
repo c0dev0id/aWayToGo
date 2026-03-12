@@ -347,15 +347,21 @@ class MapActivity : ComponentActivity() {
         val root = TwoFingerLockLayout(this)
 
         // MapView fills the screen.
-        // SurfaceView mode (the default — do NOT pass textureMode): gives MapLibre its own
-        // hardware layer, so the GL thread runs at the display's native refresh rate
-        // independently of the main thread.
+        // textureMode(true): required with the Vulkan backend (MapLibre 13+). The Vulkan
+        // SurfaceView creates its rendering surface at construction time, before MATCH_PARENT
+        // layout has been resolved, and ends up with the wrong (tiny) surface dimensions —
+        // visible as the map rendering only in the bottom-left corner.  TextureView is sized
+        // by the Android layout system after measurement/layout passes, so it always matches
+        // the view's actual bounds.  The main trade-off is that TextureView composites through
+        // the main thread rather than an independent hardware layer, but in practice fps impact
+        // is negligible on this device.
         //
         // pixelRatio=3.0: benchmark-derived optimum. Higher pixelRatio causes MapLibre to
         // satisfy tile quality from a lower zoom tier → fewer, larger tiles per viewport →
         // less tile-fetch congestion during pan → higher and more stable gl_fps.
         // Tested values 1.0–4.0 at zoom 14/16; 3.0 gave best avg+min gl_fps on this device.
         val mapOptions = MapLibreMapOptions.createFromAttributes(this)
+            .textureMode(true)
             .pixelRatio(3.0f)
         mapView = MapView(this, mapOptions)
         root.addView(
