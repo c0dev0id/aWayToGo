@@ -929,11 +929,10 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * [RenderMode] consistent with [trackingCameraMode]: the user location puck
-     * always shows a directional indicator, pointing either compass or GPS bearing.
+     * Always [RenderMode.GPS] so the puck arrow points "up" (direction of travel).
+     * The map rotation source (GPS course vs compass) is handled by [trackingCameraMode].
      */
-    private fun trackingRenderMode() =
-        if (isMoving) RenderMode.GPS else RenderMode.COMPASS
+    private fun trackingRenderMode() = RenderMode.GPS
 
     /**
      * Check GPS speed from the most recent location fix and, if the moving/stationary
