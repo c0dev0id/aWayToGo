@@ -48,10 +48,11 @@ class MapViewModel : ViewModel() {
     fun setMode(mode: AppMode) {
         _uiState.update { current ->
             current.copy(
-                mode        = mode,
-                isMenuOpen  = false,
-                isSearchOpen = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
-                isInPanningMode = when (mode) {
+                mode             = mode,
+                isMenuOpen       = false,
+                isInSettingsMenu = false,
+                isSearchOpen     = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
+                isInPanningMode  = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
                 },
@@ -83,9 +84,9 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isMenuOpen = true) }
     }
 
-    /** Collapse the hamburger panel. */
+    /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -111,6 +112,21 @@ class MapViewModel : ViewModel() {
     /** Toggle dark map style on/off. */
     fun toggleDarkMode() {
         _uiState.update { it.copy(isDarkMode = !it.isDarkMode) }
+    }
+
+    /** Enter the Settings submenu layer (menu must already be open). */
+    fun enterSettingsMenu() {
+        _uiState.update { it.copy(isInSettingsMenu = true) }
+    }
+
+    /** Return from the Settings submenu to the main menu layer. */
+    fun exitSettingsMenu() {
+        _uiState.update { it.copy(isInSettingsMenu = false) }
+    }
+
+    /** Toggle the debug OSD overlay on/off. */
+    fun toggleDebugMode() {
+        _uiState.update { it.copy(isDebugMode = !it.isDebugMode) }
     }
 
 }
