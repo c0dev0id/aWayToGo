@@ -43,6 +43,8 @@ class SearchOverlayResult(
     val clearResults: () -> Unit,
     val prepareForOpen: () -> Unit,
     val hideKeyboard: () -> Unit,
+    val isLocalSearch: () -> Boolean,
+    val isGpsAnchor: () -> Boolean,
 )
 
 /**
@@ -336,6 +338,87 @@ fun buildSearchOverlay(
         ).apply { setMargins((4 * d).toInt(), 0, 0, 0) })
     }
 
+    // ── Toggle buttons row ───────────────────────────────────────────────────
+    var localSearch = true
+    var gpsAnchor = true
+    val toggleRadius = 14 * d
+
+    fun makeToggleBg(active: Boolean) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = toggleRadius
+        setColor(if (active) Color.argb(200, 220, 50, 50) else Color.argb(80, 255, 255, 255))
+    }
+
+    val localToggle = TextView(context).apply {
+        text = "Local"
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            makeToggleBg(true),
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = toggleRadius; setColor(Color.WHITE) },
+        )
+        val hp = (14 * d).toInt()
+        val vp = (6 * d).toInt()
+        setPadding(hp, vp, hp, vp)
+        isClickable = true
+        isFocusable = true
+    }
+
+    val anchorToggle = TextView(context).apply {
+        text = "GPS"
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            makeToggleBg(true),
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = toggleRadius; setColor(Color.WHITE) },
+        )
+        val hp = (14 * d).toInt()
+        val vp = (6 * d).toInt()
+        setPadding(hp, vp, hp, vp)
+        isClickable = true
+        isFocusable = true
+    }
+
+    fun updateToggleAppearance(view: TextView, active: Boolean, activeLabel: String, inactiveLabel: String) {
+        view.text = if (active) activeLabel else inactiveLabel
+        view.background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            makeToggleBg(active),
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = toggleRadius; setColor(Color.WHITE) },
+        )
+    }
+
+    localToggle.setOnClickListener {
+        localSearch = !localSearch
+        updateToggleAppearance(localToggle, localSearch, "Local", "Global")
+    }
+    anchorToggle.setOnClickListener {
+        gpsAnchor = !gpsAnchor
+        updateToggleAppearance(anchorToggle, gpsAnchor, "GPS", "Map")
+    }
+
+    val toggleRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        val hp = (12 * d).toInt()
+        val vp = (4 * d).toInt()
+        setPadding(hp, vp, hp, vp)
+        addView(localToggle, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ))
+        addView(anchorToggle, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { setMargins((8 * d).toInt(), 0, 0, 0) })
+    }
+
     // ── Shortcuts row (middle) ────────────────────────────────────────────────
     val shortcutsContainer = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -426,7 +509,8 @@ fun buildSearchOverlay(
     // Visual order from top of screen downward (panel is bottom-anchored):
     //   1. Results list   — hidden until a search is performed
     //   2. Input row      — search field + Go + ✕
-    //   3. Shortcuts row  — sits directly above the system keyboard
+    //   3. Toggle row     — Local/Global + GPS/Map toggles
+    //   4. Shortcuts row  — sits directly above the system keyboard
     val panel = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         background = panelBg
@@ -438,8 +522,12 @@ fun buildSearchOverlay(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
+        addView(toggleRow, LinearLayout.LayoutParams(            // 3. toggles
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ))
         addView(makeDivider())
-        addView(shortcutsSection, LinearLayout.LayoutParams(     // 3. shortcuts
+        addView(shortcutsSection, LinearLayout.LayoutParams(     // 4. shortcuts
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         ))
@@ -552,5 +640,7 @@ fun buildSearchOverlay(
         // Refresh shortcuts so the panel is ready; keyboard opens only on field tap.
         prepareForOpen = { refreshShortcuts(searchField) },
         hideKeyboard   = { hideKeyboard(searchField) },
+        isLocalSearch  = { localSearch },
+        isGpsAnchor    = { gpsAnchor },
     )
 }
