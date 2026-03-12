@@ -63,5 +63,5 @@ class TileGateInterceptor : Interceptor {
 
     /** Returns true for PBF vector tile requests that should be gated. */
     private fun isTileRequest(url: String): Boolean =
-        url.contains(".pbf") || url.contains("/tiles/")
+        url.contains(".pbf")
 }
