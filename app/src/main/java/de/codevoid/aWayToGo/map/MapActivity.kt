@@ -1546,7 +1546,13 @@ class MapActivity : ComponentActivity() {
             searchOverlayResult.showLoading()
             try {
                 val results = geocoding.search(query)
-                searchOverlayResult.showResults(results)
+                val center = map?.cameraPosition?.target
+                val sorted = if (center != null) {
+                    results.sortedBy { center.distanceTo(LatLng(it.lat, it.lon)) }
+                } else {
+                    results
+                }
+                searchOverlayResult.showResults(sorted)
             } catch (_: Exception) {
                 searchOverlayResult.showError()
             }
