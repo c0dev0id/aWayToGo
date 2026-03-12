@@ -208,6 +208,14 @@ class MapActivity : ComponentActivity() {
     // Owns all D-pad / joystick / zoom-key state and drives per-frame camera updates.
     private val panController = PanController(onEnterPanningMode = { enterPanningMode() })
 
+    // Compass bearing provider — reads device orientation sensors and provides
+    // a smoothed heading.  Used as fallback when GPS bearing is unavailable.
+    private lateinit var bearingProvider: BearingProvider
+
+    // Last bearing applied to the map (degrees, 0 = north).  Used to skip
+    // updates when the change is < 1° (OsmAnd-style jitter threshold).
+    private var lastAppliedBearing = 0f
+
     // ── Drag line anchor ──────────────────────────────────────────────────────
     // When set, the Choreographer loop continuously updates the drag line so it
     // connects the user's current GPS position with this anchored target.
@@ -235,9 +243,14 @@ class MapActivity : ComponentActivity() {
             osdLastFrameNs = frameTimeNanos
 
             // ── Adaptive heading (compass ↔ GPS) ───────────────────────────────
-            // Check GPS speed and switch CameraMode/RenderMode when the user
-            // crosses the moving/stationary threshold.  O(1) no-op most frames.
+            // Check GPS speed and update isMoving flag.  O(1) no-op most frames.
             updateMovingState()
+
+            // ── Manual map bearing ───────────────────────────────────────────
+            // MapLibre's TRACKING_COMPASS / TRACKING_GPS modes are unreliable
+            // for bearing rotation.  Following the OsmAnd / Organic Maps pattern
+            // we manage bearing manually: compass when stationary, GPS when moving.
+            updateMapBearing()
 
             // ── Pan + Zoom ─────────────────────────────────────────────────────
             // PanController owns all D-pad/joystick state and returns the current
@@ -281,11 +294,19 @@ class MapActivity : ComponentActivity() {
                 val hasFix = loc != null
                 val acc    = loc?.accuracy ?: 0f
                 val panLine = if (panSpeed > 0f) "\npan  ${"%.0f".format(panSpeed)} px/s" else ""
+                val brgSrc = when {
+                    viewModel.uiState.value.isNorthUp        -> "north"
+                    isMoving && loc?.hasBearing() == true     -> "gps"
+                    bearingProvider.hasBearing                -> "compass"
+                    else                                      -> "none"
+                }
+                val brgVal = "%.0f".format(lastAppliedBearing)
                 osdView.text = buildString {
                     append("fps  $osdLastFps  dt:${osdLastDtMs}ms\n")
                     append("zoom ${"%.1f".format(zoom)}  gl_fps ${"%.0f".format(osdGlFps)}\n")
                     append("net  rx:${osdRxRate / 1024}kB/s  tx:${osdTxRate / 1024}kB/s\n")
-                    append("gps  fix:${if (hasFix) "Y" else "N"}  mov:${if (isMoving) "Y" else "N"}  acc:${"%.0f".format(acc)}m")
+                    append("gps  fix:${if (hasFix) "Y" else "N"}  mov:${if (isMoving) "Y" else "N"}  acc:${"%.0f".format(acc)}m\n")
+                    append("brg  src:$brgSrc  ${brgVal}°")
                     if (panLine.isNotEmpty()) append(panLine)
                 }
             }
@@ -334,6 +355,7 @@ class MapActivity : ComponentActivity() {
         MapLibre.getInstance(this)
         TileCache.init(this)
         remoteControl = RemoteControlManager(this)
+        bearingProvider = BearingProvider(this)
 
         val styleUrl = styleUrl(isDark = false)
 
@@ -771,12 +793,9 @@ class MapActivity : ComponentActivity() {
             )
             isLocationComponentEnabled = true
             val uiState = viewModel.uiState.value
-            val shouldTrack = !uiState.isInPanningMode
-                && uiState.mode != AppMode.EDIT
-                && cameraMode != CameraMode.NONE  // don't override user-disabled state
-            if (shouldTrack) {
-                cameraMode = trackingCameraMode()
-                renderMode = trackingRenderMode()
+            if (!uiState.isInPanningMode && uiState.mode != AppMode.EDIT) {
+                cameraMode = CameraMode.TRACKING
+                renderMode = RenderMode.GPS
             }
         }
 
@@ -913,20 +932,13 @@ class MapActivity : ComponentActivity() {
     // ── Adaptive heading (compass ↔ GPS) ──────────────────────────────────────
 
     /**
-     * [CameraMode] that follows the user's position and, in heading-up mode, rotates
-     * the map so the device heading is always at the top of the screen:
+     * Always [CameraMode.TRACKING] — position-only tracking.
      *
-     * - North-up ([MapUiState.isNorthUp] == true): [CameraMode.TRACKING] — the map
-     *   stays fixed with north at the top; the location puck rotates to show heading.
-     * - Heading-up, stationary: [CameraMode.TRACKING_COMPASS] — the map heading
-     *   follows the device compass so "up" is wherever you're pointing.
-     * - Heading-up, moving:     [CameraMode.TRACKING_GPS] — the map heading follows
-     *   the GPS course-over-ground so "up" is the direction of travel.
+     * Map bearing (rotation) is managed manually in the Choreographer callback
+     * using compass or GPS heading.  MapLibre's built-in TRACKING_COMPASS and
+     * TRACKING_GPS modes are unreliable for bearing on the target devices.
      */
-    private fun trackingCameraMode(): Int {
-        if (viewModel.uiState.value.isNorthUp) return CameraMode.TRACKING
-        return if (isMoving) CameraMode.TRACKING_GPS else CameraMode.TRACKING_COMPASS
-    }
+    private fun trackingCameraMode(): Int = CameraMode.TRACKING
 
     /**
      * Always [RenderMode.GPS] so the puck arrow points "up" (direction of travel).
@@ -935,36 +947,109 @@ class MapActivity : ComponentActivity() {
     private fun trackingRenderMode() = RenderMode.GPS
 
     /**
-     * Check GPS speed from the most recent location fix and, if the moving/stationary
-     * state has changed, switch [CameraMode] and [RenderMode] accordingly.
+     * Check GPS speed from the most recent location fix and update [isMoving].
+     *
+     * The moving/stationary flag determines which bearing source the manual
+     * bearing logic in the Choreographer callback uses: GPS course when moving,
+     * compass when stationary.
      *
      * Called every Choreographer frame but is an O(1) no-op in the common case
      * (no state change).  Hysteresis ([SPEED_TO_GPS_MS] / [SPEED_TO_COMPASS_MS])
      * prevents mode flipping when the user is stopped at a traffic light with a
      * speed reading hovering near zero.
-     *
-     * Does nothing while panning or in EDIT mode — the location component's
-     * camera mode is [CameraMode.NONE] in those states and must not be overridden.
      */
     @SuppressLint("MissingPermission")
     private fun updateMovingState() {
+        val loc = map?.locationComponent
+            ?.takeIf { it.isLocationComponentActivated }
+            ?.lastKnownLocation ?: return
+        val speed = if (loc.hasSpeed()) loc.speed else 0f
+
+        val nowMoving = if (isMoving) speed > SPEED_TO_COMPASS_MS else speed > SPEED_TO_GPS_MS
+        if (nowMoving == isMoving) return
+        isMoving = nowMoving
+    }
+
+    /**
+     * Apply the current effective bearing to the map camera.
+     *
+     * - **Heading-up mode**: drives both position and bearing manually
+     *   ([CameraMode.NONE]) because [MapLibreMap.moveCamera] disrupts
+     *   [CameraMode.TRACKING].  Source: GPS course when moving, compass
+     *   when stationary.
+     * - **North-up mode**: lets [CameraMode.TRACKING] handle position;
+     *   only snaps bearing to 0 if it drifted (one-shot, not per-frame).
+     * - **Panning / EDIT mode**: no-op.
+     *
+     * Skips bearing updates smaller than 1° to avoid jitter (OsmAnd pattern).
+     * Also feeds the user's current position to [BearingProvider] so it
+     * can compute geomagnetic declination.
+     */
+    private fun updateMapBearing() {
+        val m = map ?: return
         val uiState = viewModel.uiState.value
         if (uiState.isInPanningMode || uiState.mode == AppMode.EDIT) return
 
-        val lc = map?.locationComponent?.takeIf { it.isLocationComponentActivated } ?: return
-        if (lc.cameraMode == CameraMode.NONE) return   // user manually detached tracking
+        val lc = m.locationComponent.takeIf { it.isLocationComponentActivated } ?: return
+        val loc = lc.lastKnownLocation
 
-        val loc   = lc.lastKnownLocation ?: return
-        val speed = if (loc.hasSpeed()) loc.speed else 0f
+        // Feed location to BearingProvider for declination correction.
+        loc?.let { bearingProvider.updateLocation(it.latitude, it.longitude, it.altitude) }
 
-        // Hysteresis: once moving, require a lower speed before switching back,
-        // so a momentary slow-down at lights doesn't drop back to compass.
-        val nowMoving = if (isMoving) speed > SPEED_TO_COMPASS_MS else speed > SPEED_TO_GPS_MS
-        if (nowMoving == isMoving) return
+        val cur = m.cameraPosition
 
-        isMoving = nowMoving
-        lc.cameraMode = trackingCameraMode()
-        lc.renderMode = trackingRenderMode()
+        if (uiState.isNorthUp) {
+            // North-up: let TRACKING handle position; just ensure bearing is 0.
+            if (lc.cameraMode != CameraMode.TRACKING) {
+                lc.cameraMode = CameraMode.NONE
+                lc.cameraMode = CameraMode.TRACKING
+            }
+            if (cur.bearing != 0.0) {
+                m.moveCamera(CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder(cur).bearing(0.0).build(),
+                ))
+                // Re-assert after moveCamera disrupts tracking.
+                lc.cameraMode = CameraMode.NONE
+                lc.cameraMode = CameraMode.TRACKING
+            }
+            return
+        }
+
+        // ── Heading-up ──────────────────────────────────────────────────────
+        // Use CameraMode.NONE and drive position + bearing manually,
+        // because moveCamera() disrupts TRACKING.
+        if (lc.cameraMode != CameraMode.NONE) {
+            lc.cameraMode = CameraMode.NONE
+        }
+
+        // Heading-up: pick GPS bearing when moving, compass otherwise.
+        val effectiveBearing: Float = when {
+            isMoving && loc != null && loc.hasBearing() -> loc.bearing
+            bearingProvider.hasBearing                  -> bearingProvider.bearing
+            else -> return
+        }
+
+        // Check if bearing changed enough to update (≥ 1°).
+        var diff = effectiveBearing - lastAppliedBearing
+        if (diff > 180f) diff -= 360f
+        if (diff < -180f) diff += 360f
+        val bearingChanged = kotlin.math.abs(diff) >= 1f
+
+        // Check if position changed.
+        val positionTarget = if (loc != null) LatLng(loc.latitude, loc.longitude) else null
+        val positionChanged = positionTarget != null && positionTarget != cur.target
+
+        if (!bearingChanged && !positionChanged) return
+
+        val newBearing = if (bearingChanged) effectiveBearing.toDouble() else cur.bearing
+        if (bearingChanged) lastAppliedBearing = effectiveBearing
+
+        m.moveCamera(CameraUpdateFactory.newCameraPosition(
+            CameraPosition.Builder(cur)
+                .bearing(newBearing)
+                .apply { if (positionTarget != null) target(positionTarget) }
+                .build(),
+        ))
     }
 
     /**
@@ -988,10 +1073,9 @@ class MapActivity : ComponentActivity() {
         if (lc.cameraMode == CameraMode.NONE) return
         // MapLibre 11 treats reassigning the same cameraMode value as a no-op and never
         // re-engages tracking after a programmatic animateCamera() call.  Cycling through
-        // NONE forces a real mode transition, re-attaching both position and heading following.
+        // NONE forces a real mode transition, re-attaching position following.
         lc.cameraMode = CameraMode.NONE
-        lc.cameraMode = trackingCameraMode()
-        lc.renderMode  = trackingRenderMode()
+        lc.cameraMode = CameraMode.TRACKING
     }
 
     // ── Mode management ───────────────────────────────────────────────────────
@@ -1240,12 +1324,9 @@ class MapActivity : ComponentActivity() {
             )
             isLocationComponentEnabled = true
             val uiState = viewModel.uiState.value
-            val shouldTrack = !uiState.isInPanningMode
-                && uiState.mode != AppMode.EDIT
-                && cameraMode != CameraMode.NONE
-            if (shouldTrack) {
-                cameraMode = trackingCameraMode()
-                renderMode = trackingRenderMode()
+            if (!uiState.isInPanningMode && uiState.mode != AppMode.EDIT) {
+                cameraMode = CameraMode.TRACKING
+                renderMode = RenderMode.GPS
             }
         }
     }
@@ -2122,11 +2203,13 @@ class MapActivity : ComponentActivity() {
         super.onResume()
         mapView.onResume()
         remoteControl.register()
+        bearingProvider.start()
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
+        bearingProvider.stop()
         remoteControl.unregister()
         mapView.onPause()
         super.onPause()
