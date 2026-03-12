@@ -1214,9 +1214,37 @@ class MapActivity : ComponentActivity() {
         m.setStyle(styleUrl(isDark)) { s ->
             style = s
             m.moveCamera(CameraUpdateFactory.newCameraPosition(savedCamera))
-            enableLocationIfReady()
+            reactivateLocationComponent()
             if (viewModel.uiState.value.isSatelliteEnabled) {
                 applySatelliteLayer(enabled = true, animated = false)
+            }
+        }
+    }
+
+    /**
+     * Re-activates the location component after a style reload WITHOUT
+     * moving the camera. [enableLocationIfReady] animates to the current
+     * GPS position, which is correct on first launch but wrong after a
+     * style-only change (e.g. dark-mode toggle).
+     */
+    @SuppressLint("MissingPermission")
+    private fun reactivateLocationComponent() {
+        val m = map   ?: return
+        val s = style ?: return
+        if (!hasLocationPermission) return
+
+        m.locationComponent.apply {
+            activateLocationComponent(
+                LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
+            )
+            isLocationComponentEnabled = true
+            val uiState = viewModel.uiState.value
+            val shouldTrack = !uiState.isInPanningMode
+                && uiState.mode != AppMode.EDIT
+                && cameraMode != CameraMode.NONE
+            if (shouldTrack) {
+                cameraMode = trackingCameraMode()
+                renderMode = trackingRenderMode()
             }
         }
     }
@@ -1246,12 +1274,16 @@ class MapActivity : ComponentActivity() {
             if (s.getSourceAs<RasterSource>(SOURCE_SATELLITE) == null) {
                 val tileSet = TileSet("2.1.0", "$SAT_TILE_TEMPLATE${BuildConfig.MAPTILER_KEY}")
                 s.addSource(RasterSource(SOURCE_SATELLITE, tileSet, 512))
-                s.addLayerAt(
-                    RasterLayer(LAYER_SATELLITE, SOURCE_SATELLITE).apply {
-                        setProperties(PropertyFactory.rasterOpacity(0f))
-                    },
-                    0,
-                )
+                val satLayer = RasterLayer(LAYER_SATELLITE, SOURCE_SATELLITE).apply {
+                    setProperties(PropertyFactory.rasterOpacity(0f))
+                }
+                // Insert satellite above base-map fills but below labels/icons.
+                val firstSymbol = s.layers.firstOrNull { it is SymbolLayer }
+                if (firstSymbol != null) {
+                    s.addLayerBelow(satLayer, firstSymbol.id)
+                } else {
+                    s.addLayer(satLayer)
+                }
             }
             val layer = s.getLayerAs<RasterLayer>(LAYER_SATELLITE) ?: return
             val targetOpacity = 1f
