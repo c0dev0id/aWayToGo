@@ -2525,7 +2525,10 @@ class MapActivity : ComponentActivity() {
 
         benchmarkJob = lifecycleScope.launch {
             val results = mutableListOf<BenchmarkResult>()
-            val startTarget = m.cameraPosition.target
+            val startTarget = m.cameraPosition.target ?: run {
+                dismissBenchmarkProgressOverlay()
+                return@launch
+            }
 
             for (zoom in listOf(8, 10, 14, 16)) {
                 updateBenchmarkStatus("Zoom $zoom / 16…")
