@@ -1589,7 +1589,7 @@ class MapActivity : ComponentActivity() {
             lp.width  = btnSz
             lp.height = btnSz
             menuPanel.layoutParams = lp
-            hamburgerBars.forEach { it.rotation = 0f; it.scaleX = 1f }
+            hamburgerBars.forEach { it.rotation = 0f; it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
             menuDismissOverlay.visibility = View.GONE
             return
         }
@@ -1700,10 +1700,14 @@ class MapActivity : ComponentActivity() {
         val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
         val startH    = lp.height
 
-        val barTargetRot   = floatArrayOf(-45f, 0f, +45f)
-        val barTargetScale = floatArrayOf(0.5f, 1.0f, 0.5f)
-        val barStartRot    = FloatArray(3) { hamburgerBars[it].rotation }
-        val barStartScale  = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barTargetRot    = floatArrayOf(-45f, 0f, +45f)
+        val barTargetScale  = floatArrayOf(0.5f, 1.0f, 0.5f)
+        val barTargetTransX = floatArrayOf(-1.5f * d, +2f * d, -1.5f * d)
+        val barTargetTransY = floatArrayOf(+1.5f * d,  0f,     -1.5f * d)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
         val iconStartAlpha = rowIcon.alpha
 
         settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1720,8 +1724,10 @@ class MapActivity : ComponentActivity() {
                 // Icon fades out so it appears to teleport to the right side of the header.
                 rowIcon.alpha = iconStartAlpha * (1f - t)
                 hamburgerBars.forEachIndexed { i, bar ->
-                    bar.rotation = barStartRot[i] + (barTargetRot[i] - barStartRot[i]) * t
-                    bar.scaleX   = barStartScale[i] + (barTargetScale[i] - barStartScale[i]) * t
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
                 }
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -1757,10 +1763,14 @@ class MapActivity : ComponentActivity() {
         val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
         val startH    = lp.height
 
-        val barTargetRot   = floatArrayOf(90f, 90f, 90f)
-        val barTargetScale = floatArrayOf(1.0f, 1.0f, 1.0f)
-        val barStartRot    = FloatArray(3) { hamburgerBars[it].rotation }
-        val barStartScale  = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barTargetRot    = floatArrayOf(90f, 90f, 90f)
+        val barTargetScale  = floatArrayOf(1.0f, 1.0f, 1.0f)
+        val barTargetTransX = floatArrayOf(0f, 0f, 0f)
+        val barTargetTransY = floatArrayOf(0f, 0f, 0f)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
         val iconStartAlpha = rowIcon.alpha  // typically 0f (was faded out on enter)
 
         settingsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1777,8 +1787,10 @@ class MapActivity : ComponentActivity() {
                 // Fade the settings row icon back in as we return to the main menu.
                 rowIcon.alpha = iconStartAlpha + (1f - iconStartAlpha) * t
                 hamburgerBars.forEachIndexed { i, bar ->
-                    bar.rotation = barStartRot[i] + (barTargetRot[i] - barStartRot[i]) * t
-                    bar.scaleX   = barStartScale[i] + (barTargetScale[i] - barStartScale[i]) * t
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
                 }
             }
             addListener(object : AnimatorListenerAdapter() {
