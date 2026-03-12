@@ -61,6 +61,7 @@ import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
 import de.codevoid.aWayToGo.update.AppUpdater
+import de.codevoid.aWayToGo.update.ConnectivityChecker
 import de.codevoid.aWayToGo.update.DownloadProgress
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
@@ -180,6 +181,12 @@ class MapActivity : ComponentActivity() {
     private var lastDownloadProgress: DownloadProgress? = null
 
     private val appUpdater by lazy { AppUpdater(this) }
+
+    // non-null when an update has been found but not yet downloaded.
+    private var pendingUpdateUrl: String? = null
+    // drives the version card blink loop while an update is pending.
+    private var updateAnimJob: Job? = null
+    private val prefs by lazy { getSharedPreferences("app_prefs", MODE_PRIVATE) }
 
     // ── Search ────────────────────────────────────────────────────────────────
     private lateinit var searchOverlayResult: SearchOverlayResult
@@ -1745,10 +1752,81 @@ class MapActivity : ComponentActivity() {
     // ── Self-update ───────────────────────────────────────────────────────────
 
     /**
+     * Silently checks for an update at most once every 24 hours on resume.
+     *
+     * - Requires a validated internet connection ([ConnectivityChecker.isStableOnline]).
+     * - If an update has already been found this session, just (re-)starts the animation.
+     * - The 24 h rate-limit only applies to automatic checks; manual taps bypass it.
+     * - On success, sets [pendingUpdateUrl] and starts [startUpdateAvailableAnimation].
+     */
+    private fun checkUpdateIfDue() {
+        // Already found an update this session — restore the animation only.
+        pendingUpdateUrl?.let { url ->
+            AppUpdater.versionHashFromUrl(url)?.let { hash -> startUpdateAvailableAnimation(hash) }
+            return
+        }
+        val lastCheck = prefs.getLong("last_update_check_ms", 0L)
+        if (System.currentTimeMillis() - lastCheck < 24 * 60 * 60 * 1_000L) return
+        if (!ConnectivityChecker.isStableOnline(this)) return
+
+        lifecycleScope.launch {
+            prefs.edit().putLong("last_update_check_ms", System.currentTimeMillis()).apply()
+            val url = appUpdater.checkForUpdate() ?: return@launch
+            appUpdater.cleanupStaleFiles(url)
+            pendingUpdateUrl = url
+            AppUpdater.versionHashFromUrl(url)?.let { hash -> startUpdateAvailableAnimation(hash) }
+        }
+    }
+
+    /**
+     * Colours the version card with the blue accent and starts the blink loop:
+     * old hash (5 s) → 500 ms fade → [newHash] (2 s) → 500 ms fade → repeat.
+     */
+    private fun startUpdateAvailableAnimation(newHash: String) {
+        stopUpdateAvailableAnimation()
+        val d = resources.displayMetrics.density
+        versionCardView.background = GradientDrawable().apply {
+            setColor(Color.argb(220, 0, 80, 160))
+            cornerRadius = 16f * d
+        }
+        updateAnimJob = lifecycleScope.launch {
+            while (isActive) {
+                versionCardView.alpha = 1f
+                versionCardView.text = BuildConfig.GIT_COMMIT
+                delay(5_000)
+
+                versionCardView.animate().alpha(0f).setDuration(500).start()
+                delay(500)
+                versionCardView.text = newHash
+                versionCardView.animate().alpha(1f).setDuration(200).start()
+                delay(2_000)
+
+                versionCardView.animate().alpha(0f).setDuration(500).start()
+                delay(500)
+                versionCardView.text = BuildConfig.GIT_COMMIT
+                versionCardView.animate().alpha(1f).setDuration(200).start()
+            }
+        }
+    }
+
+    /** Cancels the update blink loop and restores the card to full opacity. */
+    private fun stopUpdateAvailableAnimation() {
+        updateAnimJob?.cancel()
+        updateAnimJob = null
+        versionCardView.animate().cancel()
+        versionCardView.alpha = 1f
+    }
+
+    /**
      * Tap handler for the version card.
      *
-     * Delegates network and file I/O to [AppUpdater]; this method only manages
-     * the card label and the download progress overlay.
+     * **Path A — card is flashing (update already found):**
+     * Starts the download immediately without re-checking GitHub.
+     * On cancel or error the animation resumes, since the update is still available.
+     *
+     * **Path B — card is not flashing (manual check):**
+     * Shows "checking…", calls [AppUpdater.checkForUpdate], then either "up to date"
+     * or starts the download.  Not rate-limited — always runs when tapped.
      */
     private fun onVersionCardTapped() {
         // If downloading with the overlay hidden, re-show it.
@@ -1758,7 +1836,38 @@ class MapActivity : ComponentActivity() {
             return
         }
 
-        // Ignore taps while already busy (text is not the commit hash).
+        // ── Path A: update already found, card is flashing ───────────────────
+        val url = pendingUpdateUrl
+        if (url != null && downloadJob?.isActive != true) {
+            stopUpdateAvailableAnimation()
+            resetVersionCard()
+            showDownloadOverlay()
+            downloadJob = lifecycleScope.launch {
+                try {
+                    val apk = appUpdater.downloadApk(url) { progress ->
+                        lastDownloadProgress = progress
+                        updateDownloadUi(progress)
+                    }
+                    pendingUpdateUrl = null
+                    dismissDownloadOverlay()
+                    resetVersionCard()
+                    appUpdater.installApk(apk)
+                } catch (_: CancellationException) {
+                    dismissDownloadOverlay()
+                    resetVersionCard()
+                    AppUpdater.versionHashFromUrl(url)?.let { startUpdateAvailableAnimation(it) }
+                } catch (_: Exception) {
+                    dismissDownloadOverlay()
+                    versionCardView.text = "error"
+                    delay(2_000)
+                    resetVersionCard()
+                    AppUpdater.versionHashFromUrl(url)?.let { startUpdateAvailableAnimation(it) }
+                }
+            }
+            return
+        }
+
+        // ── Path B: manual check (card not flashing, not downloading) ─────────
         if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
         versionCardView.text = "checking…"
 
@@ -1771,8 +1880,8 @@ class MapActivity : ComponentActivity() {
                 return@launch
             }
 
-            // Remove stale files from a different update.
             appUpdater.cleanupStaleFiles(apkUrl)
+            pendingUpdateUrl = apkUrl
 
             showDownloadOverlay()
             downloadJob = launch {
@@ -1781,18 +1890,20 @@ class MapActivity : ComponentActivity() {
                         lastDownloadProgress = progress
                         updateDownloadUi(progress)
                     }
+                    pendingUpdateUrl = null
                     dismissDownloadOverlay()
                     resetVersionCard()
                     appUpdater.installApk(apk)
                 } catch (_: CancellationException) {
-                    // User cancelled — partial file kept for resume.
                     dismissDownloadOverlay()
                     resetVersionCard()
+                    AppUpdater.versionHashFromUrl(apkUrl)?.let { startUpdateAvailableAnimation(it) }
                 } catch (_: Exception) {
                     dismissDownloadOverlay()
                     versionCardView.text = "error"
                     delay(2_000)
                     resetVersionCard()
+                    AppUpdater.versionHashFromUrl(apkUrl)?.let { startUpdateAvailableAnimation(it) }
                 }
             }
         }
@@ -1840,6 +1951,7 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun resetVersionCard() {
+        stopUpdateAvailableAnimation()
         val d = resources.displayMetrics.density
         versionCardView.text = BuildConfig.GIT_COMMIT
         versionCardView.background = GradientDrawable().apply {
@@ -2121,12 +2233,14 @@ class MapActivity : ComponentActivity() {
         mapView.onResume()
         remoteControl.register()
         Choreographer.getInstance().postFrameCallback(frameCallback)
+        checkUpdateIfDue()
     }
 
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
         mapView.onPause()
+        stopUpdateAvailableAnimation()
         super.onPause()
     }
 
@@ -2137,6 +2251,7 @@ class MapActivity : ComponentActivity() {
 
     override fun onDestroy() {
         animBag.cancelAll()
+        updateAnimJob?.cancel()
         super.onDestroy()
         mapView.onDestroy()
     }
