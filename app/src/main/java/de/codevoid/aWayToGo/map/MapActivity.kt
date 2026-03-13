@@ -386,7 +386,7 @@ class MapActivity : ComponentActivity() {
                     // the same smooth predicted position as the puck — not the
                     // previous frame's lastKnownLocation.
                     dragLineAnchor?.let { anchor ->
-                        setDragLine(LatLng(predLat, predLon), anchor)
+                        setDragLine(LatLng(predLat, predLon), anchor, frameTimeNanos / 1_000_000_000.0)
                     }
                     // Move the camera only when follow mode is active.
                     // Navigate mode targets 45° tilt; nudging every frame so the follow
@@ -1048,7 +1048,7 @@ class MapActivity : ComponentActivity() {
                         val target = m.projection.fromScreenLocation(screenCenter)
                         dragLineAnchor = target
                         m.locationComponent.lastKnownLocation?.let { loc ->
-                            setDragLine(LatLng(loc.latitude, loc.longitude), target)
+                            setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
                         }
                     }
 
@@ -2618,18 +2618,30 @@ class MapActivity : ComponentActivity() {
      * The label text uses a comma decimal separator ("4,5km") for readability
      * on the motorcycle-mounted device.
      */
-    private fun setDragLine(from: LatLng, to: LatLng) {
+    private fun setDragLine(from: LatLng, to: LatLng, timeSec: Double) {
         val s = style ?: return
 
         val distKm = from.distanceTo(to) / 1000.0
         val label  = "${"%.1f".format(distKm).replace('.', ',')}km"
 
-        val geometry = LineString.fromLngLats(
-            listOf(
-                Point.fromLngLat(from.longitude, from.latitude),
-                Point.fromLngLat(to.longitude,   to.latitude),
+        val dx  = to.longitude - from.longitude
+        val dy  = to.latitude  - from.latitude
+        val len = sqrt(dx * dx + dy * dy)
+        val px  = -dy / len
+        val py  =  dx / len
+
+        val N = 12
+        val points = (0 until N).map { i ->
+            val t     = i.toDouble() / (N - 1)
+            val env   = sin(Math.PI * t)
+            val phase = 2.0 * Math.PI * 1.5 * t - 1.8 * timeSec
+            val disp  = 0.12 * len * sin(phase) * env
+            Point.fromLngLat(
+                from.longitude + t * dx + disp * px,
+                from.latitude  + t * dy + disp * py,
             )
-        )
+        }
+        val geometry = LineString.fromLngLats(points)
         val feature    = Feature.fromGeometry(geometry)
         feature.addStringProperty("label", label)
         val collection = FeatureCollection.fromFeatures(listOf(feature))
