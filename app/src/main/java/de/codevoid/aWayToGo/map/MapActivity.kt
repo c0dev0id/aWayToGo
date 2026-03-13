@@ -341,17 +341,20 @@ class MapActivity : ComponentActivity() {
                     }
                 }
                 // Predict and animate every frame (requires at least one valid fix).
+                // Navigate mode targets 45° tilt; every frame nudges toward it so the
+                // follow loop does not fight the tilt animation started by applyCameraForMode.
                 if (!followLastLat.isNaN()) {
-                    val elapsedNs = frameTimeNanos - followLastTimeNs
-                    val predLat   = followLastLat + followVelocityLat * elapsedNs
-                    val predLon   = followLastLon + followVelocityLon * elapsedNs
+                    val elapsedNs  = frameTimeNanos - followLastTimeNs
+                    val predLat    = followLastLat + followVelocityLat * elapsedNs
+                    val predLon    = followLastLon + followVelocityLon * elapsedNs
+                    val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
                     m.animateCamera(
                         CameraUpdateFactory.newCameraPosition(
                             CameraPosition.Builder()
                                 .target(LatLng(predLat, predLon))
                                 .zoom(cur.zoom)
                                 .bearing(gpsBearing)
-                                .tilt(cur.tilt)
+                                .tilt(targetTilt)
                                 .padding(cur.padding)
                                 .build(),
                         ),
