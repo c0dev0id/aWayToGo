@@ -2684,8 +2684,26 @@ class MapActivity : ComponentActivity() {
         s.addSource(GeoJsonSource(SOURCE_DRAG_LINE,     lineCollection, GeoJsonOptions().withSynchronousUpdate(true)))
         s.addSource(GeoJsonSource(SOURCE_DRAG_LINE_AUX, auxCollection,  GeoJsonOptions().withSynchronousUpdate(true)))
 
+        // Insert drag-line layers below the location puck so the line's starting
+        // point appears under the puck rather than flying in front of it.
+        // The puck is rendered via several "maplibre-location-*" layers; we find
+        // the bottom-most one and stack every drag-line layer just below it.
+        val puckLayerIds = listOf(
+            "maplibre-location-shadow-layer",
+            "maplibre-location-accuracy-layer",
+            "maplibre-location-background-layer",
+            "maplibre-location-foreground-layer",
+            "maplibre-location-bearing-layer",
+        )
+        val styleLayerIds = s.layers.map { it.id }.toHashSet()
+        val belowId = puckLayerIds.firstOrNull { it in styleLayerIds }
+
+        fun addDragLayer(layer: Layer) {
+            if (belowId != null) s.addLayerBelow(layer, belowId) else s.addLayer(layer)
+        }
+
         // Casing — dark border, 1.5dp wider on each side than the tape fill.
-        s.addLayer(
+        addDragLayer(
             LineLayer(LAYER_DRAG_LINE_CASING, SOURCE_DRAG_LINE).apply {
                 setProperties(
                     PropertyFactory.lineColor("#1A1A1A"),
@@ -2698,7 +2716,7 @@ class MapActivity : ComponentActivity() {
         )
 
         // Tape — yellow/black diagonal-stripe pattern (construction tape look).
-        s.addLayer(
+        addDragLayer(
             LineLayer(LAYER_DRAG_LINE_FILL, SOURCE_DRAG_LINE).apply {
                 setProperties(
                     PropertyFactory.linePattern(IMAGE_TAPE_PATTERN),
@@ -2711,7 +2729,7 @@ class MapActivity : ComponentActivity() {
 
         // Distance label — point-based at 25 % from puck, so it stays on-screen
         // even when the anchor is far away or the line extends off the viewport.
-        s.addLayer(
+        addDragLayer(
             SymbolLayer(LAYER_DRAG_LINE_LABEL, SOURCE_DRAG_LINE_AUX).apply {
                 setFilter(Expression.has("label"))
                 setProperties(
@@ -2728,7 +2746,7 @@ class MapActivity : ComponentActivity() {
         )
 
         // Anchor pin — outer dark ring with yellow stroke.
-        s.addLayer(
+        addDragLayer(
             CircleLayer(LAYER_DRAG_LINE_PIN_OUTER, SOURCE_DRAG_LINE_AUX).apply {
                 setFilter(Expression.has("is_pin"))
                 setProperties(
@@ -2742,7 +2760,7 @@ class MapActivity : ComponentActivity() {
         )
 
         // Anchor pin — yellow inner dot (completes the pin look).
-        s.addLayer(
+        addDragLayer(
             CircleLayer(LAYER_DRAG_LINE_PIN_INNER, SOURCE_DRAG_LINE_AUX).apply {
                 setFilter(Expression.has("is_pin"))
                 setProperties(
