@@ -1,6 +1,8 @@
 package de.codevoid.aWayToGo.map
 
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 import android.Manifest
 import android.annotation.SuppressLint
@@ -133,6 +135,11 @@ private const val FOLLOW_LOOK_AHEAD_MS = 100
 // enough to cover GPS noise at low speed while rejecting true outliers.
 private const val FOLLOW_MAX_SPEED_MS = 83.3   // 300 km/h in m/s
 
+// Course Up bearing smoothing: EMA weight applied each Choreographer frame.
+// Smaller = smoother but laggier; larger = more responsive but jitterier.
+// α = 0.15 at 60 fps → ~50% toward a new heading in ~0.8 s.
+private const val BEARING_SMOOTH_ALPHA_DEFAULT = 0.15
+
 // Distance threshold (metres) below which flyToLocation animates directly.
 // Above this, it zooms out to a context level first, then zooms back in.
 private const val FLYTO_THRESHOLD_M = 10_000.0
@@ -258,6 +265,14 @@ class MapActivity : ComponentActivity() {
     private var followVelocityLat = 0.0      // degrees/ns
     private var followVelocityLon = 0.0      // degrees/ns
 
+    // ── Course Up bearing smoothing (circular EMA) ────────────────────────────
+    // Stored as sin/cos components to avoid 0°/360° wrap-around artefacts.
+    // NaN = not yet initialised; reset whenever Course Up is disabled.
+    private var followSmoothedSin = Double.NaN
+    private var followSmoothedCos = Double.NaN
+    // Runtime-tunable alpha — can be adjusted from the debug menu.
+    var bearingSmoothAlpha = BEARING_SMOOTH_ALPHA_DEFAULT
+
     // ── Synthetic location engine ─────────────────────────────────────────────
     // The puck follows the same dead-reckoned position as the camera so the two
     // are always in sync.  Raw GPS is subscribed separately (realLocationEngine)
@@ -351,8 +366,18 @@ class MapActivity : ComponentActivity() {
                         }
                     }
                     // Course Up: use GPS course-over-ground when available.
+                    // Apply a circular EMA (sin/cos space) to smooth noisy/jumpy GPS bearing.
                     if (uiState.isCourseUpEnabled && loc.hasBearing()) {
-                        gpsBearing = loc.bearing.toDouble()
+                        val rawRad = Math.toRadians(loc.bearing.toDouble())
+                        if (followSmoothedSin.isNaN()) {
+                            // First sample — initialise directly so the map doesn't spin from 0°.
+                            followSmoothedSin = sin(rawRad)
+                            followSmoothedCos = cos(rawRad)
+                        } else {
+                            followSmoothedSin = (1.0 - bearingSmoothAlpha) * followSmoothedSin + bearingSmoothAlpha * sin(rawRad)
+                            followSmoothedCos = (1.0 - bearingSmoothAlpha) * followSmoothedCos + bearingSmoothAlpha * cos(rawRad)
+                        }
+                        gpsBearing = Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
                     }
                 }
                 if (!followLastLat.isNaN()) {
@@ -809,6 +834,8 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
             // Run Benchmark → starts the benchmark.
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
+            // Bearing Smooth α → cycles through preset values.
+            result.debugContent.getChildAt(2).setOnClickListener { cycleBearingSmoothAlpha() }
         }
         root.addView(
             menuPanel,
@@ -1606,10 +1633,13 @@ class MapActivity : ComponentActivity() {
         setToggleActive(followToggleBtn,    new.isFollowModeActive)
 
         // ── Course Up → North Up transition ───────────────────────────────────
-        // When Course Up is turned off, animate the map back to 0° (north at top).
+        // When Course Up is turned off, animate the map back to 0° (north at top)
+        // and reset smoothed bearing state so re-enabling starts fresh.
         val courseUpChanged = old?.isCourseUpEnabled != new.isCourseUpEnabled
         if (courseUpChanged && !new.isCourseUpEnabled) {
             rotate(0.0)
+            followSmoothedSin = Double.NaN
+            followSmoothedCos = Double.NaN
         }
     }
 
@@ -2736,6 +2766,18 @@ class MapActivity : ComponentActivity() {
      *
      * Results are shown in a custom overlay when all four runs complete.
      */
+    private val bearingSmoothAlphaPresets = listOf(0.05, 0.10, 0.15, 0.20, 0.30, 0.50)
+
+    private fun cycleBearingSmoothAlpha() {
+        val currentIndex = bearingSmoothAlphaPresets.indexOfFirst { it == bearingSmoothAlpha }
+        val nextIndex = (currentIndex + 1) % bearingSmoothAlphaPresets.size
+        bearingSmoothAlpha = bearingSmoothAlphaPresets[nextIndex]
+        // Reset smoothed state so the new alpha takes effect cleanly.
+        followSmoothedSin = Double.NaN
+        followSmoothedCos = Double.NaN
+        menuPanelResult.bearingSmoothAlphaLabel.text = "Bearing Smooth α: $bearingSmoothAlpha"
+    }
+
     private fun startBenchmark() {
         val m = map ?: return
         benchmarkJob?.cancel()
