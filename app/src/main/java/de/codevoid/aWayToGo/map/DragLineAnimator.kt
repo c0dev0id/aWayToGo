@@ -97,11 +97,27 @@ class DragLineAnimator {
 
     // ── Fall tunables ────────────────────────────────────────────────────────
 
-    /** Gravitational acceleration for the fall (fraction-of-length per s²). */
-    var fallAcceleration: Double = 0.45
+    /**
+     * Downward acceleration added per frame² during the fall-away animation.
+     * Higher than [gravityStrength] so the tape exits the screen in ~1–2 s.
+     */
+    var fallGravityStrength: Double = 2.2e-4
 
-    /** Oscillation amplitude superimposed on the fall. */
-    var fallWobbleAmplitude: Double = 0.07
+    /**
+     * Initial downward speed given to every particle at the moment of release
+     * (as a fraction of line length per frame).  Creates the impression that
+     * the tape is flicked off rather than drifting — matches the brief
+     * faster-than-g tip acceleration seen in released-chain experiments.
+     */
+    var fallInitialSpeed: Double = 0.012
+
+    /**
+     * Amplitude of the deterministic per-particle velocity noise applied at
+     * release.  Breaks the degenerate symmetric collapse so the rope crumples
+     * naturally (Tomaszewski & Pieranski 2005: local buckling observed in
+     * Phase 1 of the free-fall folded-chain experiments).
+     */
+    var fallSymmetryNoise: Double = 0.003
 
     // ── Sine tunables ────────────────────────────────────────────────────────
 
@@ -158,12 +174,13 @@ class DragLineAnimator {
     private var segmentLen = 0.0
     private var verletInited = false
 
-    // ── Internal Verlet state (gravity mode) ────────────────────────────────
+    // ── Internal Verlet state (gravity + fall modes) ────────────────────────
 
     private var gravParticles    = DoubleArray(0)
     private var gravOldParticles = DoubleArray(0)
     private var gravSegLen       = 0.0
     private var gravInited       = false
+    private var gravFrameCount   = 0     // used by fall mode for snap-phase noise
 
     // ── Output ──────────────────────────────────────────────────────────────
 
@@ -178,8 +195,9 @@ class DragLineAnimator {
 
     /** Reset internal state.  Call when the anchor point changes. */
     fun reset() {
-        verletInited = false
-        gravInited   = false
+        verletInited  = false
+        gravInited    = false
+        gravFrameCount = 0
     }
 
     /**
@@ -194,7 +212,7 @@ class DragLineAnimator {
         return when (style) {
             Style.WHIP    -> generateWhip(elapsedSec)
             Style.LASSO   -> generateLasso(elapsedSec)
-            Style.FALL    -> generateFall(elapsedSec)
+            Style.FALL    -> generateFall()
             Style.SINE    -> generateSine(elapsedSec)
             Style.GRAVITY -> generateGravity()
         }
@@ -612,29 +630,117 @@ class DragLineAnimator {
     // ── Fall implementation ─────────────────────────────────────────────────
     //
     // Used when a new drag line replaces an existing one.  Both endpoints
-    // "detach" and the rope falls out of frame under simulated gravity with a
-    // loose-string wobble superimposed.  Stateless — all motion is derived from
-    // elapsedSec so no reset() is required before calling.
+    // simultaneously "detach" and the rope falls out of frame.
+    //
+    // Three physics-based phases (Tomaszewski & Pieranski 2005; high-speed
+    // imaging studies of free-falling ropes):
+    //
+    //   Phase 1 – Snap (frames 1–8): endpoints briefly move inward as elastic
+    //     tension releases, while the rope centre bows downward.  Models the
+    //     brief inward spring-back seen at the moment of simultaneous release.
+    //
+    //   Phase 2 – Bow / catenary deepening (frames 8–40): gravity accelerates
+    //     all particles.  With no endpoint support, the entire shape translates
+    //     downward while the catenary deepens.  Distance constraints (Jakobsen
+    //     relaxation) keep the rope inextensible.
+    //
+    //   Phase 3 – Tumble / crumple (frames 40+): slack develops as the rope
+    //     has already acquired significant speed.  Symmetry-breaking noise
+    //     (applied to initial velocities at reset) causes the rope to fold
+    //     and crumple into irregular shapes — matching the local buckling seen
+    //     in folded-chain experiments.
+    //
+    // Unlike generateGravity(), both endpoints are FREE — they are never
+    // pinned.  The whole rope falls as one body, with internal constraints
+    // determining the shape evolution.
+    //
+    // Called once per Choreographer frame; each call advances the simulation
+    // by one step.  Returns null once the rope has fallen off-screen.
 
-    private fun generateFall(elapsedSec: Double): List<Sample>? {
-        // Quadratic gravity: displacement grows with t².
-        val sag = fallAcceleration * elapsedSec * elapsedSec
-        // Clear once the line has fallen well off-screen.
-        if (sag > 1.4) return null
-
+    private fun generateFall(): List<Sample>? {
         val n = resolution.coerceAtLeast(6)
-        // Wobble decays quickly — the rope should look limp, not elastic.
-        val wobbleDecay = exp(-elapsedSec * 1.8)
+        if (!gravInited || gravParticles.size != n * 2) {
+            initFallVerlet(n)
+        }
+
+        gravFrameCount++
+
+        // ── Verlet integration — all nodes free ───────────────────────────
+        for (i in 0 until n) {
+            val ix = i * 2; val iy = ix + 1
+            val cx = gravParticles[ix];    val cy = gravParticles[iy]
+            val ox = gravOldParticles[ix]; val oy = gravOldParticles[iy]
+            val vx = (cx - ox) * gravDamping
+            val vy = (cy - oy) * gravDamping
+            gravOldParticles[ix] = cx; gravOldParticles[iy] = cy
+            gravParticles[ix] = cx + vx
+            gravParticles[iy] = cy + vy + fallGravityStrength
+        }
+
+        // ── Distance constraints (no endpoint pinning) ────────────────────
+        for (iter in 0 until gravConstraintIters) {
+            for (i in 0 until n - 1) {
+                val ax = gravParticles[i * 2];       val ay = gravParticles[i * 2 + 1]
+                val bx = gravParticles[(i + 1) * 2]; val by = gravParticles[(i + 1) * 2 + 1]
+                val ddx = bx - ax; val ddy = by - ay
+                val dist = sqrt(ddx * ddx + ddy * ddy)
+                if (dist < 1e-12) continue
+                val diff  = (gravSegLen - dist) / dist * 0.5
+                val ox2 = ddx * diff; val oy2 = ddy * diff
+                // All particles free — both ends of each segment move equally.
+                gravParticles[i * 2]           -= ox2; gravParticles[i * 2 + 1]           -= oy2
+                gravParticles[(i + 1) * 2]     += ox2; gravParticles[(i + 1) * 2 + 1]     += oy2
+            }
+        }
+
+        // ── Exit once the rope centre is well past the screen edge ────────
+        val midOffset = gravParticles[(n / 2) * 2 + 1]
+        if (midOffset > 1.5) return null
 
         return (0 until n).map { i ->
-            val t = i.toDouble() / (n - 1)
-            // Catenary-shaped sag: endpoints fall and the mid-span falls further.
-            // Offset is negative = consistently to one side (rope "falls" sideways).
-            val sagOffset = -sag * (1.0 + 1.5 * t * (1.0 - t))
-            // Decaying oscillation for the loose-string wobble.
-            val wobble = fallWobbleAmplitude * wobbleDecay *
-                sin(2.0 * Math.PI * 2.5 * t - 7.0 * elapsedSec)
-            Sample(t, sagOffset + wobble)
+            Sample(t = gravParticles[i * 2], offset = gravParticles[i * 2 + 1])
         }
+    }
+
+    private fun initFallVerlet(n: Int) {
+        gravParticles    = DoubleArray(n * 2)
+        gravOldParticles = DoubleArray(n * 2)
+        // No slack: the rope was taut a moment ago, so segment length = straight-line.
+        gravSegLen     = 1.0 / (n - 1)
+        gravFrameCount = 0
+
+        for (i in 0 until n) {
+            val t = i.toDouble() / (n - 1)
+            gravParticles[i * 2]     = t
+            gravParticles[i * 2 + 1] = 0.0
+
+            // ── Initial velocity encoding (vel = current − old) ──────────
+            // 1. Uniform downward speed for every particle.
+            var initVelY = fallInitialSpeed
+
+            // 2. Snap phase: endpoints contract inward slightly (elastic
+            //    spring-back from the moment of release).  Inner particles
+            //    bow downward a little more than the endpoints.
+            //    Extra downward velocity follows a bell curve along the rope.
+            initVelY += fallInitialSpeed * 0.5 * sin(Math.PI * t)
+
+            // 3. Deterministic symmetry-breaking noise in the axial (t)
+            //    direction.  sin(1.9·i + 0.7) gives an irregular but
+            //    repeatable pattern — no random state needed.
+            val axialNoise = fallSymmetryNoise * sin(1.9 * i + 0.7)
+
+            // Snap inward for endpoints: endpoints get a small velocity
+            // toward the centre (negative for i=0, positive for i=n-1).
+            val snapInward = when (i) {
+                0     ->  fallSymmetryNoise * 0.8   // left end moves right
+                n - 1 -> -fallSymmetryNoise * 0.8   // right end moves left
+                else  ->  0.0
+            }
+
+            // old = current − velocity  →  particles[i] + vel = next position
+            gravOldParticles[i * 2]     = t - snapInward - axialNoise
+            gravOldParticles[i * 2 + 1] = 0.0 - initVelY   // subtract to encode downward vel
+        }
+        gravInited = true
     }
 }
