@@ -137,8 +137,7 @@ private const val FOLLOW_MAX_SPEED_MS = 83.3   // 300 km/h in m/s
 
 // Course Up bearing smoothing: EMA weight applied each Choreographer frame.
 // Smaller = smoother but laggier; larger = more responsive but jitterier.
-// α = 0.15 at 60 fps → ~50% toward a new heading in ~0.8 s.
-private const val BEARING_SMOOTH_ALPHA_DEFAULT = 0.15
+private const val BEARING_SMOOTH_ALPHA = 0.005
 
 private const val FLYTO_DURATION_MS = 800
 
@@ -268,8 +267,6 @@ class MapActivity : ComponentActivity() {
     // NaN = not yet initialised; reset whenever Course Up is disabled.
     private var followSmoothedSin = Double.NaN
     private var followSmoothedCos = Double.NaN
-    // Runtime-tunable alpha — can be adjusted from the debug menu.
-    var bearingSmoothAlpha = BEARING_SMOOTH_ALPHA_DEFAULT
 
     // ── Synthetic location engine ─────────────────────────────────────────────
     // The puck follows the same dead-reckoned position as the camera so the two
@@ -372,8 +369,8 @@ class MapActivity : ComponentActivity() {
                             followSmoothedSin = sin(rawRad)
                             followSmoothedCos = cos(rawRad)
                         } else {
-                            followSmoothedSin = (1.0 - bearingSmoothAlpha) * followSmoothedSin + bearingSmoothAlpha * sin(rawRad)
-                            followSmoothedCos = (1.0 - bearingSmoothAlpha) * followSmoothedCos + bearingSmoothAlpha * cos(rawRad)
+                            followSmoothedSin = (1.0 - BEARING_SMOOTH_ALPHA) * followSmoothedSin + BEARING_SMOOTH_ALPHA * sin(rawRad)
+                            followSmoothedCos = (1.0 - BEARING_SMOOTH_ALPHA) * followSmoothedCos + BEARING_SMOOTH_ALPHA * cos(rawRad)
                         }
                         gpsBearing = Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
                     }
@@ -832,8 +829,6 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
             // Run Benchmark → starts the benchmark.
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
-            // Bearing Smooth α → cycles through preset values.
-            result.debugContent.getChildAt(2).setOnClickListener { cycleBearingSmoothAlpha() }
         }
         root.addView(
             menuPanel,
@@ -2723,18 +2718,6 @@ class MapActivity : ComponentActivity() {
      *
      * Results are shown in a custom overlay when all four runs complete.
      */
-    private val bearingSmoothAlphaPresets = listOf(0.005, 0.01, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50)
-
-    private fun cycleBearingSmoothAlpha() {
-        val currentIndex = bearingSmoothAlphaPresets.indexOfFirst { it == bearingSmoothAlpha }
-        val nextIndex = (currentIndex + 1) % bearingSmoothAlphaPresets.size
-        bearingSmoothAlpha = bearingSmoothAlphaPresets[nextIndex]
-        // Reset smoothed state so the new alpha takes effect cleanly.
-        followSmoothedSin = Double.NaN
-        followSmoothedCos = Double.NaN
-        menuPanelResult.bearingSmoothAlphaLabel.text = "Bearing Smooth α: $bearingSmoothAlpha"
-    }
-
     private fun startBenchmark() {
         val m = map ?: return
         benchmarkJob?.cancel()

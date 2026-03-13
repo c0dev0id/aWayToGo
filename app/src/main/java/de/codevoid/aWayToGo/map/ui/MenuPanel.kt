@@ -42,8 +42,6 @@ import de.codevoid.aWayToGo.R
  * toggle and Run Benchmark), initially GONE.
  * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
  * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
- * [bearingSmoothAlphaLabel] is the TextView inside the bearing-smooth α item;
- * its text is updated by MapActivity whenever the alpha value changes.
  */
 data class MenuPanelResult(
     val root: View,
@@ -57,7 +55,6 @@ data class MenuPanelResult(
     val debugGhostHeader: View,
     val debugContent: LinearLayout,
     val debugToggleLabel: TextView,
-    val bearingSmoothAlphaLabel: TextView,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -239,48 +236,12 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
 
     val runBenchmarkItem = menuItem(R.drawable.ic_menu_settings, "Run Benchmark")
 
-    val bearingSmoothAlphaLabel = TextView(context).apply {
-        text = "Bearing Smooth α: 0.15"
-        setTextColor(Color.WHITE)
-        textSize = 20f
-        gravity = Gravity.CENTER_VERTICAL
-    }
-
-    val bearingSmoothItem = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity     = Gravity.CENTER_VERTICAL
-        setPadding(hPad, 0, hPad, 0)
-        isClickable = true
-        isFocusable = true
-        background  = RippleDrawable(
-            ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
-            null,
-            GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                setColor(Color.WHITE)
-            },
-        )
-        addView(
-            ImageView(context).apply {
-                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_settings))
-                scaleType = ImageView.ScaleType.FIT_CENTER
-            },
-            LinearLayout.LayoutParams(iconSz, iconSz),
-        )
-        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
-        addView(
-            bearingSmoothAlphaLabel,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
-        )
-    }
-
     val debugContent = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
         alpha       = 0f
-        addView(debugToggleItem,      LinearLayout.LayoutParams(panelW, itemH))
-        addView(runBenchmarkItem,     LinearLayout.LayoutParams(panelW, itemH))
-        addView(bearingSmoothItem,    LinearLayout.LayoutParams(panelW, itemH))
+        addView(debugToggleItem,  LinearLayout.LayoutParams(panelW, itemH))
+        addView(runBenchmarkItem, LinearLayout.LayoutParams(panelW, itemH))
     }
 
     // ── Ghost header — Settings layer ──────────────────────────────────────────
@@ -373,17 +334,16 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
     }
 
     return MenuPanelResult(
-        root                     = root,
-        hamburgerBars            = hamburgerBars,
-        mainMenuScroll           = mainMenuScroll,
-        settingsRowInList        = settingsRowInList,
-        settingsRowIcon          = settingsRowIcon,
-        settingsGhostHeader      = settingsGhostHeader,
-        settingsContent          = settingsContent,
-        debugRowInSettings       = debugRowInSettings,
-        debugGhostHeader         = debugGhostHeader,
-        debugContent             = debugContent,
-        debugToggleLabel         = debugToggleLabel,
-        bearingSmoothAlphaLabel  = bearingSmoothAlphaLabel,
+        root               = root,
+        hamburgerBars      = hamburgerBars,
+        mainMenuScroll     = mainMenuScroll,
+        settingsRowInList  = settingsRowInList,
+        settingsRowIcon    = settingsRowIcon,
+        settingsGhostHeader = settingsGhostHeader,
+        settingsContent    = settingsContent,
+        debugRowInSettings = debugRowInSettings,
+        debugGhostHeader   = debugGhostHeader,
+        debugContent       = debugContent,
+        debugToggleLabel   = debugToggleLabel,
     )
 }
