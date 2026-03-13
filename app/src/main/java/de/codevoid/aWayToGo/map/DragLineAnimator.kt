@@ -1,5 +1,6 @@
 package de.codevoid.aWayToGo.map
 
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.sin
@@ -85,6 +86,14 @@ class DragLineAnimator {
 
     /** Fraction of the line near the puck kept straight. */
     var lassoStraightFrac: Double = 0.06
+
+    /**
+     * Amplitude of the oval breathing mode as a fraction of [lassoLoopRadius].
+     * The n=2 spinning-ring mode oscillates at 0.87 × spin rate (Brun & Audoly 2014);
+     * the two semi-axes oscillate in anti-phase so the loop alternates between a
+     * tall oval and a wide oval.  0.12 gives a subtle but visible flutter.
+     */
+    var lassoBreathAmplitude: Double = 0.12
 
     // ── Fall tunables ────────────────────────────────────────────────────────
 
@@ -299,12 +308,27 @@ class DragLineAnimator {
     // Four phases:
     //   Phase 0 – Wobble  (0 – 0.5 s): squirly, chaotic rope near the puck.
     //   Phase 1 – Spin    (0.5 – 1.5 s): a clear rotating oval forms at the puck end.
-    //   Phase 2 – Throw   (1.5 – 2.8 s): the oval travels toward the anchor,
-    //                      deforming into an elongated ellipse due to wind / force.
-    //   Phase 3 – Catch   (2.8 – 3.8 s): the oval reaches the anchor and its
-    //                      radius shrinks until the rope goes straight.
+    //   Phase 2 – Throw   (1.5 – 2.8 s): the oval travels toward the anchor; the
+    //                      loop plane rotates 180° (the "half-rotation rule" for a
+    //                      correct catch, Brun & Audoly 2014).
+    //   Phase 3 – Catch   (2.8 – 3.8 s): the oval reaches the anchor and collapses.
     //
-    // Samples form a continuous polyline: trailing rope → oval loop → tail to anchor.
+    // Three physics improvements applied (Brun & Audoly 2014):
+    //
+    //  1. Oval breathing mode — the spinning ring's n=2 natural mode oscillates at
+    //     ~0.87 × the spin frequency.  Both semi-axes are modulated in anti-phase so
+    //     the loop continuously alternates between a tall and a wide oval.
+    //
+    //  2. Half-rotation throw — rather than growing 3.5× elongated during flight, the
+    //     loop plane rotates 180° (|cos(π * phaseFrac)| modulates the perp radius so
+    //     the loop goes edge-on at mid-throw and face-on again at the anchor).
+    //
+    //  3. Honda smoothing — the rope cannot make a sharp corner at the attachment ring
+    //     (honda knot).  A short quarter-circle arc bridges the spoke tangent (+t) to
+    //     the loop entry tangent (−offset), and the loop traversal always starts at the
+    //     honda attachment so the polyline is geometrically continuous.
+    //
+    // Samples form a continuous polyline: trailing rope → honda arc → oval loop → tail.
     // The order is NOT sorted by t; the loop section intentionally doubles back.
 
     private fun generateLasso(elapsedSec: Double): List<Sample>? {
@@ -325,72 +349,119 @@ class DragLineAnimator {
             else                   -> { phase = 4; phaseFrac = 1.0 }
         }
 
-        val n = resolution.coerceAtLeast(6)
+        val n         = resolution.coerceAtLeast(6)
         val spinAngle = lassoSpinSpeed * elapsedSec
+        val twoPI     = 2.0 * Math.PI
 
         // ── Loop center position along the line ─────────────────────────────
-        // Starts just ahead of the puck, travels toward the anchor.
         val loopCenter = when (phase) {
             0    -> 0.03
-            1    -> 0.03 + phaseFrac * 0.05     // drifts slightly while spinning
-            2    -> 0.08 + phaseFrac * 0.87     // travels from 8 % to 95 %
+            1    -> 0.03 + phaseFrac * 0.05
+            2    -> 0.08 + phaseFrac * 0.87
             3    -> 0.95
             else -> 1.0
         }
 
-        // ── Loop radii ───────────────────────────────────────────────────────
-        val baseR = lassoLoopRadius             // e.g. 0.10
-        val loopRadiusPerp = when (phase) {
-            0    -> baseR * phaseFrac           // grows 0 → R as wobble → spin
-            1    -> baseR
-            2    -> if (phaseFrac <= 0.85) baseR                                     // full width during travel
-                    else baseR * (1.0 - (phaseFrac - 0.85) / 0.15)               // taper to ~0 in last 15%
-            3    -> baseR * (1.0 - phaseFrac)  // collapses to 0 at anchor
+        // ── Improvement 1: Oval breathing mode (0.87 × spin rate) ───────────
+        // Active only during stable spinning (phases 1–2).  breathMod oscillates
+        // between ±lassoBreathAmplitude; the two semi-axes are anti-phase.
+        val breathPhase  = 0.87 * lassoSpinSpeed * elapsedSec
+        val breathScale  = when (phase) {
+            0    -> phaseFrac                                  // ramp in
+            1    -> 1.0
+            2    -> abs(cos(phaseFrac * Math.PI))              // tied to tilt factor
             else -> 0.0
         }
-        // Axial stretch: oval elongates along line direction during throw (wind).
+        val breathMod = lassoBreathAmplitude * breathScale * sin(breathPhase)
+
+        // ── Improvement 2: Half-rotation throw ──────────────────────────────
+        // In phase 2 the loop plane rotates 180°: face-on → edge-on → face-on.
+        // tiltFactor=1 when face-on (max visibility), 0 when edge-on.
+        val tiltFactor = if (phase == 2) abs(cos(phaseFrac * Math.PI)) else 1.0
+
+        // ── Loop radii ───────────────────────────────────────────────────────
+        val baseR = lassoLoopRadius
+
+        val loopRadiusPerp = when (phase) {
+            0    -> baseR * phaseFrac
+            1    -> baseR * (1.0 + breathMod)
+            2    -> {
+                // Tilt-based visibility; taper closed in last 15% as loop arrives.
+                val taper = if (phaseFrac > 0.85) (1.0 - (phaseFrac - 0.85) / 0.15) else 1.0
+                baseR * tiltFactor * taper * (1.0 + breathMod)
+            }
+            3    -> baseR * (1.0 - phaseFrac)
+            else -> 0.0
+        }
+
+        // Axial radius: anti-phase to perp (oval breathing).
+        // In phase 2 the axial length stays close to baseR — no more 3.5× elongation.
         val loopRadiusAxial = when (phase) {
-            2    -> baseR * (1.0 + phaseFrac * 2.5)            // grows to 3.5× elongation
-            else -> loopRadiusPerp
+            2    -> (baseR * (1.0 + tiltFactor * 0.3 - breathMod)).coerceAtLeast(0.01)
+            0, 3 -> loopRadiusPerp   // circular during formation and collapse
+            else -> (baseR * (1.0 - breathMod)).coerceAtLeast(0.01)
         }
 
         // ── Trailing rope wobble ─────────────────────────────────────────────
         val wobbleAmp = when (phase) {
-            0    -> lassoSwayAmplitude * (0.4 + 0.6 * phaseFrac)  // grows from 40 % → 100 %
-            1    -> lassoSwayAmplitude * (1.0 - phaseFrac)         // settles
+            0    -> lassoSwayAmplitude * (0.4 + 0.6 * phaseFrac)
+            1    -> lassoSwayAmplitude * (1.0 - phaseFrac)
             else -> 0.0
         }
 
-        val samples = ArrayList<Sample>(n + lassoLoopPoints + 4)
+        val samples = ArrayList<Sample>(n + lassoLoopPoints + 16)
 
-        // ── Trailing rope (puck → front edge of loop) ───────────────────────
+        // ── Trailing rope (puck → just before honda) ─────────────────────────
         val loopFront = (loopCenter - loopRadiusAxial).coerceAtLeast(0.01)
-        val trailN = ((loopFront / 1.0) * n).toInt().coerceAtLeast(2)
+        val trailN    = ((loopFront / 1.0) * n).toInt().coerceAtLeast(2)
 
         for (i in 0 until trailN) {
             val localT = i.toDouble() / (trailN - 1)
-            val t = localT * loopFront
-            val tAdj = maxOf(0.0, (localT - lassoStraightFrac) / (1.0 - lassoStraightFrac))
-            val env = sin(Math.PI * tAdj)
-
+            val t      = localT * loopFront
+            val tAdj   = maxOf(0.0, (localT - lassoStraightFrac) / (1.0 - lassoStraightFrac))
+            val env    = sin(Math.PI * tAdj)
             val offset = if (phase == 0) {
-                // Chaotic wobble: two overlapping frequencies
-                val f1 = sin(2.0 * Math.PI * 2.5 * localT - 9.0 * elapsedSec) * env
-                val f2 = sin(2.0 * Math.PI * 4.2 * localT - 15.0 * elapsedSec) * 0.45 * env
+                val f1 = sin(twoPI * 2.5 * localT - 9.0 * elapsedSec) * env
+                val f2 = sin(twoPI * 4.2 * localT - 15.0 * elapsedSec) * 0.45 * env
                 wobbleAmp * (f1 + f2)
             } else {
-                val wave = sin(2.0 * Math.PI * 1.2 * localT - 6.0 * elapsedSec) * env
-                wobbleAmp * wave
+                wobbleAmp * sin(twoPI * 1.2 * localT - 6.0 * elapsedSec) * env
             }
             samples.add(Sample(t, offset))
+        }
+
+        // ── Improvement 3: Honda smoothing ───────────────────────────────────
+        // At the honda attachment the loop tangent is in the −offset direction
+        // (d(offset)/dθ = R_perp·cos(π) = −R_perp < 0), so the spoke arrives
+        // axially (+t) and the loop departs laterally (−offset).  A quarter-circle
+        // arc smoothly bridges the two tangents (Brun & Audoly 2014).
+        if (loopRadiusPerp > 1e-4 && phase >= 1) {
+            val hondaR = loopRadiusPerp * 0.25   // tight bend radius at the ring
+            val arcSteps = 4
+            for (j in 1..arcSteps) {
+                val a = j.toDouble() / arcSteps * Math.PI / 2.0   // 0 → π/2
+                samples.add(Sample(
+                    t      = loopFront + hondaR * sin(a),
+                    offset = -hondaR * (1.0 - cos(a)),            // curves toward −offset
+                ))
+            }
         }
 
         // ── Oval / loop ───────────────────────────────────────────────────────
         if (loopRadiusPerp > 1e-4) {
             val loopN = lassoLoopPoints.coerceAtLeast(8)
-            // Traverse the full ellipse (+1 to close the loop).
-            for (i in 0..loopN) {
-                val theta = spinAngle + 2.0 * Math.PI * i.toDouble() / loopN
+
+            // Always start traversal at the honda attachment (theta = π in the
+            // loop's intrinsic frame) so the polyline enters the loop at loopFront
+            // with a continuous tangent from the honda arc.
+            // theta = spinAngle + 2π·i/loopN = π  →  i = (π − spinAngle mod 2π) · loopN/2π
+            val spinMod   = ((spinAngle % twoPI) + twoPI) % twoPI
+            val attachOff = ((Math.PI - spinMod) + twoPI) % twoPI
+            val attachI   = ((attachOff / twoPI * loopN) + 0.5).toInt() % loopN
+
+            for (k in attachI until attachI + loopN + 1) {
+                val i      = k % loopN
+                val theta  = spinAngle + twoPI * i.toDouble() / loopN
                 val t      = loopCenter + loopRadiusAxial * cos(theta)
                 val offset = loopRadiusPerp  * sin(theta)
                 samples.add(Sample(t.coerceIn(0.0, 1.1), offset))
@@ -398,8 +469,6 @@ class DragLineAnimator {
         }
 
         // ── Connection from loop back edge to anchor ─────────────────────────
-        // Only shown once the loop has started travelling so there is a visible
-        // "tail" behind it.
         if (phase >= 2 || (phase == 1 && phaseFrac > 0.5)) {
             val loopBack = (loopCenter + loopRadiusAxial).coerceAtMost(0.98)
             val connectN = 4
