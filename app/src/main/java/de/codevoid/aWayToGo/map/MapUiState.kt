@@ -18,6 +18,7 @@ package de.codevoid.aWayToGo.map
  * | [isCourseUpEnabled] | Map rotates so current GPS course points up (Course Up).   |
  *                         When false, north always points up (North Up).              |
  * | [dragLineStyle]     | Which animation style the drag line uses (Whip / Lasso).  |
+ * | [isMapLockMenuOpen] | Map-lock context menu open (long-press on crosshair).      |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -32,4 +33,5 @@ data class MapUiState(
     val isDebugMode: Boolean = false,
     val isCourseUpEnabled: Boolean = false,
     val dragLineStyle: DragLineAnimator.Style = DragLineAnimator.Style.WHIP,
+    val isMapLockMenuOpen: Boolean = false,
 )
