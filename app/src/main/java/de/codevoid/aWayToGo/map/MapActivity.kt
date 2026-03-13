@@ -196,9 +196,6 @@ class MapActivity : ComponentActivity() {
     private val viewModel: MapViewModel by viewModels()
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
     private var renderedState: MapUiState? = null
-    // Monotonically-increasing token for animateModeTransition. Each new call
-    // increments this so stale postDelayed / slideIn() callbacks can self-discard.
-    private var modeGen = 0
 
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
@@ -1239,7 +1236,6 @@ class MapActivity : ComponentActivity() {
      *   - Edit top bar slides up            (off screen start = -screenH)
      */
     private fun animateModeTransition(from: AppMode, to: AppMode) {
-        val gen      = ++modeGen
         val w        = resources.displayMetrics.widthPixels.toFloat()
         val h        = resources.displayMetrics.heightPixels.toFloat()
         val outDur   = 200L
@@ -1247,85 +1243,11 @@ class MapActivity : ComponentActivity() {
         val outInterp = AccelerateInterpolator()
         val inInterp  = DecelerateInterpolator()
 
-        // ── Phase 2: slide incoming elements in ───────────────────────────────
-        //
-        // Called via postDelayed(outDur) rather than withEndAction so it fires
-        // even when Phase 1 animations are cancelled by a rapid mode switch.
-        // The gen guard discards stale callbacks from superseded transitions.
-        fun slideIn() {
-            if (gen != modeGen) return
-
-            // Cancel any still-running Phase 1 animations before touching
-            // visibility.  withEndAction does NOT fire on cancel, so a stale
-            // endAction from a concurrent animation cannot overwrite the state
-            // we are about to set.
-            menuPanel.animate().cancel()
-            myLocationButton.animate().cancel()
-            exploreBottomBar.animate().cancel()
-            navigateBanner.animate().cancel()
-            navigateStopBtn.animate().cancel()
-            editTopBar.animate().cancel()
-
-            // Ensure from-mode views are fully hidden and reset — their
-            // withEndActions may not have fired if they were cancelled.
-            when (from) {
-                AppMode.EXPLORE -> {
-                    menuPanel.visibility          = View.GONE;  menuPanel.translationX        = 0f
-                    myLocationButton.visibility   = View.GONE;  myLocationButton.translationX = 0f
-                    exploreBottomBar.visibility   = View.GONE;  exploreBottomBar.translationY = 0f
-                    exploreBottomBar.alpha        = 1f
-                }
-                AppMode.NAVIGATE -> {
-                    navigateOverlay.visibility   = View.GONE
-                    navigateBanner.translationY  = 0f
-                    navigateStopBtn.translationY = 0f
-                }
-                AppMode.EDIT -> {
-                    editTopBar.visibility   = View.GONE
-                    editTopBar.translationY = 0f
-                }
-            }
-
-            // Animate camera tilt / focal-point offset in sync with the incoming UI.
-            applyCameraForMode(to, animated = true)
-
-            when (to) {
-                AppMode.EXPLORE -> {
-                    menuPanel.translationX        = -w
-                    myLocationButton.translationX = -w
-                    exploreBottomBar.translationY = h
-                    exploreBottomBar.alpha        = 1f   // clear any search-fade leftover
-                    menuPanel.visibility          = View.VISIBLE
-                    myLocationButton.visibility   = View.VISIBLE
-                    exploreBottomBar.visibility   = View.VISIBLE
-                    menuPanel.animate().translationX(0f)
-                        .setDuration(inDur).setInterpolator(inInterp).start()
-                    myLocationButton.animate().translationX(0f)
-                        .setDuration(inDur).setInterpolator(inInterp).start()
-                    exploreBottomBar.animate().translationY(0f)
-                        .setDuration(inDur).setInterpolator(inInterp).start()
-                }
-                AppMode.NAVIGATE -> {
-                    navigateBanner.translationY  = -h
-                    navigateStopBtn.translationY = h
-                    navigateOverlay.visibility   = View.VISIBLE
-                    navigateBanner.animate().translationY(0f)
-                        .setDuration(inDur).setInterpolator(inInterp).start()
-                    navigateStopBtn.animate().translationY(0f)
-                        .setDuration(inDur).setInterpolator(inInterp).start()
-                }
-                AppMode.EDIT -> {
-                    editTopBar.translationY = -h
-                    editTopBar.visibility   = View.VISIBLE
-                    editTopBar.animate().translationY(0f)
-                        .setDuration(inDur).setInterpolator(inInterp).start()
-                }
-            }
-        }
-
-        // ── Phase 1: slide outgoing elements out ──────────────────────────────
-        // withEndAction per-view handles cleanup if the animation completes
-        // naturally; slideIn() handles cleanup if it was cancelled.
+        // ── Phase 1: slide outgoing elements away ─────────────────────────────
+        // withEndAction handles cleanup when the animation completes naturally.
+        // If the animation is cancelled by a rapid mode switch, the incoming
+        // Phase 2 (which starts simultaneously below) overrides all view state,
+        // so stale withEndActions are harmless.
         when (from) {
             AppMode.EXPLORE -> {
                 menuPanel.animate().translationX(-w)
@@ -1341,16 +1263,16 @@ class MapActivity : ComponentActivity() {
                     .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
                     .start()
             }
-
             AppMode.NAVIGATE -> {
                 navigateBanner.animate().translationY(-h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { navigateBanner.translationY = 0f }.start()
+                    .withEndAction { navigateBanner.translationY = 0f; navigateOverlay.visibility = View.GONE }
+                    .start()
                 navigateStopBtn.animate().translationY(h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { navigateStopBtn.translationY = 0f }.start()
+                    .withEndAction { navigateStopBtn.translationY = 0f }
+                    .start()
             }
-
             AppMode.EDIT -> {
                 editTopBar.animate().translationY(-h)
                     .setDuration(outDur).setInterpolator(outInterp)
@@ -1359,10 +1281,44 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // Schedule Phase 2 via postDelayed rather than withEndAction/AnimationLatch.
-        // postDelayed fires even if Phase 1 animations are cancelled mid-flight,
-        // guaranteeing slideIn() is always called after outDur ms.
-        mapView.postDelayed({ slideIn() }, outDur)
+        // ── Phase 2: slide incoming elements in (runs simultaneously with Phase 1) ──
+        // Starting immediately rather than waiting for Phase 1 to finish eliminates
+        // all timing-coordination hazards (postDelayed, AnimationLatch, withEndAction
+        // chaining) that previously caused the incoming mode's UI to stay invisible.
+        applyCameraForMode(to, animated = true)
+
+        when (to) {
+            AppMode.EXPLORE -> {
+                menuPanel.translationX        = -w
+                myLocationButton.translationX = -w
+                exploreBottomBar.translationY = h
+                exploreBottomBar.alpha        = 1f   // clear any search-fade leftover
+                menuPanel.visibility          = View.VISIBLE
+                myLocationButton.visibility   = View.VISIBLE
+                exploreBottomBar.visibility   = View.VISIBLE
+                menuPanel.animate().translationX(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+                myLocationButton.animate().translationX(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+                exploreBottomBar.animate().translationY(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+            }
+            AppMode.NAVIGATE -> {
+                navigateBanner.translationY  = -h
+                navigateStopBtn.translationY = h
+                navigateOverlay.visibility   = View.VISIBLE
+                navigateBanner.animate().translationY(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+                navigateStopBtn.animate().translationY(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+            }
+            AppMode.EDIT -> {
+                editTopBar.translationY = -h
+                editTopBar.visibility   = View.VISIBLE
+                editTopBar.animate().translationY(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+            }
+        }
     }
 
     // ── Map style helpers ─────────────────────────────────────────────────────
@@ -1628,7 +1584,6 @@ class MapActivity : ComponentActivity() {
                 applyCameraForMode(new.mode, animated = false)
             } else {
                 animateModeTransition(old.mode, new.mode)
-                applyCameraForMode(new.mode, animated = true)
             }
         }
 
