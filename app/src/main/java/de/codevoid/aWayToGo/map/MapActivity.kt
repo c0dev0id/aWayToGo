@@ -80,6 +80,11 @@ import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.engine.LocationEngine
+import org.maplibre.android.location.engine.LocationEngineCallback
+import org.maplibre.android.location.engine.LocationEngineProvider
+import org.maplibre.android.location.engine.LocationEngineRequest
+import org.maplibre.android.location.engine.LocationEngineResult
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
@@ -256,6 +261,20 @@ class MapActivity : ComponentActivity() {
     private var followVelocityLat = 0.0      // degrees/ns
     private var followVelocityLon = 0.0      // degrees/ns
 
+    // ── Synthetic location engine ─────────────────────────────────────────────
+    // The puck follows the same dead-reckoned position as the camera so the two
+    // are always in sync.  Raw GPS is subscribed separately (realLocationEngine)
+    // to avoid a feedback loop: locationComponent → rawGpsLocation → prediction.
+    private val syntheticEngine = SyntheticLocationEngine()
+    private var rawGpsLocation: Location? = null
+    private var realLocationEngine: LocationEngine? = null
+    private val rawLocationCallback = object : LocationEngineCallback<LocationEngineResult> {
+        override fun onSuccess(result: LocationEngineResult) {
+            result.lastLocation?.let { rawGpsLocation = it }
+        }
+        override fun onFailure(exception: Exception) { /* ignore */ }
+    }
+
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
     private var osdFrameCount  = 0
@@ -303,11 +322,15 @@ class MapActivity : ComponentActivity() {
             //     over ground) so the driving direction always points to screen-top.
             //     When Course Up is off (North Up), bearing stays at 0°.
             val uiState = viewModel.uiState.value
-            if (uiState.isFollowModeActive) {
-                val m   = map   ?: return@doFrame
-                val cur = m.cameraPosition ?: return@doFrame
+            // ── Dead-reckoning (always active) ────────────────────────────────
+            // Runs every frame regardless of follow mode so the location puck always
+            // tracks the smooth predicted position.  The camera only moves when
+            // follow mode is active.
+            val m   = map
+            val cur = m?.cameraPosition
+            if (m != null && cur != null) {
                 var gpsBearing = cur.bearing   // updated below if Course Up is on
-                m.locationComponent?.lastKnownLocation?.let { loc ->
+                rawGpsLocation?.let { loc ->
                     if (loc.latitude != followLastLat || loc.longitude != followLastLon) {
                         // New fix — validate before accepting.
                         val elapsedNs = frameTimeNanos - followLastTimeNs
@@ -340,26 +363,37 @@ class MapActivity : ComponentActivity() {
                         gpsBearing = loc.bearing.toDouble()
                     }
                 }
-                // Predict and animate every frame (requires at least one valid fix).
-                // Navigate mode targets 45° tilt; every frame nudges toward it so the
-                // follow loop does not fight the tilt animation started by applyCameraForMode.
                 if (!followLastLat.isNaN()) {
-                    val elapsedNs  = frameTimeNanos - followLastTimeNs
-                    val predLat    = followLastLat + followVelocityLat * elapsedNs
-                    val predLon    = followLastLon + followVelocityLon * elapsedNs
-                    val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
-                    m.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(
-                            CameraPosition.Builder()
-                                .target(LatLng(predLat, predLon))
-                                .zoom(cur.zoom)
-                                .bearing(gpsBearing)
-                                .tilt(targetTilt)
-                                .padding(cur.padding)
-                                .build(),
-                        ),
-                        FOLLOW_LOOK_AHEAD_MS,
-                    )
+                    val elapsedNs = frameTimeNanos - followLastTimeNs
+                    val predLat   = followLastLat + followVelocityLat * elapsedNs
+                    val predLon   = followLastLon + followVelocityLon * elapsedNs
+                    // Push smooth predicted position to syntheticEngine every frame so
+                    // the puck moves identically to the camera during follow mode and
+                    // stays smooth even when the camera is not following.
+                    val predicted = Location("synthetic").also {
+                        it.latitude  = predLat
+                        it.longitude = predLon
+                        rawGpsLocation?.accuracy?.let { acc -> it.accuracy = acc }
+                    }
+                    syntheticEngine.pushLocation(predicted)
+                    // Move the camera only when follow mode is active.
+                    // Navigate mode targets 45° tilt; nudging every frame so the follow
+                    // loop does not fight the tilt animation from applyCameraForMode.
+                    if (uiState.isFollowModeActive) {
+                        val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
+                        m.animateCamera(
+                            CameraUpdateFactory.newCameraPosition(
+                                CameraPosition.Builder()
+                                    .target(LatLng(predLat, predLon))
+                                    .zoom(cur.zoom)
+                                    .bearing(gpsBearing)
+                                    .tilt(targetTilt)
+                                    .padding(cur.padding)
+                                    .build(),
+                            ),
+                            FOLLOW_LOOK_AHEAD_MS,
+                        )
+                    }
                 }
             }
 
@@ -930,12 +964,25 @@ class MapActivity : ComponentActivity() {
 
         m.locationComponent.apply {
             activateLocationComponent(
-                LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
+                LocationComponentActivationOptions.builder(this@MapActivity, s)
+                    .locationEngine(syntheticEngine)
+                    .build(),
             )
             isLocationComponentEnabled = true
         }
 
-        m.locationComponent.lastKnownLocation?.let { loc ->
+        // Subscribe to the real GPS engine for raw fixes fed into dead-reckoning.
+        // syntheticEngine is driven by the Choreographer loop; reading from the real
+        // engine here avoids a feedback loop.
+        val engine = LocationEngineProvider.getBestLocationEngine(this)
+        realLocationEngine = engine
+        val request = LocationEngineRequest.Builder(200L)
+            .setPriority(LocationEngineRequest.PRIORITY_HIGH_ACCURACY)
+            .build()
+        engine.requestLocationUpdates(request, rawLocationCallback, mainLooper)
+        engine.getLastLocation(rawLocationCallback)
+
+        rawGpsLocation?.let { loc ->
             m.animateCamera(
                 CameraUpdateFactory.newLatLngZoom(
                     LatLng(loc.latitude, loc.longitude),
@@ -1318,7 +1365,9 @@ class MapActivity : ComponentActivity() {
 
         m.locationComponent.apply {
             activateLocationComponent(
-                LocationComponentActivationOptions.builder(this@MapActivity, s).build(),
+                LocationComponentActivationOptions.builder(this@MapActivity, s)
+                    .locationEngine(syntheticEngine)
+                    .build(),
             )
             isLocationComponentEnabled = true
         }
@@ -1449,7 +1498,7 @@ class MapActivity : ComponentActivity() {
             followVelocityLat = 0.0
             followVelocityLon = 0.0
             val m   = map
-            val loc = m?.locationComponent?.lastKnownLocation
+            val loc = rawGpsLocation ?: m?.locationComponent?.lastKnownLocation
             if (m != null && loc != null) {
                 flyToLocation(m, LatLng(loc.latitude, loc.longitude))
             }
@@ -3031,6 +3080,7 @@ class MapActivity : ComponentActivity() {
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
+        realLocationEngine?.removeLocationUpdates(rawLocationCallback)
         mapView.onPause()
         stopUpdateAvailableAnimation()
         super.onPause()
