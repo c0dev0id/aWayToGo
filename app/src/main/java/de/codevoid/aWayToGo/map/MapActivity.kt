@@ -128,6 +128,14 @@ private const val LAYER_DRAG_LINE_PIN_OUTER = "drag-line-pin-outer"
 private const val LAYER_DRAG_LINE_PIN_INNER = "drag-line-pin-inner"
 private const val IMAGE_TAPE_PATTERN        = "tape-pattern"
 
+// ── Old drag line (fall-away dismissal) ──────────────────────────────────────
+// When a new drag line replaces the current one, the old line plays a fall
+// animation (both endpoints detach, rope falls like a loose string) before
+// being cleared.  Only a simple casing + fill is shown — no label or pin.
+private const val SOURCE_DRAG_LINE_OLD       = "drag-line-old"
+private const val LAYER_DRAG_LINE_OLD_CASING = "drag-line-old-casing"
+private const val LAYER_DRAG_LINE_OLD_FILL   = "drag-line-old-fill"
+
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
@@ -254,6 +262,15 @@ class MapActivity : ComponentActivity() {
     private var anchorSetTimeNs: Long = 0L
     // Physically-inspired drag line animation (whip / lasso).
     private val dragLineAnimator = DragLineAnimator()
+
+    // ── Old drag line fall-away ───────────────────────────────────────────────
+    // When a new anchor replaces an existing one, the old line detaches and
+    // falls off-screen.  We freeze the old from/to positions at the moment of
+    // replacement so the fall plays against the old geometry.
+    private var oldDragLineFrom: LatLng? = null
+    private var oldDragLineTo:   LatLng? = null
+    private var oldAnchorSetTimeNs: Long = 0L
+    private val oldDragLineAnimator = DragLineAnimator().apply { style = DragLineAnimator.Style.FALL }
 
     // ── Follow mode ───────────────────────────────────────────────────────────
     // Dead-reckoning state for smooth GPS follow.
@@ -397,6 +414,12 @@ class MapActivity : ComponentActivity() {
                     // previous frame's lastKnownLocation.
                     dragLineAnchor?.let { anchor ->
                         setDragLine(LatLng(predLat, predLon), anchor, frameTimeNanos / 1_000_000_000.0)
+                    }
+                    // Drive the old-line fall animation until it clears itself.
+                    val oldFrom = oldDragLineFrom
+                    val oldTo   = oldDragLineTo
+                    if (oldFrom != null && oldTo != null) {
+                        setOldDragLine(oldFrom, oldTo)
                     }
                     // Move the camera only when follow mode is active.
                     // Navigate mode targets 45° tilt; nudging every frame so the follow
@@ -1065,6 +1088,16 @@ class MapActivity : ComponentActivity() {
                         // loop keeps the line's "from" end on the current GPS fix.
                         val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
                         val target = m.projection.fromScreenLocation(screenCenter)
+                        // If a drag line already exists, launch its fall-away animation.
+                        val prevAnchor = dragLineAnchor
+                        m.locationComponent.lastKnownLocation?.let { loc ->
+                            if (prevAnchor != null) {
+                                oldDragLineFrom      = LatLng(loc.latitude, loc.longitude)
+                                oldDragLineTo        = prevAnchor
+                                oldAnchorSetTimeNs   = System.nanoTime()
+                                oldDragLineAnimator.reset()
+                            }
+                        }
                         dragLineAnchor    = target
                         anchorSetTimeNs   = System.nanoTime()
                         dragLineAnimator.reset()
@@ -2767,6 +2800,91 @@ class MapActivity : ComponentActivity() {
                     PropertyFactory.circleRadius(4f),
                     PropertyFactory.circleColor("#FFCC00"),
                     PropertyFactory.circleOpacity(1f),
+                )
+            }
+        )
+    }
+
+    /**
+     * Render (or update) the fall-away animation of the old drag line.
+     *
+     * Uses frozen [from]/[to] coordinates captured at the moment the previous
+     * anchor was replaced.  Drives [oldDragLineAnimator] (Style.FALL) and
+     * renders the result into [SOURCE_DRAG_LINE_OLD].  When the fall animation
+     * finishes (returns null), the old-line source is cleared and the frozen
+     * coordinates are nulled so this function stops being called.
+     */
+    private fun setOldDragLine(from: LatLng, to: LatLng) {
+        val s = style ?: return
+
+        val dx  = to.longitude - from.longitude
+        val dy  = to.latitude  - from.latitude
+        val len = sqrt(dx * dx + dy * dy)
+        if (len < 1e-10) { oldDragLineFrom = null; oldDragLineTo = null; return }
+
+        val px = -dy / len
+        val py =  dx / len
+
+        val elapsedSec = (System.nanoTime() - oldAnchorSetTimeNs) / 1_000_000_000.0
+        val samples = oldDragLineAnimator.generate(elapsedSec)
+
+        if (samples == null) {
+            // Fall finished — clear the source and stop driving it.
+            oldDragLineFrom = null
+            oldDragLineTo   = null
+            s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE_OLD)
+                ?.setGeoJson(FeatureCollection.fromFeatures(listOf<Feature>()))
+            return
+        }
+
+        val linePoints = samples.map { sample ->
+            Point.fromLngLat(
+                from.longitude + sample.t * dx + sample.offset * len * px,
+                from.latitude  + sample.t * dy + sample.offset * len * py,
+            )
+        }
+        val lineCollection = FeatureCollection.fromFeatures(
+            listOf(Feature.fromGeometry(LineString.fromLngLats(linePoints)))
+        )
+
+        // Update existing source (fast path).
+        val existingOld = s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE_OLD)
+        if (existingOld != null) {
+            existingOld.setGeoJson(lineCollection)
+            return
+        }
+
+        // First-time setup: source + layers for the old falling line.
+        // IMAGE_TAPE_PATTERN is already registered by setDragLine().
+        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE_OLD, lineCollection,
+            GeoJsonOptions().withSynchronousUpdate(true)))
+
+        // Insert below the active drag-line casing so the old line is behind.
+        val belowOld = if (s.layers.any { it.id == LAYER_DRAG_LINE_CASING })
+            LAYER_DRAG_LINE_CASING else null
+
+        fun addOldLayer(layer: Layer) {
+            if (belowOld != null) s.addLayerBelow(layer, belowOld) else s.addLayer(layer)
+        }
+
+        addOldLayer(
+            LineLayer(LAYER_DRAG_LINE_OLD_CASING, SOURCE_DRAG_LINE_OLD).apply {
+                setProperties(
+                    PropertyFactory.lineColor("#1A1A1A"),
+                    PropertyFactory.lineWidth(13f),
+                    PropertyFactory.lineOpacity(0.6f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+            }
+        )
+        addOldLayer(
+            LineLayer(LAYER_DRAG_LINE_OLD_FILL, SOURCE_DRAG_LINE_OLD).apply {
+                setProperties(
+                    PropertyFactory.linePattern(IMAGE_TAPE_PATTERN),
+                    PropertyFactory.lineWidth(10f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
             }
         )
