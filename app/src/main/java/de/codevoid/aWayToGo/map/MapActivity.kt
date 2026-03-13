@@ -3182,6 +3182,16 @@ class MapActivity : ComponentActivity() {
         mapView.onResume()
         remoteControl.register()
         Choreographer.getInstance().postFrameCallback(frameCallback)
+        // Re-register GPS listener removed in onPause(); the map-ready callback only
+        // registers it once, so after the first pause/resume cycle updates would stop.
+        val lm = locationManager
+        if (lm != null) {
+            try {
+                lm.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
+                )
+            } catch (_: SecurityException) { }
+        }
         checkUpdateIfDue()
     }
 
