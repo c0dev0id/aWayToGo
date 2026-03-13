@@ -4,7 +4,6 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
-import kotlin.math.exp
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -253,6 +252,8 @@ class MapActivity : ComponentActivity() {
     private var dragLineAnchor: LatLng? = null
     // nanoTime() when the anchor was most recently placed; drives the whip animation.
     private var anchorSetTimeNs: Long = 0L
+    // Physically-inspired drag line animation (whip / lasso).
+    private val dragLineAnimator = DragLineAnimator()
 
     // ── Follow mode ───────────────────────────────────────────────────────────
     // Dead-reckoning state for smooth GPS follow.
@@ -838,6 +839,8 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
             // Run Benchmark → starts the benchmark.
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
+            // Drag Line Style → cycles through Whip / Lasso.
+            result.debugContent.getChildAt(2).setOnClickListener { viewModel.cycleDragLineStyle() }
         }
         root.addView(
             menuPanel,
@@ -846,6 +849,13 @@ class MapActivity : ComponentActivity() {
         )
 
         setContentView(root)
+
+        // Restore persisted drag line animation style.
+        prefs.getString("drag_line_style", null)?.let { saved ->
+            try {
+                viewModel.setDragLineStyle(DragLineAnimator.Style.valueOf(saved))
+            } catch (_: IllegalArgumentException) { /* ignore invalid saved value */ }
+        }
 
         // Observe UI state and render changes reactively.
         // repeatOnLifecycle(STARTED): pauses collection when the app is in the background
@@ -1057,6 +1067,7 @@ class MapActivity : ComponentActivity() {
                         val target = m.projection.fromScreenLocation(screenCenter)
                         dragLineAnchor    = target
                         anchorSetTimeNs   = System.nanoTime()
+                        dragLineAnimator.reset()
                         m.locationComponent.lastKnownLocation?.let { loc ->
                             setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
                         }
@@ -1480,6 +1491,7 @@ class MapActivity : ComponentActivity() {
         val settingsMenuChanged = old?.isInSettingsMenu != new.isInSettingsMenu
         val debugMenuChanged    = old?.isInDebugMenu != new.isInDebugMenu
         val debugModeChanged    = old?.isDebugMode != new.isDebugMode
+        val dragLineStyleChanged = old?.dragLineStyle != new.dragLineStyle
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1587,6 +1599,20 @@ class MapActivity : ComponentActivity() {
             osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
             menuPanelResult.debugToggleLabel.text =
                 "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
+        }
+
+        // ── Drag line animation style ───────────────────────────────────────
+        if (dragLineStyleChanged || old == null) {
+            val styleName = when (new.dragLineStyle) {
+                DragLineAnimator.Style.WHIP  -> "Whip"
+                DragLineAnimator.Style.LASSO -> "Lasso"
+            }
+            menuPanelResult.dragLineStyleLabel.text = "Drag Line: $styleName"
+            dragLineAnimator.style = new.dragLineStyle
+            dragLineAnimator.reset()
+            // Re-stamp the anchor time so the animation restarts with the new style.
+            if (dragLineAnchor != null) anchorSetTimeNs = System.nanoTime()
+            prefs.edit().putString("drag_line_style", new.dragLineStyle.name).apply()
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -2577,10 +2603,14 @@ class MapActivity : ComponentActivity() {
     /**
      * Draw (or update) the construction-tape drag line from [from] (puck) to [to] (anchor).
      *
-     * Animation phases (time measured from [anchorSetTimeNs]):
-     *   0 – 0.10 s  Throw ramp-up: amplitude grows from 0 → A_MAX (whip thrown out).
-     *   0.10 – ~2 s Settle: amplitude decays exponentially (tape pulls tight).
-     *   > ~2 s      Straight 2-point line (tape taut, no computation overhead).
+     * The [DragLineAnimator] generates the animated geometry.  Two styles are
+     * supported (selectable via the Debug menu):
+     *
+     * **Whip** — Verlet-chain rope thrown from puck to anchor with a whip-crack
+     *   tip acceleration effect.  Settles exponentially to a straight line.
+     *
+     * **Lasso** — A spinning loop at the anchor end with a trailing rope that
+     *   settles to straight.
      *
      * Visual: yellow/black diagonal-stripe pattern (construction tape), dark outline.
      * The distance label is placed 25 % along the line from the puck so it is
@@ -2600,47 +2630,25 @@ class MapActivity : ComponentActivity() {
         val distKm = from.distanceTo(to) / 1000.0
         val label  = "${"%.1f".format(distKm).replace('.', ',')}km"
 
-        // ── Whip animation ────────────────────────────────────────────────────
-        // Amplitude ramps up during the throw then decays exponentially until
-        // the line is indistinguishably straight and we switch to 2-point mode.
-        val elapsedSec  = (System.nanoTime() - anchorSetTimeNs) / 1_000_000_000.0
-        val THROW_RAMP  = 0.10   // s: ramp-up duration
-        val DECAY_TAU   = 0.55   // s: exponential decay time constant
-        val A_MAX       = 0.28   // peak displacement as fraction of line length
-        val amplitude = when {
-            elapsedSec < THROW_RAMP -> A_MAX * (elapsedSec / THROW_RAMP)
-            else -> A_MAX * exp(-(elapsedSec - THROW_RAMP) / DECAY_TAU)
-        }
-
-        // ── Line geometry ─────────────────────────────────────────────────────
+        // ── Animated line geometry ──────────────────────────────────────────
         // Perpendicular unit vector (in lat/lon space) for lateral displacement.
         val px = -dy / len
         val py =  dx / len
 
-        val N             = 14       // curve points
-        val FREQ          = 1.5      // spatial wave cycles along line
-        val SPEED         = 14.0     // rad/s — wave travels puck→anchor
-        // First 8 % of the line (near puck) is kept straight so the tape
-        // attaches cleanly to the puck regardless of wobble direction.
-        val STRAIGHT_FRAC = 0.08
+        val elapsedSec = (System.nanoTime() - anchorSetTimeNs) / 1_000_000_000.0
+        val samples = dragLineAnimator.generate(elapsedSec)
 
-        val linePoints: List<Point> = if (amplitude * len < 3e-6) {
-            // Tape is taut — use cheap 2-point straight line.
+        val linePoints: List<Point> = if (samples == null) {
+            // Animation settled — use cheap 2-point straight line.
             listOf(
                 Point.fromLngLat(from.longitude, from.latitude),
                 Point.fromLngLat(to.longitude,   to.latitude),
             )
         } else {
-            (0 until N).map { i ->
-                val t    = i.toDouble() / (N - 1)
-                // Shift envelope so wobble starts after STRAIGHT_FRAC from puck.
-                val tAdj = maxOf(0.0, (t - STRAIGHT_FRAC) / (1.0 - STRAIGHT_FRAC))
-                val env  = sin(Math.PI * tAdj)           // zero at both endpoints
-                val phase = 2.0 * Math.PI * FREQ * t - SPEED * elapsedSec
-                val disp  = amplitude * len * sin(phase) * env
+            samples.map { sample ->
                 Point.fromLngLat(
-                    from.longitude + t * dx + disp * px,
-                    from.latitude  + t * dy + disp * py,
+                    from.longitude + sample.t * dx + sample.offset * len * px,
+                    from.latitude  + sample.t * dy + sample.offset * len * py,
                 )
             }
         }

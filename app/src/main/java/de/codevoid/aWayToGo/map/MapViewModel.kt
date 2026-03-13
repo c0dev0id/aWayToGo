@@ -177,4 +177,20 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isCourseUpEnabled = !it.isCourseUpEnabled) }
     }
 
+    /** Cycle through drag line animation styles (Whip → Lasso → Whip). */
+    fun cycleDragLineStyle() {
+        _uiState.update {
+            val next = when (it.dragLineStyle) {
+                DragLineAnimator.Style.WHIP  -> DragLineAnimator.Style.LASSO
+                DragLineAnimator.Style.LASSO -> DragLineAnimator.Style.WHIP
+            }
+            it.copy(dragLineStyle = next)
+        }
+    }
+
+    /** Set the drag line animation style directly. */
+    fun setDragLineStyle(style: DragLineAnimator.Style) {
+        _uiState.update { it.copy(dragLineStyle = style) }
+    }
+
 }
