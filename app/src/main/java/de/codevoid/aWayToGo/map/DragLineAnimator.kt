@@ -8,7 +8,7 @@ import kotlin.math.sqrt
 /**
  * Generates animated drag-line geometries using physically-inspired techniques.
  *
- * Two animation styles are supported:
+ * Three animation styles are supported:
  *
  * **[Style.WHIP]** — Verlet-integrated rope that cracks like a whip.
  *   A chain of particles connected by distance constraints is "thrown" from the
@@ -16,10 +16,15 @@ import kotlin.math.sqrt
  *   chain, mimicking a real whip crack.  After the throw, amplitude decays
  *   exponentially until the line goes taut.
  *
- * **[Style.LASSO]** — Spinning loop at the anchor end, rope trailing behind.
- *   The last portion of the line forms a circular loop that spins around the
- *   anchor point.  The rest of the line trails behind as a catenary-like curve
- *   that settles over time.
+ * **[Style.LASSO]** — Rope thrown from the puck as a spinning oval loop.
+ *   Phase 1: squirly wobble near the puck.
+ *   Phase 2: a clear rotating oval forms at the puck end.
+ *   Phase 3: the oval is thrown toward the anchor, deforming as it travels.
+ *   Phase 4: the oval catches the anchor and the line straightens.
+ *
+ * **[Style.FALL]** — Old-line dismissal: both endpoints detach and the rope
+ *   falls out of the frame under simulated gravity with a loose-string wobble.
+ *   Returns `null` once the rope has left the screen area.
  *
  * Both styles output a list of normalised (t, lateral-offset) pairs that the
  * caller maps onto the actual lat/lon line between puck and anchor.
@@ -31,7 +36,7 @@ class DragLineAnimator {
 
     // ── Public configuration ────────────────────────────────────────────────
 
-    enum class Style { WHIP, LASSO }
+    enum class Style { WHIP, LASSO, FALL }
 
     var style: Style = Style.WHIP
 
@@ -43,17 +48,17 @@ class DragLineAnimator {
     /** Duration (s) of the throw ramp-up phase. */
     var whipThrowDuration: Double = 0.12
 
-    /** Exponential decay time constant (s) after the throw. */
-    var whipDecayTau: Double = 0.50
+    /** Exponential decay time constant (s) after the throw — larger = longer settle. */
+    var whipDecayTau: Double = 1.2
 
     /** Peak lateral displacement as a fraction of line length. */
-    var whipAmplitude: Double = 0.30
+    var whipAmplitude: Double = 0.18
 
     /** Number of spatial wave cycles along the line. */
     var whipFrequency: Double = 1.8
 
     /** Wave propagation speed (rad/s) from puck toward anchor. */
-    var whipSpeed: Double = 16.0
+    var whipSpeed: Double = 11.0
 
     /** Fraction of the line near the puck kept straight (clean attach). */
     var whipStraightFrac: Double = 0.08
@@ -73,16 +78,21 @@ class DragLineAnimator {
     var lassoSpinSpeed: Double = 8.0
 
     /** Number of sample points dedicated to the loop circle. */
-    var lassoLoopPoints: Int = 10
+    var lassoLoopPoints: Int = 12
 
-    /** Exponential settle time constant (s) for the trailing rope. */
-    var lassoSettleTau: Double = 0.70
-
-    /** Peak sway amplitude for the trailing rope (fraction of length). */
+    /** Peak sway amplitude for the trailing rope during wobble (fraction of length). */
     var lassoSwayAmplitude: Double = 0.18
 
     /** Fraction of the line near the puck kept straight. */
     var lassoStraightFrac: Double = 0.06
+
+    // ── Fall tunables ────────────────────────────────────────────────────────
+
+    /** Gravitational acceleration for the fall (fraction-of-length per s²). */
+    var fallAcceleration: Double = 0.45
+
+    /** Oscillation amplitude superimposed on the fall. */
+    var fallWobbleAmplitude: Double = 0.07
 
     // ── Internal Verlet state (whip mode) ───────────────────────────────────
 
@@ -119,6 +129,7 @@ class DragLineAnimator {
         return when (style) {
             Style.WHIP  -> generateWhip(elapsedSec)
             Style.LASSO -> generateLasso(elapsedSec)
+            Style.FALL  -> generateFall(elapsedSec)
         }
     }
 
@@ -132,6 +143,8 @@ class DragLineAnimator {
     //
     // Phase 2 (settle):  Amplitude decays exponentially.  Once displacement is
     //   negligible, we return null so the caller can use a cheap 2-point line.
+    //
+    // Tuned to be less aggressive (lower amplitude/speed) with a longer settle.
 
     private fun generateWhip(elapsedSec: Double): List<Sample>? {
         val n = resolution.coerceAtLeast(4)
@@ -222,66 +235,150 @@ class DragLineAnimator {
 
     // ── Lasso implementation ────────────────────────────────────────────────
     //
-    // The line has two sections:
-    //   1. Trailing rope (t ∈ [0, 1-loopFrac]): a settling sine wave similar to
-    //      the whip, but with a slower initial throw and a catenary droop.
-    //   2. Spinning loop (t near 1.0): particles arranged in a circle around the
-    //      anchor point.  The circle spins and its radius can pulse slightly.
+    // The user is at the puck.  They swing the lasso at their own location,
+    // so the loop starts near t = 0, not t = 1.
     //
-    // The loop "opens up" during the throw phase and keeps spinning; the trailing
-    // rope settles to a straight line.
+    // Four phases:
+    //   Phase 0 – Wobble  (0 – 0.5 s): squirly, chaotic rope near the puck.
+    //   Phase 1 – Spin    (0.5 – 1.5 s): a clear rotating oval forms at the puck end.
+    //   Phase 2 – Throw   (1.5 – 2.8 s): the oval travels toward the anchor,
+    //                      deforming into an elongated ellipse due to wind / force.
+    //   Phase 3 – Catch   (2.8 – 3.8 s): the oval reaches the anchor and its
+    //                      radius shrinks until the rope goes straight.
+    //
+    // Samples form a continuous polyline: trailing rope → oval loop → tail to anchor.
+    // The order is NOT sorted by t; the loop section intentionally doubles back.
 
     private fun generateLasso(elapsedSec: Double): List<Sample>? {
-        val loopN = lassoLoopPoints.coerceAtLeast(6)
-        val trailN = (resolution - loopN).coerceAtLeast(4)
-        val totalN = trailN + loopN
+        val wobbleEnd = 0.50
+        val spinEnd   = 1.50
+        val throwEnd  = 2.80
+        val catchEnd  = 3.80
 
-        // Throw ramp-up: the loop opens from radius 0 to full over 0.3s.
-        val throwPhase = 0.30
-        val loopOpen = if (elapsedSec < throwPhase) (elapsedSec / throwPhase) else 1.0
-        val radius = lassoLoopRadius * loopOpen
+        if (elapsedSec > catchEnd + 0.4) return null
 
-        // Settle amplitude for trailing rope.
-        val trailAmp = lassoSwayAmplitude * exp(-elapsedSec / lassoSettleTau)
+        val phase: Int
+        val phaseFrac: Double
+        when {
+            elapsedSec < wobbleEnd -> { phase = 0; phaseFrac = elapsedSec / wobbleEnd }
+            elapsedSec < spinEnd   -> { phase = 1; phaseFrac = (elapsedSec - wobbleEnd) / (spinEnd - wobbleEnd) }
+            elapsedSec < throwEnd  -> { phase = 2; phaseFrac = (elapsedSec - spinEnd)   / (throwEnd - spinEnd) }
+            elapsedSec < catchEnd  -> { phase = 3; phaseFrac = (elapsedSec - throwEnd)  / (catchEnd - throwEnd) }
+            else                   -> { phase = 4; phaseFrac = 1.0 }
+        }
 
-        // If both have settled, use straight line.
-        if (trailAmp < 1e-4 && loopOpen >= 1.0 && elapsedSec > 3.0) return null
+        val n = resolution.coerceAtLeast(6)
+        val spinAngle = lassoSpinSpeed * elapsedSec
 
-        val samples = ArrayList<Sample>(totalN)
+        // ── Loop center position along the line ─────────────────────────────
+        // Starts just ahead of the puck, travels toward the anchor.
+        val loopCenter = when (phase) {
+            0    -> 0.03
+            1    -> 0.03 + phaseFrac * 0.05     // drifts slightly while spinning
+            2    -> 0.08 + phaseFrac * 0.87     // travels from 8 % to 95 %
+            3    -> 0.95
+            else -> 1.0
+        }
 
-        // ── Trailing rope section ───────────────────────────────────────────
-        // Maps t ∈ [0, trailEnd] where trailEnd leaves room for the loop.
-        val trailEnd = 1.0 - lassoLoopRadius * 2.0   // leave space for the loop
+        // ── Loop radii ───────────────────────────────────────────────────────
+        val baseR = lassoLoopRadius             // e.g. 0.10
+        val loopRadiusPerp = when (phase) {
+            0    -> baseR * phaseFrac           // grows 0 → R as wobble → spin
+            1    -> baseR
+            2    -> baseR * (1.0 - phaseFrac * 0.25)  // slight shrink from drag
+            3    -> baseR * (1.0 - phaseFrac)  // collapses to 0 at anchor
+            else -> 0.0
+        }
+        // Axial stretch: oval elongates along line direction during throw (wind).
+        val loopRadiusAxial = when (phase) {
+            2    -> loopRadiusPerp * (1.0 + phaseFrac * 1.0)  // up to 2× elongation
+            else -> loopRadiusPerp
+        }
+
+        // ── Trailing rope wobble ─────────────────────────────────────────────
+        val wobbleAmp = when (phase) {
+            0    -> lassoSwayAmplitude * (0.4 + 0.6 * phaseFrac)  // grows from 40 % → 100 %
+            1    -> lassoSwayAmplitude * (1.0 - phaseFrac)         // settles
+            else -> 0.0
+        }
+
+        val samples = ArrayList<Sample>(n + lassoLoopPoints + 4)
+
+        // ── Trailing rope (puck → front edge of loop) ───────────────────────
+        val loopFront = (loopCenter - loopRadiusAxial).coerceAtLeast(0.01)
+        val trailN = ((loopFront / 1.0) * n).toInt().coerceAtLeast(2)
+
         for (i in 0 until trailN) {
             val localT = i.toDouble() / (trailN - 1)
-            val t = localT * trailEnd
-
+            val t = localT * loopFront
             val tAdj = maxOf(0.0, (localT - lassoStraightFrac) / (1.0 - lassoStraightFrac))
-            // Envelope: rises then falls, peak near 0.6 of the trail.
             val env = sin(Math.PI * tAdj)
-            val phase = 2.0 * Math.PI * 1.2 * localT - 6.0 * elapsedSec
-            val offset = trailAmp * sin(phase) * env
 
+            val offset = if (phase == 0) {
+                // Chaotic wobble: two overlapping frequencies
+                val f1 = sin(2.0 * Math.PI * 2.5 * localT - 9.0 * elapsedSec) * env
+                val f2 = sin(2.0 * Math.PI * 4.2 * localT - 15.0 * elapsedSec) * 0.45 * env
+                wobbleAmp * (f1 + f2)
+            } else {
+                val wave = sin(2.0 * Math.PI * 1.2 * localT - 6.0 * elapsedSec) * env
+                wobbleAmp * wave
+            }
             samples.add(Sample(t, offset))
         }
 
-        // ── Spinning loop section ───────────────────────────────────────────
-        // Circle centred at (1.0, 0.0) — the anchor point.
-        val spinAngle = lassoSpinSpeed * elapsedSec
-        for (i in 0 until loopN) {
-            val angle = spinAngle + 2.0 * Math.PI * i.toDouble() / loopN
-            val cx = 1.0 + radius * cos(angle)
-            val cy = radius * sin(angle)
-            // t = cx (position along the line axis), offset = cy.
-            samples.add(Sample(cx.coerceIn(0.0, 1.0 + radius), cy))
+        // ── Oval / loop ───────────────────────────────────────────────────────
+        if (loopRadiusPerp > 1e-4) {
+            val loopN = lassoLoopPoints.coerceAtLeast(8)
+            // Traverse the full ellipse (+1 to close the loop).
+            for (i in 0..loopN) {
+                val theta = spinAngle + 2.0 * Math.PI * i.toDouble() / loopN
+                val t      = loopCenter + loopRadiusAxial * cos(theta)
+                val offset = loopRadiusPerp  * sin(theta)
+                samples.add(Sample(t.coerceIn(0.0, 1.1), offset))
+            }
         }
-        // Close the loop by repeating the first loop point.
-        val firstLoopAngle = spinAngle
-        samples.add(Sample(
-            (1.0 + radius * cos(firstLoopAngle)).coerceIn(0.0, 1.0 + radius),
-            radius * sin(firstLoopAngle),
-        ))
+
+        // ── Connection from loop back edge to anchor ─────────────────────────
+        // Only shown once the loop has started travelling so there is a visible
+        // "tail" behind it.
+        if (phase >= 2 || (phase == 1 && phaseFrac > 0.5)) {
+            val loopBack = (loopCenter + loopRadiusAxial).coerceAtMost(0.98)
+            val connectN = 4
+            for (i in 1..connectN) {
+                val t = loopBack + (1.0 - loopBack) * i.toDouble() / connectN
+                samples.add(Sample(t, 0.0))
+            }
+        }
 
         return samples
+    }
+
+    // ── Fall implementation ─────────────────────────────────────────────────
+    //
+    // Used when a new drag line replaces an existing one.  Both endpoints
+    // "detach" and the rope falls out of frame under simulated gravity with a
+    // loose-string wobble superimposed.  Stateless — all motion is derived from
+    // elapsedSec so no reset() is required before calling.
+
+    private fun generateFall(elapsedSec: Double): List<Sample>? {
+        // Quadratic gravity: displacement grows with t².
+        val sag = fallAcceleration * elapsedSec * elapsedSec
+        // Clear once the line has fallen well off-screen.
+        if (sag > 1.4) return null
+
+        val n = resolution.coerceAtLeast(6)
+        // Wobble decays quickly — the rope should look limp, not elastic.
+        val wobbleDecay = exp(-elapsedSec * 1.8)
+
+        return (0 until n).map { i ->
+            val t = i.toDouble() / (n - 1)
+            // Catenary-shaped sag: endpoints fall and the mid-span falls further.
+            // Offset is negative = consistently to one side (rope "falls" sideways).
+            val sagOffset = -sag * (1.0 + 1.5 * t * (1.0 - t))
+            // Decaying oscillation for the loose-string wobble.
+            val wobble = fallWobbleAmplitude * wobbleDecay *
+                sin(2.0 * Math.PI * 2.5 * t - 7.0 * elapsedSec)
+            Sample(t, sagOffset + wobble)
+        }
     }
 }
