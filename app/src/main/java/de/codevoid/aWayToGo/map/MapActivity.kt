@@ -841,7 +841,11 @@ class MapActivity : ComponentActivity() {
             m.addOnCameraMoveStartedListener { reason ->
                 TileCache.gate.pause()
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
-                    enterPanningMode()
+                    if (viewModel.uiState.value.isFollowModeActive) {
+                        viewModel.disableFollowMode()
+                    } else {
+                        enterPanningMode()
+                    }
                 }
             }
             // Open the gate when the camera stops.  MapLibre will immediately
