@@ -159,6 +159,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var osdView: TextView
     private lateinit var satelliteToggleBtn: TextView
     private lateinit var darkModeToggleBtn: TextView
+    private lateinit var courseUpToggleBtn: TextView
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: View
     private lateinit var versionCardView: TextView
@@ -297,9 +298,14 @@ class MapActivity : ComponentActivity() {
             //     last valid fix forward at that velocity, then animate the camera
             //     there with a short look-ahead so MapLibre GL interpolates smoothly
             //     between frames instead of snapping once per GPS update.
-            if (viewModel.uiState.value.isFollowModeActive) {
+            //   • In Course Up mode, the bearing tracks loc.bearing (GPS course
+            //     over ground) so the driving direction always points to screen-top.
+            //     When Course Up is off (North Up), bearing stays at 0°.
+            val uiState = viewModel.uiState.value
+            if (uiState.isFollowModeActive) {
                 val m   = map   ?: return@doFrame
                 val cur = m.cameraPosition ?: return@doFrame
+                var gpsBearing = cur.bearing   // updated below if Course Up is on
                 m.locationComponent?.lastKnownLocation?.let { loc ->
                     if (loc.latitude != followLastLat || loc.longitude != followLastLon) {
                         // New fix — validate before accepting.
@@ -328,6 +334,10 @@ class MapActivity : ComponentActivity() {
                             followLastTimeNs = frameTimeNanos
                         }
                     }
+                    // Course Up: use GPS course-over-ground when available.
+                    if (uiState.isCourseUpEnabled && loc.hasBearing()) {
+                        gpsBearing = loc.bearing.toDouble()
+                    }
                 }
                 // Predict and animate every frame (requires at least one valid fix).
                 if (!followLastLat.isNaN()) {
@@ -339,7 +349,7 @@ class MapActivity : ComponentActivity() {
                             CameraPosition.Builder()
                                 .target(LatLng(predLat, predLon))
                                 .zoom(cur.zoom)
-                                .bearing(cur.bearing)
+                                .bearing(gpsBearing)
                                 .tilt(cur.tilt)
                                 .padding(cur.padding)
                                 .build(),
@@ -493,6 +503,15 @@ class MapActivity : ComponentActivity() {
         darkModeToggleBtn = makePillButton(this, "DARK") { viewModel.toggleDarkMode() }
         topRightContainer.addView(
             darkModeToggleBtn,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
+        )
+
+        courseUpToggleBtn = makePillButton(this, "CRS") { viewModel.toggleCourseUp() }
+        topRightContainer.addView(
+            courseUpToggleBtn,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1521,6 +1540,14 @@ class MapActivity : ComponentActivity() {
 
         setToggleActive(satelliteToggleBtn, new.isSatelliteEnabled)
         setToggleActive(darkModeToggleBtn,  new.isDarkMode)
+        setToggleActive(courseUpToggleBtn,  new.isCourseUpEnabled)
+
+        // ── Course Up → North Up transition ───────────────────────────────────
+        // When Course Up is turned off, animate the map back to 0° (north at top).
+        val courseUpChanged = old?.isCourseUpEnabled != new.isCourseUpEnabled
+        if (courseUpChanged && !new.isCourseUpEnabled) {
+            rotate(0.0)
+        }
     }
 
     private fun toggleMenu() { viewModel.toggleMenu() }

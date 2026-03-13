@@ -158,4 +158,18 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isDebugMode = !it.isDebugMode) }
     }
 
+    /**
+     * Toggle Course Up / North Up orientation.
+     *
+     * When Course Up is enabled the map bearing tracks the GPS course (direction
+     * of travel) so the driving direction always points toward the top of the screen.
+     * When disabled (North Up) the map bearing returns to 0° (north at top).
+     *
+     * Rotation is driven by the Choreographer GPS follow loop; it only takes effect
+     * while [isFollowModeActive] is true.
+     */
+    fun toggleCourseUp() {
+        _uiState.update { it.copy(isCourseUpEnabled = !it.isCourseUpEnabled) }
+    }
+
 }
