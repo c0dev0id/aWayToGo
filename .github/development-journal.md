@@ -84,7 +84,11 @@ Compose is not removed from the project — it is kept for potential use in futu
 
 - **crossSourceCollisions**: no measurable effect on gl_fps. Left at default (true).
 
-**Applied settings:** `pixelRatio=3.0`, `maxFps=60`, `prefetchDelta=2`
+- **pixelRatio in MapLibre 13 (OpenGL ES):** `pixelRatio=3.0` causes partial map render (only a portion of the screen is drawn). Do not set. The v11 optimum does not carry over to MapLibre 13.
+
+- **Vulkan backend (`android-sdk:13.0.0`):** Has a pre-rotation bug in landscape — the map is misoriented/clipped regardless of `pixelRatio` or `textureMode` settings. Tested: Vulkan + no extras, Vulkan + `textureMode(true)`, Vulkan + `pixelRatio`. All exhibit the bug. Using `android-sdk-opengl:13.0.0` until MapLibre fixes this upstream.
+
+**Applied settings:** `maxFps=60`, `prefetchDelta=2` (pixelRatio dropped for MapLibre 13)
 
 **Note:** `OnDidFinishRenderingFrameListener.frameRenderingTime` is always 0 in MapLibre Native Android 11.0.0 — the field is not populated. Do not rely on it.
 
