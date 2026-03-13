@@ -42,6 +42,8 @@ import de.codevoid.aWayToGo.R
  * toggle and Run Benchmark), initially GONE.
  * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
  * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
+ * [dragLineStyleLabel] is the TextView for the drag-line animation style row;
+ * its text is kept in sync ("Drag Line: Whip" / "Drag Line: Lasso") by renderUiState.
  */
 data class MenuPanelResult(
     val root: View,
@@ -55,6 +57,7 @@ data class MenuPanelResult(
     val debugGhostHeader: View,
     val debugContent: LinearLayout,
     val debugToggleLabel: TextView,
+    val dragLineStyleLabel: TextView,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -236,12 +239,49 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
 
     val runBenchmarkItem = menuItem(R.drawable.ic_menu_settings, "Run Benchmark")
 
+    // ── Drag line animation style toggle ────────────────────────────────────
+    val dragLineStyleLabel = TextView(context).apply {
+        text = "Drag Line: Whip"
+        setTextColor(Color.WHITE)
+        textSize = 20f
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    val dragLineStyleItem = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        isClickable = true
+        isFocusable = true
+        background  = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+            null,
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.WHITE)
+            },
+        )
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_settings))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            dragLineStyleLabel,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+    }
+
     val debugContent = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
         alpha       = 0f
-        addView(debugToggleItem,  LinearLayout.LayoutParams(panelW, itemH))
-        addView(runBenchmarkItem, LinearLayout.LayoutParams(panelW, itemH))
+        addView(debugToggleItem,     LinearLayout.LayoutParams(panelW, itemH))
+        addView(runBenchmarkItem,    LinearLayout.LayoutParams(panelW, itemH))
+        addView(dragLineStyleItem,   LinearLayout.LayoutParams(panelW, itemH))
     }
 
     // ── Ghost header — Settings layer ──────────────────────────────────────────
@@ -345,5 +385,6 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         debugGhostHeader   = debugGhostHeader,
         debugContent       = debugContent,
         debugToggleLabel   = debugToggleLabel,
+        dragLineStyleLabel = dragLineStyleLabel,
     )
 }
