@@ -285,13 +285,14 @@ class DragLineAnimator {
         val loopRadiusPerp = when (phase) {
             0    -> baseR * phaseFrac           // grows 0 → R as wobble → spin
             1    -> baseR
-            2    -> baseR * (1.0 - phaseFrac * 0.25)  // slight shrink from drag
+            2    -> if (phaseFrac <= 0.85) baseR                                     // full width during travel
+                    else baseR * (1.0 - (phaseFrac - 0.85) / 0.15)               // taper to ~0 in last 15%
             3    -> baseR * (1.0 - phaseFrac)  // collapses to 0 at anchor
             else -> 0.0
         }
         // Axial stretch: oval elongates along line direction during throw (wind).
         val loopRadiusAxial = when (phase) {
-            2    -> loopRadiusPerp * (1.0 + phaseFrac * 1.0)  // up to 2× elongation
+            2    -> baseR * (1.0 + phaseFrac * 2.5)            // grows to 3.5× elongation
             else -> loopRadiusPerp
         }
 
