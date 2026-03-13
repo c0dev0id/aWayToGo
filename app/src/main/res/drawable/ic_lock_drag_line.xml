@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Two anchor points connected by a line.
+    Used for the "Place Drag Line" entry in the map lock menu.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Top pin circle (centre 12,4 radius 3) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M9,4 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <!-- Connecting line (1dp wide, from top circle to bottom circle) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M11,7 L11,17 L13,17 L13,7 Z" />
+    <!-- Bottom anchor circle (centre 12,20 radius 3) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M9,20 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+</vector>

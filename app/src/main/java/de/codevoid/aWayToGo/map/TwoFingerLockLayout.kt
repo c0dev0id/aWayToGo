@@ -36,6 +36,12 @@ import org.maplibre.android.maps.MapLibreMap
  *     root.attachMap(m)
  * }
  * ```
+ *
+ * ### Lock-ring animation callbacks
+ * [onSingleTouchDown] is called when a single finger touches down.
+ * [onSingleTouchEnd] is called when all fingers are lifted or the gesture is
+ * cancelled.  [MapActivity] uses these to start and cancel the lock-ring arc
+ * animation that precedes the map-lock context menu.
  */
 class TwoFingerLockLayout(context: Context) : FrameLayout(context) {
 
@@ -45,6 +51,19 @@ class TwoFingerLockLayout(context: Context) : FrameLayout(context) {
     fun attachMap(m: MapLibreMap) {
         map = m
     }
+
+    /**
+     * Fired on [MotionEvent.ACTION_DOWN] (first finger down, single-touch gesture start).
+     * [MapActivity] uses this to begin the lock-ring animation after a 50 ms delay.
+     */
+    var onSingleTouchDown: (() -> Unit)? = null
+
+    /**
+     * Fired on [MotionEvent.ACTION_UP] or [MotionEvent.ACTION_CANCEL] (all fingers lifted
+     * or gesture cancelled).  [MapActivity] uses this to abort the lock-ring animation if
+     * the finger is released before the 500 ms long-press threshold.
+     */
+    var onSingleTouchEnd: (() -> Unit)? = null
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         val m = map
@@ -73,6 +92,14 @@ class TwoFingerLockLayout(context: Context) : FrameLayout(context) {
                 }
             }
         }
+
+        // Lock-ring animation hooks (fired regardless of map readiness).
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN            -> onSingleTouchDown?.invoke()
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL          -> onSingleTouchEnd?.invoke()
+        }
+
         return super.dispatchTouchEvent(ev)
     }
 }

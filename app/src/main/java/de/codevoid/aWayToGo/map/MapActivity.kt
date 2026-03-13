@@ -56,8 +56,12 @@ import de.codevoid.aWayToGo.map.ui.AnimatorBag
 import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
 import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
+import de.codevoid.aWayToGo.map.ui.MapLockMenuPanelResult
+import de.codevoid.aWayToGo.map.ui.buildMapLockMenuPanel
 import de.codevoid.aWayToGo.map.ui.MenuPanelResult
 import de.codevoid.aWayToGo.map.ui.buildMenuPanel
+import android.content.ClipData
+import android.content.ClipboardManager
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
 import de.codevoid.aWayToGo.map.ui.makePillButton
@@ -198,7 +202,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var courseUpToggleBtn: TextView
     private lateinit var followToggleBtn: TextView
     private lateinit var myLocationButton: ImageView
-    private lateinit var crosshairView: View
+    private lateinit var crosshairView: CrosshairView
     private lateinit var versionCardView: TextView
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
@@ -218,6 +222,16 @@ class MapActivity : ComponentActivity() {
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
+
+    // ── Map lock menu ──────────────────────────────────────────────────────────
+    // Shown when the user long-presses the crosshair (remote CONFIRM or finger).
+    // The circle arc on the crosshair animates for 450 ms (starting 50 ms after
+    // press) to signal the long-press; when complete the context menu expands.
+    private lateinit var mapLockMenuPanelResult: MapLockMenuPanelResult
+    private lateinit var mapLockPanel: FrameLayout
+    private lateinit var mapLockDismissOverlay: View
+    private var mapLockMenuAnimator: ValueAnimator? = null
+    private var lockRingAnimator: ValueAnimator? = null
     private lateinit var exploreBottomBar: FrameLayout
     private lateinit var navigateOverlay: FrameLayout
     private lateinit var navigateBanner: View
@@ -578,7 +592,20 @@ class MapActivity : ComponentActivity() {
 
         // Root layout — TwoFingerLockLayout disables map scrolling while a
         // two-finger (zoom/rotate) gesture is in progress.
-        val root = TwoFingerLockLayout(this)
+        val root = TwoFingerLockLayout(this).apply {
+            // Start the lock-ring animation on any touch-down in panning mode.
+            // The ring grows over 450 ms; at 500 ms MapLibre fires onMapLongClickListener
+            // which calls openMapLockMenu().  If the user lifts their finger before 500 ms
+            // (short tap / pan), onSingleTouchEnd cancels the animation.
+            onSingleTouchDown = {
+                if (viewModel.uiState.value.isInPanningMode
+                    && !viewModel.uiState.value.isMapLockMenuOpen
+                ) {
+                    startLockRingAnimation()
+                }
+            }
+            onSingleTouchEnd = { cancelLockRingAnimation() }
+        }
 
         // MapView fills the screen.
         // SurfaceView mode (the default — do NOT pass textureMode): gives MapLibre its own
@@ -866,6 +893,43 @@ class MapActivity : ComponentActivity() {
             insets
         }
 
+        // ── Map lock dismiss overlay ───────────────────────────────────────────
+        // Full-screen transparent tap target that closes the map-lock context menu.
+        // Sits below the map lock panel so taps on the panel itself fall through to
+        // the menu items; taps outside the panel dismiss the menu.
+        mapLockDismissOverlay = View(this).apply {
+            background = null
+            isClickable = true
+            isFocusable = false
+            visibility  = View.GONE
+            setOnClickListener { closeMapLockMenu() }
+        }
+        root.addView(
+            mapLockDismissOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        // ── Map lock menu panel ────────────────────────────────────────────────
+        // Centered on screen (same position as the crosshair / lock ring).
+        // Starts GONE; runOpenMapLockMenuAnimation expands it using the same
+        // ValueAnimator mechanism as the hamburger panel.
+        val ringDiameterPx = (80 * density).toInt()  // 2 × LOCK_RING_RADIUS_DP
+        buildMapLockMenuPanel(this).also { result ->
+            mapLockMenuPanelResult = result
+            mapLockPanel           = result.root
+            result.copyCoordinatesRow.setOnClickListener { onMapLockCopyCoordinates() }
+            result.placeDragLineRow.setOnClickListener   { onMapLockPlaceDragLine()   }
+            result.navigateRow.setOnClickListener        { closeMapLockMenu()         } // stub
+            result.quickSearchRow.setOnClickListener     { closeMapLockMenu()         } // stub
+        }
+        root.addView(
+            mapLockPanel,
+            FrameLayout.LayoutParams(ringDiameterPx, ringDiameterPx, Gravity.CENTER),
+        )
+
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
         menuDismissOverlay = View(this).apply {
@@ -991,11 +1055,27 @@ class MapActivity : ComponentActivity() {
                     TileCache.gate.pause()
                 }
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    // User started panning — cancel any in-progress lock-ring animation.
+                    cancelLockRingAnimation()
                     if (viewModel.uiState.value.isFollowModeActive) {
                         viewModel.disableFollowMode()
                     } else {
                         enterPanningMode()
                     }
+                }
+            }
+
+            // Long-press on the map surface (touch) while in panning mode opens the
+            // map-lock context menu.  The lock-ring animation started in the root
+            // layout's ACTION_DOWN hook should be complete by the time this fires.
+            m.addOnMapLongClickListener {
+                if (viewModel.uiState.value.isInPanningMode
+                    && !viewModel.uiState.value.isMapLockMenuOpen
+                ) {
+                    openMapLockMenu()
+                    true   // consume — prevent default long-press behaviour
+                } else {
+                    false
                 }
             }
             // Open the gate when the camera stops.  MapLibre will immediately
@@ -1115,7 +1195,22 @@ class MapActivity : ComponentActivity() {
 
             is RemoteEvent.JoyInput -> panController.onJoyInput(event.dx, event.dy)
 
-            is RemoteEvent.KeyDown -> panController.onKeyDown(event.key)
+            is RemoteEvent.KeyDown -> {
+                panController.onKeyDown(event.key)
+                // Start the lock-ring animation when CONFIRM is pressed in panning mode.
+                // The ring grows over 450 ms (with a 50 ms start delay) to visualise the
+                // long-press charge-up; the map lock menu opens when LongPress fires.
+                if (event.key == RemoteKey.CONFIRM
+                    && viewModel.uiState.value.isInPanningMode
+                    && !viewModel.uiState.value.isMapLockMenuOpen
+                ) {
+                    startLockRingAnimation()
+                }
+                // Close the map-lock menu immediately on BACK regardless of other state.
+                if (event.key == RemoteKey.BACK && viewModel.uiState.value.isMapLockMenuOpen) {
+                    closeMapLockMenu()
+                }
+            }
 
             is RemoteEvent.KeyUp -> panController.onKeyUp(event.key, m)
 
@@ -1123,7 +1218,10 @@ class MapActivity : ComponentActivity() {
                 RemoteKey.UP, RemoteKey.DOWN, RemoteKey.LEFT, RemoteKey.RIGHT -> {}
                 RemoteKey.ZOOM_IN, RemoteKey.ZOOM_OUT -> {}  // handled by KeyDown/KeyUp
 
-                RemoteKey.CONFIRM ->
+                RemoteKey.CONFIRM -> {
+                    // Short press → user released before the long-press threshold.
+                    // Cancel the lock-ring animation and apply the normal short-press action.
+                    cancelLockRingAnimation()
                     // In panning mode: confirm exits panning and re-locks on GPS.
                     // Outside panning mode: fly to current location directly.
                     if (viewModel.uiState.value.isInPanningMode) {
@@ -1133,6 +1231,7 @@ class MapActivity : ComponentActivity() {
                             flyToLocation(m, LatLng(loc.latitude, loc.longitude))
                         }
                     }
+                }
 
                 RemoteKey.BACK ->
                     // In panning mode: exit panning → re-lock on GPS.
@@ -1144,27 +1243,10 @@ class MapActivity : ComponentActivity() {
             is RemoteEvent.LongPress -> when (event.key) {
                 RemoteKey.CONFIRM ->
                     if (viewModel.uiState.value.isInPanningMode) {
-                        // Capture the map position under the crosshair (screen centre)
-                        // and anchor the drag line to that point.  The Choreographer
-                        // loop keeps the line's "from" end on the current GPS fix.
-                        val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
-                        val target = m.projection.fromScreenLocation(screenCenter)
-                        // If a drag line already exists, launch its fall-away animation.
-                        val prevAnchor = dragLineAnchor
-                        m.locationComponent.lastKnownLocation?.let { loc ->
-                            if (prevAnchor != null) {
-                                oldDragLineFrom      = LatLng(loc.latitude, loc.longitude)
-                                oldDragLineTo        = prevAnchor
-                                oldAnchorSetTimeNs   = System.nanoTime()
-                                oldDragLineAnimator.reset()
-                            }
-                        }
-                        dragLineAnchor    = target
-                        anchorSetTimeNs   = System.nanoTime()
-                        dragLineAnimator.reset()
-                        m.locationComponent.lastKnownLocation?.let { loc ->
-                            setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
-                        }
+                        // Long-press CONFIRM while panning: open the map-lock context menu.
+                        // The lock-ring animation that started on KeyDown should have
+                        // completed by now (50 ms delay + 450 ms animation = 500 ms).
+                        openMapLockMenu()
                     }
 
                 else -> {}
@@ -1577,15 +1659,16 @@ class MapActivity : ComponentActivity() {
      * (e.g. only [MapUiState.isInPanningMode] changing) do the minimum work.
      */
     private fun renderUiState(new: MapUiState, old: MapUiState?) {
-        val modeChanged         = old?.mode != new.mode
-        val panningChanged      = old?.isInPanningMode != new.isInPanningMode
-        val followChanged       = old?.isFollowModeActive != new.isFollowModeActive
-        val menuChanged         = old?.isMenuOpen != new.isMenuOpen
-        val searchChanged       = old?.isSearchOpen != new.isSearchOpen
-        val settingsMenuChanged = old?.isInSettingsMenu != new.isInSettingsMenu
-        val debugMenuChanged    = old?.isInDebugMenu != new.isInDebugMenu
-        val debugModeChanged    = old?.isDebugMode != new.isDebugMode
+        val modeChanged          = old?.mode != new.mode
+        val panningChanged       = old?.isInPanningMode != new.isInPanningMode
+        val followChanged        = old?.isFollowModeActive != new.isFollowModeActive
+        val menuChanged          = old?.isMenuOpen != new.isMenuOpen
+        val searchChanged        = old?.isSearchOpen != new.isSearchOpen
+        val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
+        val debugMenuChanged     = old?.isInDebugMenu != new.isInDebugMenu
+        val debugModeChanged     = old?.isDebugMode != new.isDebugMode
         val dragLineStyleChanged = old?.dragLineStyle != new.dragLineStyle
+        val mapLockMenuChanged   = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1593,6 +1676,17 @@ class MapActivity : ComponentActivity() {
         crosshairView.visibility = when {
             new.mode == AppMode.EDIT || new.isInPanningMode -> View.VISIBLE
             else                                            -> View.GONE
+        }
+
+        // ── Map lock menu ──────────────────────────────────────────────────────
+        if (old != null && mapLockMenuChanged) {
+            if (new.isMapLockMenuOpen) {
+                runOpenMapLockMenuAnimation()
+            } else {
+                runCloseMapLockMenuAnimation()
+                // Ring has served its purpose — reset for the next long-press.
+                crosshairView.lockRingSweep = 0f
+            }
         }
 
 
@@ -1750,6 +1844,157 @@ class MapActivity : ComponentActivity() {
     private fun toggleMenu() { viewModel.toggleMenu() }
     private fun openMenu()   { viewModel.openMenu() }
     private fun closeMenu()  { viewModel.closeMenu() }
+
+    // ── Map lock menu ─────────────────────────────────────────────────────────
+
+    /**
+     * Starts the lock-ring arc animation on the crosshair.
+     *
+     * The arc grows from 0° to 360° over 450 ms after a 50 ms delay, so it
+     * completes exactly when the 500 ms long-press threshold elapses.
+     *
+     * Idempotent — cancels any in-progress animation before starting a new one.
+     */
+    private fun startLockRingAnimation() {
+        lockRingAnimator?.cancel()
+        lockRingAnimator = animBag.add(ValueAnimator.ofFloat(0f, 360f).apply {
+            duration   = 450
+            startDelay = 50
+            addUpdateListener { va ->
+                crosshairView.lockRingSweep = va.animatedValue as Float
+            }
+            start()
+        })
+    }
+
+    /**
+     * Cancels the lock-ring animation and resets the arc to zero.
+     *
+     * Called when the user releases the finger / button before the long-press
+     * threshold, or when the camera starts moving (pan gesture detected).
+     * No-op if the map-lock menu is already open.
+     */
+    private fun cancelLockRingAnimation() {
+        if (viewModel.uiState.value.isMapLockMenuOpen) return
+        lockRingAnimator?.cancel()
+        lockRingAnimator = null
+        crosshairView.lockRingSweep = 0f
+    }
+
+    private fun openMapLockMenu()  { viewModel.openMapLockMenu() }
+    private fun closeMapLockMenu() { viewModel.closeMapLockMenu() }
+
+    /**
+     * Expand the map-lock menu panel from ring-diameter size to full content size.
+     *
+     * Uses the same ValueAnimator / DecelerateInterpolator mechanism as
+     * [runOpenMenuAnimation] so the expansion feels identical to the hamburger menu.
+     * The panel grows from the centre of the screen (where the crosshair / ring sits).
+     */
+    private fun runOpenMapLockMenuAnimation() {
+        mapLockMenuAnimator?.cancel()
+        mapLockDismissOverlay.visibility = View.VISIBLE
+        mapLockPanel.visibility          = View.VISIBLE
+
+        val d      = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+        val panelH = 4 * (64 * d).toInt()  // 4 items × 64 dp each
+        val lp     = mapLockPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width
+        val startH = lp.height
+
+        mapLockMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = 220
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (panelW - startW) * t).toInt()
+                lp.height = (startH + (panelH - startH) * t).toInt()
+                mapLockPanel.layoutParams = lp
+                mapLockPanel.alpha = t
+            }
+            start()
+        })
+    }
+
+    /**
+     * Collapse the map-lock menu panel back to ring-diameter size, then hide it.
+     */
+    private fun runCloseMapLockMenuAnimation() {
+        mapLockMenuAnimator?.cancel()
+        mapLockDismissOverlay.visibility = View.GONE
+
+        val d          = resources.displayMetrics.density
+        val ringDiamPx = (80 * d).toInt()
+        val lp         = mapLockPanel.layoutParams as FrameLayout.LayoutParams
+        val startW     = lp.width
+        val startH     = lp.height
+
+        mapLockMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = 180
+            interpolator = AccelerateInterpolator()
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (ringDiamPx - startW) * t).toInt()
+                lp.height = (startH + (ringDiamPx - startH) * t).toInt()
+                mapLockPanel.layoutParams = lp
+                mapLockPanel.alpha = 1f - t
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    mapLockPanel.visibility = View.GONE
+                    // Reset to ring-diameter so next open starts from the same size.
+                    lp.width  = ringDiamPx
+                    lp.height = ringDiamPx
+                    mapLockPanel.layoutParams = lp
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * "Copy Coordinates" menu action: copies the crosshair LatLng to the clipboard.
+     */
+    private fun onMapLockCopyCoordinates() {
+        closeMapLockMenu()
+        val m = map ?: return
+        val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
+        val target = m.projection.fromScreenLocation(screenCenter)
+        val text = "%.6f,%.6f".format(target.latitude, target.longitude)
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("coordinates", text))
+    }
+
+    /**
+     * "Place Drag Line" menu action: anchors the drag line at the crosshair position.
+     *
+     * Identical to what the old direct long-press used to do, now surfaced as a
+     * menu entry so it coexists with the other map-lock actions.
+     */
+    private fun onMapLockPlaceDragLine() {
+        closeMapLockMenu()
+        val m = map ?: return
+        val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
+        val target = m.projection.fromScreenLocation(screenCenter)
+        // If a drag line already exists, launch its fall-away animation before
+        // placing the new anchor (same behaviour as the direct long-press in upstream).
+        val prevAnchor = dragLineAnchor
+        m.locationComponent.lastKnownLocation?.let { loc ->
+            if (prevAnchor != null) {
+                oldDragLineFrom    = LatLng(loc.latitude, loc.longitude)
+                oldDragLineTo      = prevAnchor
+                oldAnchorSetTimeNs = System.nanoTime()
+                oldDragLineAnimator.reset()
+            }
+        }
+        dragLineAnchor  = target
+        anchorSetTimeNs = System.nanoTime()
+        dragLineAnimator.reset()
+        m.locationComponent.lastKnownLocation?.let { loc ->
+            setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
+        }
+    }
 
     // ── Search ────────────────────────────────────────────────────────────────
 

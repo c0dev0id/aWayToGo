@@ -194,4 +194,14 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(dragLineStyle = style) }
     }
 
+    /** Open the map-lock context menu (triggered by long-press on the crosshair). */
+    fun openMapLockMenu() {
+        _uiState.update { it.copy(isMapLockMenuOpen = true) }
+    }
+
+    /** Close the map-lock context menu. */
+    fun closeMapLockMenu() {
+        _uiState.update { it.copy(isMapLockMenuOpen = false) }
+    }
+
 }
