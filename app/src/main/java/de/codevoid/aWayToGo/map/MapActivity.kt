@@ -1,5 +1,7 @@
 package de.codevoid.aWayToGo.map
 
+import kotlin.math.cos
+import kotlin.math.sqrt
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -120,6 +122,15 @@ private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
 private const val LOCATION_PERMISSION_REQUEST = 1
 
+// GPS follow: dead-reckoning look-ahead passed to animateCamera so MapLibre
+// interpolates between frames rather than snapping once per GPS fix.
+private const val FOLLOW_LOOK_AHEAD_MS = 100
+
+// GPS follow: outlier rejection threshold.  Early & Sykulski (2020) measured
+// GPS σ ≈ 8.5 m.  We accept any fix implying less than 300 km/h — generous
+// enough to cover GPS noise at low speed while rejecting true outliers.
+private const val FOLLOW_MAX_SPEED_MS = 83.3   // 300 km/h in m/s
+
 // Distance threshold (metres) below which flyToLocation animates directly.
 // Above this, it zooms out to a context level first, then zooms back in.
 private const val FLYTO_THRESHOLD_M = 10_000.0
@@ -225,10 +236,23 @@ class MapActivity : ComponentActivity() {
     private var dragLineAnchor: LatLng? = null
 
     // ── Follow mode ───────────────────────────────────────────────────────────
-    // Last GPS coordinates that were applied to the camera while following.
-    // NaN signals "not yet applied" so the first fix always triggers a camera move.
-    private var followLastLat = Double.NaN
-    private var followLastLon = Double.NaN
+    // Dead-reckoning state for smooth GPS follow.
+    //
+    // GPS errors are t-distributed (σ ≈ 8.5 m, ν ≈ 4.5) with occasional outliers
+    // of 100 m+ (Early & Sykulski 2020).  Rather than snapping the camera to each
+    // raw fix, we:
+    //   1. Reject fixes implying speed > FOLLOW_MAX_SPEED_MS (outlier filter).
+    //   2. Estimate velocity from the last two valid fixes.
+    //   3. Every Choreographer frame, predict position = last_fix + velocity × elapsed
+    //      and animate the camera there with a short look-ahead so MapLibre interpolates
+    //      smoothly between frames.
+    //
+    // NaN signals "no valid fix yet".
+    private var followLastLat     = Double.NaN
+    private var followLastLon     = Double.NaN
+    private var followLastTimeNs  = 0L       // nanoTime of last accepted GPS fix
+    private var followVelocityLat = 0.0      // degrees/ns
+    private var followVelocityLon = 0.0      // degrees/ns
 
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
@@ -266,31 +290,62 @@ class MapActivity : ComponentActivity() {
             }
 
             // ── GPS Follow ───────────────────────────────────────────────────
-            // When follow mode is active, snap the camera to each new GPS fix
-            // instantly with moveCamera.  No animation duration is needed or
-            // assumed — this works correctly regardless of receiver update rate
-            // (1 Hz, 2 Hz, 4 Hz, 5 Hz, …) or whether that rate changes mid-ride.
+            // Smooth dead-reckoning follow:
+            //   • When a new GPS fix arrives, validate it (outlier rejection) and
+            //     update the velocity estimate from the delta to the previous fix.
+            //   • Every frame, predict the current position by extrapolating the
+            //     last valid fix forward at that velocity, then animate the camera
+            //     there with a short look-ahead so MapLibre GL interpolates smoothly
+            //     between frames instead of snapping once per GPS update.
             if (viewModel.uiState.value.isFollowModeActive) {
-                map?.locationComponent?.lastKnownLocation?.let { loc ->
+                val m   = map   ?: return@doFrame
+                val cur = m.cameraPosition ?: return@doFrame
+                m.locationComponent?.lastKnownLocation?.let { loc ->
                     if (loc.latitude != followLastLat || loc.longitude != followLastLon) {
-                        followLastLat = loc.latitude
-                        followLastLon = loc.longitude
-                        val m   = map
-                        val cur = m?.cameraPosition
-                        if (m != null && cur != null) {
-                            m.moveCamera(
-                                CameraUpdateFactory.newCameraPosition(
-                                    CameraPosition.Builder()
-                                        .target(LatLng(loc.latitude, loc.longitude))
-                                        .zoom(cur.zoom)
-                                        .bearing(cur.bearing)
-                                        .tilt(cur.tilt)
-                                        .padding(cur.padding)
-                                        .build(),
-                                ),
+                        // New fix — validate before accepting.
+                        val elapsedNs = frameTimeNanos - followLastTimeNs
+                        if (!followLastLat.isNaN() && elapsedNs > 0L) {
+                            val dLat   = loc.latitude  - followLastLat
+                            val dLon   = loc.longitude - followLastLon
+                            val dMeters = sqrt(
+                                (dLat  * 111_000.0).let { it * it } +
+                                (dLon  * 111_000.0 * cos(Math.toRadians(loc.latitude))).let { it * it }
                             )
+                            val speedMs = dMeters / (elapsedNs / 1_000_000_000.0)
+                            if (speedMs < FOLLOW_MAX_SPEED_MS) {
+                                // Valid fix — update velocity and accept.
+                                followVelocityLat = dLat / elapsedNs.toDouble()
+                                followVelocityLon = dLon / elapsedNs.toDouble()
+                                followLastLat    = loc.latitude
+                                followLastLon    = loc.longitude
+                                followLastTimeNs = frameTimeNanos
+                            }
+                            // else: outlier — keep predicting from last valid fix.
+                        } else {
+                            // First fix ever — accept unconditionally, no velocity yet.
+                            followLastLat    = loc.latitude
+                            followLastLon    = loc.longitude
+                            followLastTimeNs = frameTimeNanos
                         }
                     }
+                }
+                // Predict and animate every frame (requires at least one valid fix).
+                if (!followLastLat.isNaN()) {
+                    val elapsedNs = frameTimeNanos - followLastTimeNs
+                    val predLat   = followLastLat + followVelocityLat * elapsedNs
+                    val predLon   = followLastLon + followVelocityLon * elapsedNs
+                    m.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder()
+                                .target(LatLng(predLat, predLon))
+                                .zoom(cur.zoom)
+                                .bearing(cur.bearing)
+                                .tilt(cur.tilt)
+                                .padding(cur.padding)
+                                .build(),
+                        ),
+                        FOLLOW_LOOK_AHEAD_MS,
+                    )
                 }
             }
 
@@ -1347,8 +1402,13 @@ class MapActivity : ComponentActivity() {
         // Snap the camera to GPS immediately when follow mode is turned on so
         // there is no visible delay before the Choreographer tracking takes over.
         if (followChanged && new.isFollowModeActive) {
-            followLastLat = Double.NaN   // force a fresh camera move on next frame
-            followLastLon = Double.NaN
+            // Reset dead-reckoning state so stale velocity is not extrapolated
+            // from a previous follow session.
+            followLastLat     = Double.NaN
+            followLastLon     = Double.NaN
+            followLastTimeNs  = 0L
+            followVelocityLat = 0.0
+            followVelocityLon = 0.0
             val m   = map
             val loc = m?.locationComponent?.lastKnownLocation
             if (m != null && loc != null) {
