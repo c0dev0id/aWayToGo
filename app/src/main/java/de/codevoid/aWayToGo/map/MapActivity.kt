@@ -84,6 +84,10 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.LocationListener
 import android.location.LocationManager
 import org.maplibre.android.location.LocationComponentActivationOptions
@@ -154,6 +158,15 @@ private const val FOLLOW_MAX_SPEED_MS = 83.3   // 300 km/h in m/s
 // Course Up bearing smoothing: EMA weight applied each Choreographer frame.
 // Smaller = smoother but laggier; larger = more responsive but jitterier.
 private const val BEARING_SMOOTH_ALPHA = 0.005
+
+// Compass bearing smoothing when falling back to sensor azimuth (no GPS bearing).
+// ~10× more responsive than GPS EMA since the rotation-vector sensor is already
+// hardware-filtered and needs less software smoothing.
+private const val COMPASS_SMOOTH_ALPHA = 0.1
+
+// Dead-reckoning staleness cap: stop extrapolating position after this many
+// nanoseconds without a fresh GPS (or network) fix to prevent unbounded drift.
+private const val FOLLOW_MAX_DR_NS = 5_000_000_000L   // 5 seconds
 
 private const val FLYTO_DURATION_MS = 800
 
@@ -303,8 +316,29 @@ class MapActivity : ComponentActivity() {
     // to avoid a feedback loop: locationComponent → rawGpsLocation → prediction.
     private val syntheticEngine = SyntheticLocationEngine()
     private var rawGpsLocation: Location? = null
+    private var networkLocation: Location? = null
     private var locationManager: LocationManager? = null
-    private val rawLocationListener = LocationListener { loc -> rawGpsLocation = loc }
+    private val rawLocationListener     = LocationListener { loc -> rawGpsLocation  = loc }
+    private val networkLocationListener = LocationListener { loc -> networkLocation = loc }
+
+    // ── Compass sensor ────────────────────────────────────────────────────────
+    // TYPE_ROTATION_VECTOR fuses accelerometer + magnetometer + gyroscope (OS-side).
+    // Its azimuth is used as the Course Up bearing source when GPS hasBearing()
+    // returns false (stationary or no signal).
+    private var sensorManager: SensorManager? = null
+    private var compassBearingRad = Float.NaN   // azimuth in radians, -π..π
+
+    private val compassListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+            val rot    = FloatArray(9)
+            val orient = FloatArray(3)
+            SensorManager.getRotationMatrixFromVector(rot, event.values)
+            SensorManager.getOrientation(rot, orient)
+            compassBearingRad = orient[0]   // azimuth
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
 
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
@@ -352,7 +386,10 @@ class MapActivity : ComponentActivity() {
             val cur = m?.cameraPosition
             if (m != null && cur != null) {
                 var gpsBearing = cur.bearing   // updated below if Course Up is on
-                rawGpsLocation?.let { loc ->
+                // Position update: prefer GPS fix, fall back to network location so
+                // dead-reckoning can seed itself even when GPS signal is absent.
+                val locForDR = rawGpsLocation ?: networkLocation
+                locForDR?.let { loc ->
                     if (loc.latitude != followLastLat || loc.longitude != followLastLon) {
                         // New fix — validate before accepting.
                         val elapsedNs = frameTimeNanos - followLastTimeNs
@@ -380,23 +417,35 @@ class MapActivity : ComponentActivity() {
                             followLastTimeNs = frameTimeNanos
                         }
                     }
-                    // Course Up: use GPS course-over-ground when available.
-                    // Apply a circular EMA (sin/cos space) to smooth noisy/jumpy GPS bearing.
-                    if (uiState.isCourseUpEnabled && loc.hasBearing()) {
-                        val rawRad = Math.toRadians(loc.bearing.toDouble())
+                }
+                // Course Up: prefer GPS course-over-ground (direction of travel).
+                // Fall back to compass azimuth from TYPE_ROTATION_VECTOR when GPS
+                // hasBearing() is false — this covers the stationary case and
+                // complete GPS signal loss.  A faster EMA alpha is used for the
+                // compass because the rotation-vector sensor is already
+                // hardware-filtered and reacts faster than GPS course.
+                if (uiState.isCourseUpEnabled) {
+                    val gpsCourse  = rawGpsLocation?.takeIf { it.hasBearing() }
+                        ?.bearing?.let { Math.toRadians(it.toDouble()) }
+                    val compass    = compassBearingRad.takeUnless { it.isNaN() }?.toDouble()
+                    val sourceRad  = gpsCourse ?: compass
+                    val alpha      = if (gpsCourse != null) BEARING_SMOOTH_ALPHA else COMPASS_SMOOTH_ALPHA
+                    if (sourceRad != null) {
                         if (followSmoothedSin.isNaN()) {
                             // First sample — initialise directly so the map doesn't spin from 0°.
-                            followSmoothedSin = sin(rawRad)
-                            followSmoothedCos = cos(rawRad)
+                            followSmoothedSin = sin(sourceRad)
+                            followSmoothedCos = cos(sourceRad)
                         } else {
-                            followSmoothedSin = (1.0 - BEARING_SMOOTH_ALPHA) * followSmoothedSin + BEARING_SMOOTH_ALPHA * sin(rawRad)
-                            followSmoothedCos = (1.0 - BEARING_SMOOTH_ALPHA) * followSmoothedCos + BEARING_SMOOTH_ALPHA * cos(rawRad)
+                            followSmoothedSin = (1.0 - alpha) * followSmoothedSin + alpha * sin(sourceRad)
+                            followSmoothedCos = (1.0 - alpha) * followSmoothedCos + alpha * cos(sourceRad)
                         }
                         gpsBearing = Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
                     }
                 }
                 if (!followLastLat.isNaN()) {
-                    val elapsedNs = frameTimeNanos - followLastTimeNs
+                    // Cap elapsed time so the dead-reckoned position doesn't drift
+                    // arbitrarily far when GPS (and network location) are both absent.
+                    val elapsedNs = minOf(frameTimeNanos - followLastTimeNs, FOLLOW_MAX_DR_NS)
                     val predLat   = followLastLat + followVelocityLat * elapsedNs
                     val predLon   = followLastLon + followVelocityLon * elapsedNs
                     // Push smooth predicted position to syntheticEngine every frame so
@@ -1036,6 +1085,17 @@ class MapActivity : ComponentActivity() {
             )
             lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { rawGpsLocation = it }
         } catch (_: SecurityException) { }
+        // Network location fallback: coarser position updates used to seed
+        // dead-reckoning when GPS signal is unavailable (indoors, tunnels, etc.).
+        if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            try {
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, 1000L, 0f, networkLocationListener, mainLooper,
+                )
+                lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                    ?.let { if (rawGpsLocation == null) networkLocation = it }
+            } catch (_: SecurityException) { }
+        }
 
         rawGpsLocation?.let { loc ->
             m.animateCamera(
@@ -3300,8 +3360,9 @@ class MapActivity : ComponentActivity() {
         mapView.onResume()
         remoteControl.register()
         Choreographer.getInstance().postFrameCallback(frameCallback)
-        // Re-register GPS listener removed in onPause(); the map-ready callback only
-        // registers it once, so after the first pause/resume cycle updates would stop.
+        // Re-register location listeners removed in onPause(); the map-ready
+        // callback only registers them once, so after the first pause/resume
+        // cycle updates would stop.
         val lm = locationManager
         if (lm != null) {
             try {
@@ -3309,6 +3370,19 @@ class MapActivity : ComponentActivity() {
                     LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
                 )
             } catch (_: SecurityException) { }
+            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                try {
+                    lm.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER, 1000L, 0f, networkLocationListener, mainLooper,
+                    )
+                } catch (_: SecurityException) { }
+            }
+        }
+        // Re-register compass sensor for Course Up bearing fallback.
+        val sm = getSystemService(SENSOR_SERVICE) as SensorManager
+        sensorManager = sm
+        sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { s ->
+            sm.registerListener(compassListener, s, SensorManager.SENSOR_DELAY_GAME)
         }
         checkUpdateIfDue()
     }
@@ -3317,6 +3391,9 @@ class MapActivity : ComponentActivity() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
         locationManager?.removeUpdates(rawLocationListener)
+        locationManager?.removeUpdates(networkLocationListener)
+        sensorManager?.unregisterListener(compassListener)
+        sensorManager = null
         mapView.onPause()
         stopUpdateAvailableAnimation()
         super.onPause()
