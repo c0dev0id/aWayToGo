@@ -137,10 +137,10 @@ private const val LAYER_DRAG_LINE_PIN_OUTER = "drag-line-pin-outer"
 private const val LAYER_DRAG_LINE_PIN_INNER = "drag-line-pin-inner"
 private const val IMAGE_TAPE_PATTERN        = "tape-pattern"
 
-// ── Old drag line (fall-away dismissal) ──────────────────────────────────────
-// When a new drag line replaces the current one, the old line plays a fall
-// animation (both endpoints detach, rope falls like a loose string) before
-// being cleared.  Only a simple casing + fill is shown — no label or pin.
+// ── Old drag line (dismiss animation) ────────────────────────────────────────
+// When a new drag line replaces the current one, the old line plays its
+// dismiss animation before being cleared.  Only a simple casing + fill is
+// shown — no label or pin.
 private const val SOURCE_DRAG_LINE_OLD            = "drag-line-old"
 private const val LAYER_DRAG_LINE_OLD_CASING      = "drag-line-old-casing"
 private const val LAYER_DRAG_LINE_OLD_FILL        = "drag-line-old-fill"
@@ -291,17 +291,16 @@ class MapActivity : ComponentActivity() {
     private var dragLineAnchor: LatLng? = null
     // nanoTime() when the anchor was most recently placed; drives the whip animation.
     private var anchorSetTimeNs: Long = 0L
-    // Physically-inspired drag line animation (whip / lasso).
     private val dragLineAnimator = DragLineAnimator()
 
-    // ── Old drag line fall-away ───────────────────────────────────────────────
-    // When a new anchor replaces an existing one, the old line detaches and
-    // falls off-screen.  We freeze the old from/to positions at the moment of
-    // replacement so the fall plays against the old geometry.
+    // ── Old drag line dismiss animation ──────────────────────────────────────
+    // When a new anchor replaces an existing one, the old line animates out.
+    // We freeze the old from/to positions at the moment of replacement so the
+    // animation plays against the old geometry.
     private var oldDragLineFrom: LatLng? = null
     private var oldDragLineTo:   LatLng? = null
     private var oldAnchorSetTimeNs: Long = 0L
-    private val oldDragLineAnimator = DragLineAnimator().apply { style = DragLineAnimator.Style.FALL }
+    private val oldDragLineAnimator = DragLineAnimator()
 
     // ── Follow mode ───────────────────────────────────────────────────────────
     // Dead-reckoning state for smooth GPS follow.
@@ -482,7 +481,7 @@ class MapActivity : ComponentActivity() {
                     dragLineAnchor?.let { anchor ->
                         setDragLine(LatLng(predLat, predLon), anchor, frameTimeNanos / 1_000_000_000.0)
                     }
-                    // Drive the old-line fall animation until it clears itself.
+                    // Drive the old-line dismiss animation until it clears itself.
                     val oldFrom = oldDragLineFrom
                     val oldTo   = oldDragLineTo
                     if (oldFrom != null && oldTo != null) {
@@ -979,8 +978,6 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
             // Run Benchmark → starts the benchmark.
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
-            // Drag Line Style → cycles through Whip / Lasso.
-            result.debugContent.getChildAt(2).setOnClickListener { viewModel.cycleDragLineStyle() }
         }
         root.addView(
             menuPanel,
@@ -989,13 +986,6 @@ class MapActivity : ComponentActivity() {
         )
 
         setContentView(root)
-
-        // Restore persisted drag line animation style.
-        prefs.getString("drag_line_style", null)?.let { saved ->
-            try {
-                viewModel.setDragLineStyle(DragLineAnimator.Style.valueOf(saved))
-            } catch (_: IllegalArgumentException) { /* ignore invalid saved value */ }
-        }
 
         // Observe UI state and render changes reactively.
         // repeatOnLifecycle(STARTED): pauses collection when the app is in the background
@@ -1670,7 +1660,6 @@ class MapActivity : ComponentActivity() {
         val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
         val debugMenuChanged     = old?.isInDebugMenu != new.isInDebugMenu
         val debugModeChanged     = old?.isDebugMode != new.isDebugMode
-        val dragLineStyleChanged = old?.dragLineStyle != new.dragLineStyle
         val mapLockMenuChanged   = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
 
         // ── Crosshair ──────────────────────────────────────────────────────────
@@ -1790,23 +1779,6 @@ class MapActivity : ComponentActivity() {
             osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
             menuPanelResult.debugToggleLabel.text =
                 "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
-        }
-
-        // ── Drag line animation style ───────────────────────────────────────
-        if (dragLineStyleChanged || old == null) {
-            val styleName = when (new.dragLineStyle) {
-                DragLineAnimator.Style.WHIP    -> "Whip"
-                DragLineAnimator.Style.LASSO   -> "Lasso"
-                DragLineAnimator.Style.FALL    -> "Fall"
-                DragLineAnimator.Style.SINE    -> "Sine"
-                DragLineAnimator.Style.GRAVITY -> "Gravity"
-            }
-            menuPanelResult.dragLineStyleLabel.text = "Drag Line: $styleName"
-            dragLineAnimator.style = new.dragLineStyle
-            dragLineAnimator.reset()
-            // Re-stamp the anchor time so the animation restarts with the new style.
-            if (dragLineAnchor != null) anchorSetTimeNs = System.nanoTime()
-            prefs.edit().putString("drag_line_style", new.dragLineStyle.name).apply()
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -1982,8 +1954,7 @@ class MapActivity : ComponentActivity() {
         val m = map ?: return
         val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
         val target = m.projection.fromScreenLocation(screenCenter)
-        // If a drag line already exists, launch its fall-away animation before
-        // placing the new anchor (same behaviour as the direct long-press in upstream).
+        // If a drag line already exists, animate it out before placing the new anchor.
         val prevAnchor = dragLineAnchor
         m.locationComponent.lastKnownLocation?.let { loc ->
             if (prevAnchor != null) {
@@ -2948,14 +2919,8 @@ class MapActivity : ComponentActivity() {
     /**
      * Draw (or update) the construction-tape drag line from [from] (puck) to [to] (anchor).
      *
-     * The [DragLineAnimator] generates the animated geometry.  Two styles are
-     * supported (selectable via the Debug menu):
-     *
-     * **Whip** — Verlet-chain rope thrown from puck to anchor with a whip-crack
-     *   tip acceleration effect.  Settles exponentially to a straight line.
-     *
-     * **Lasso** — A spinning loop at the anchor end with a trailing rope that
-     *   settles to straight.
+     * The [DragLineAnimator] generates the animated geometry (sinusoidal wave that
+     * decays to a straight line).
      *
      * Visual: yellow/black diagonal-stripe pattern (construction tape), dark outline.
      * The distance label is placed 25 % along the line from the puck so it is
@@ -3158,13 +3123,13 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Render (or update) the fall-away animation of the old drag line.
+     * Render (or update) the dismiss animation of the old drag line.
      *
      * Uses frozen [from]/[to] coordinates captured at the moment the previous
-     * anchor was replaced.  Drives [oldDragLineAnimator] (Style.FALL) and
-     * renders the result into [SOURCE_DRAG_LINE_OLD].  When the fall animation
-     * finishes (returns null), the old-line source is cleared and the frozen
-     * coordinates are nulled so this function stops being called.
+     * anchor was replaced.  Drives [oldDragLineAnimator] and renders the result
+     * into [SOURCE_DRAG_LINE_OLD].  When the animation finishes (returns null),
+     * the old-line source is cleared and the frozen coordinates are nulled so
+     * this function stops being called.
      */
     private fun setOldDragLine(from: LatLng, to: LatLng) {
         val s = style ?: return
@@ -3181,7 +3146,7 @@ class MapActivity : ComponentActivity() {
         val samples = oldDragLineAnimator.generate(elapsedSec)
 
         if (samples == null) {
-            // Fall finished — clear the source and stop driving it.
+            // Animation finished — clear the source and stop driving it.
             oldDragLineFrom = null
             oldDragLineTo   = null
             s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE_OLD)
@@ -3206,7 +3171,7 @@ class MapActivity : ComponentActivity() {
             return
         }
 
-        // First-time setup: source + layers for the old falling line.
+        // First-time setup: source + layers for the old dismiss-animation line.
         // IMAGE_TAPE_PATTERN is already registered by setDragLine().
         s.addSource(GeoJsonSource(SOURCE_DRAG_LINE_OLD, lineCollection,
             GeoJsonOptions().withSynchronousUpdate(true)))
@@ -3219,7 +3184,7 @@ class MapActivity : ComponentActivity() {
             if (belowOld != null) s.addLayerBelow(layer, belowOld) else s.addLayer(layer)
         }
 
-        // Single combined shadow for the falling old line (simplified — it's
+        // Single combined shadow for the dismiss-animation old line (simplified — it's
         // transient and fading, so the full two-layer model is unnecessary).
         addOldLayer(
             LineLayer(LAYER_DRAG_LINE_OLD_SHADOW, SOURCE_DRAG_LINE_OLD).apply {

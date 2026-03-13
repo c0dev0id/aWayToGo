@@ -177,25 +177,6 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isCourseUpEnabled = !it.isCourseUpEnabled) }
     }
 
-    /** Cycle through drag line animation styles (Whip → Lasso → Sine → Gravity → Whip). */
-    fun cycleDragLineStyle() {
-        _uiState.update {
-            val next = when (it.dragLineStyle) {
-                DragLineAnimator.Style.WHIP    -> DragLineAnimator.Style.LASSO
-                DragLineAnimator.Style.LASSO   -> DragLineAnimator.Style.SINE
-                DragLineAnimator.Style.SINE    -> DragLineAnimator.Style.GRAVITY
-                DragLineAnimator.Style.GRAVITY -> DragLineAnimator.Style.WHIP
-                DragLineAnimator.Style.FALL    -> DragLineAnimator.Style.WHIP
-            }
-            it.copy(dragLineStyle = next)
-        }
-    }
-
-    /** Set the drag line animation style directly. */
-    fun setDragLineStyle(style: DragLineAnimator.Style) {
-        _uiState.update { it.copy(dragLineStyle = style) }
-    }
-
     /** Open the map-lock context menu (triggered by long-press on the crosshair). */
     fun openMapLockMenu() {
         _uiState.update { it.copy(isMapLockMenuOpen = true) }

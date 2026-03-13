@@ -17,7 +17,6 @@ package de.codevoid.aWayToGo.map
  * | [isDarkMode]        | Map style switched to dark variant.                         |
  * | [isCourseUpEnabled] | Map rotates so current GPS course points up (Course Up).   |
  *                         When false, north always points up (North Up).              |
- * | [dragLineStyle]     | Which animation style the drag line uses (Whip / Lasso).  |
  * | [isMapLockMenuOpen] | Map-lock context menu open (long-press on crosshair).      |
  */
 data class MapUiState(
@@ -32,6 +31,5 @@ data class MapUiState(
     val isInDebugMenu: Boolean = false,
     val isDebugMode: Boolean = false,
     val isCourseUpEnabled: Boolean = false,
-    val dragLineStyle: DragLineAnimator.Style = DragLineAnimator.Style.WHIP,
     val isMapLockMenuOpen: Boolean = false,
 )
