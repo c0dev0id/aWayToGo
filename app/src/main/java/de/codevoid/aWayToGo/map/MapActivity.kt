@@ -4,6 +4,11 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.exp
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -112,12 +117,17 @@ private const val SAT_TILE_TEMPLATE = "https://api.maptiler.com/tiles/satellite-
 private const val SAT_ANIMATE_MS    = 350L
 
 // ── Drag line style layer / source IDs ───────────────────────────────────────
-// Two LineLayer instances (casing behind, fill in front) produce the outlined
-// look. A SymbolLayer with line-center placement overlays the distance label.
-private const val SOURCE_DRAG_LINE        = "drag-line"
-private const val LAYER_DRAG_LINE_CASING  = "drag-line-casing"
-private const val LAYER_DRAG_LINE_FILL    = "drag-line-fill"
-private const val LAYER_DRAG_LINE_LABEL   = "drag-line-label"
+// SOURCE_DRAG_LINE      — the wobbly/straight line geometry.
+// SOURCE_DRAG_LINE_AUX  — two Point features: label (25 % from puck) + anchor pin.
+// Layers: dark casing, tape-pattern fill, distance label, outer pin circle, inner pin dot.
+private const val SOURCE_DRAG_LINE          = "drag-line"
+private const val SOURCE_DRAG_LINE_AUX      = "drag-line-aux"
+private const val LAYER_DRAG_LINE_CASING    = "drag-line-casing"
+private const val LAYER_DRAG_LINE_FILL      = "drag-line-fill"
+private const val LAYER_DRAG_LINE_LABEL     = "drag-line-label"
+private const val LAYER_DRAG_LINE_PIN_OUTER = "drag-line-pin-outer"
+private const val LAYER_DRAG_LINE_PIN_INNER = "drag-line-pin-inner"
+private const val IMAGE_TAPE_PATTERN        = "tape-pattern"
 
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
@@ -241,6 +251,8 @@ class MapActivity : ComponentActivity() {
     // When set, the Choreographer loop continuously updates the drag line so it
     // connects the user's current GPS position with this anchored target.
     private var dragLineAnchor: LatLng? = null
+    // nanoTime() when the anchor was most recently placed; drives the whip animation.
+    private var anchorSetTimeNs: Long = 0L
 
     // ── Follow mode ───────────────────────────────────────────────────────────
     // Dead-reckoning state for smooth GPS follow.
@@ -1043,7 +1055,8 @@ class MapActivity : ComponentActivity() {
                         // loop keeps the line's "from" end on the current GPS fix.
                         val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
                         val target = m.projection.fromScreenLocation(screenCenter)
-                        dragLineAnchor = target
+                        dragLineAnchor    = target
+                        anchorSetTimeNs   = System.nanoTime()
                         m.locationComponent.lastKnownLocation?.let { loc ->
                             setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
                         }
@@ -2562,96 +2575,198 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Draw (or update) the navigation drag line from [from] to [to].
+     * Draw (or update) the construction-tape drag line from [from] (puck) to [to] (anchor).
      *
-     * Visual spec: 4.5dp red fill with 1.5dp dark-red casing on each side
-     * (= 7.5dp casing drawn first, 4.5dp fill on top), both at 60% opacity,
-     * plus a distance label placed at the midpoint and rotated to follow it.
+     * Animation phases (time measured from [anchorSetTimeNs]):
+     *   0 – 0.10 s  Throw ramp-up: amplitude grows from 0 → A_MAX (whip thrown out).
+     *   0.10 – ~2 s Settle: amplitude decays exponentially (tape pulls tight).
+     *   > ~2 s      Straight 2-point line (tape taut, no computation overhead).
      *
-     * On the first call the GeoJSON source and three style layers are created.
-     * On subsequent calls only the source data is updated — the layers stay.
-     * The label text uses a comma decimal separator ("4,5km") for readability
-     * on the motorcycle-mounted device.
+     * Visual: yellow/black diagonal-stripe pattern (construction tape), dark outline.
+     * The distance label is placed 25 % along the line from the puck so it is
+     * always on-screen. A small pin marks the anchor point.
+     *
+     * Sources and layers are created on the first call; subsequent calls only push
+     * new GeoJSON data.
      */
     private fun setDragLine(from: LatLng, to: LatLng, timeSec: Double) {
         val s = style ?: return
 
-        val distKm = from.distanceTo(to) / 1000.0
-        val label  = "${"%.1f".format(distKm).replace('.', ',')}km"
-
         val dx  = to.longitude - from.longitude
         val dy  = to.latitude  - from.latitude
         val len = sqrt(dx * dx + dy * dy)
-        val px  = -dy / len
-        val py  =  dx / len
+        if (len < 1e-10) return   // puck and anchor at the same spot
 
-        val N = 12
-        val points = (0 until N).map { i ->
-            val t     = i.toDouble() / (N - 1)
-            val env   = sin(Math.PI * t)
-            val phase = 2.0 * Math.PI * 1.5 * t - 1.8 * timeSec
-            val disp  = 0.12 * len * sin(phase) * env
-            Point.fromLngLat(
-                from.longitude + t * dx + disp * px,
-                from.latitude  + t * dy + disp * py,
-            )
+        val distKm = from.distanceTo(to) / 1000.0
+        val label  = "${"%.1f".format(distKm).replace('.', ',')}km"
+
+        // ── Whip animation ────────────────────────────────────────────────────
+        // Amplitude ramps up during the throw then decays exponentially until
+        // the line is indistinguishably straight and we switch to 2-point mode.
+        val elapsedSec  = (System.nanoTime() - anchorSetTimeNs) / 1_000_000_000.0
+        val THROW_RAMP  = 0.10   // s: ramp-up duration
+        val DECAY_TAU   = 0.55   // s: exponential decay time constant
+        val A_MAX       = 0.28   // peak displacement as fraction of line length
+        val amplitude = when {
+            elapsedSec < THROW_RAMP -> A_MAX * (elapsedSec / THROW_RAMP)
+            else -> A_MAX * exp(-(elapsedSec - THROW_RAMP) / DECAY_TAU)
         }
-        val geometry = LineString.fromLngLats(points)
-        val feature    = Feature.fromGeometry(geometry)
-        feature.addStringProperty("label", label)
-        val collection = FeatureCollection.fromFeatures(listOf(feature))
 
-        // If the source already exists, just push new data — layers stay in place.
-        val existing = s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE)
-        if (existing != null) {
-            existing.setGeoJson(collection)
+        // ── Line geometry ─────────────────────────────────────────────────────
+        // Perpendicular unit vector (in lat/lon space) for lateral displacement.
+        val px = -dy / len
+        val py =  dx / len
+
+        val N             = 14       // curve points
+        val FREQ          = 1.5      // spatial wave cycles along line
+        val SPEED         = 14.0     // rad/s — wave travels puck→anchor
+        // First 8 % of the line (near puck) is kept straight so the tape
+        // attaches cleanly to the puck regardless of wobble direction.
+        val STRAIGHT_FRAC = 0.08
+
+        val linePoints: List<Point> = if (amplitude * len < 3e-6) {
+            // Tape is taut — use cheap 2-point straight line.
+            listOf(
+                Point.fromLngLat(from.longitude, from.latitude),
+                Point.fromLngLat(to.longitude,   to.latitude),
+            )
+        } else {
+            (0 until N).map { i ->
+                val t    = i.toDouble() / (N - 1)
+                // Shift envelope so wobble starts after STRAIGHT_FRAC from puck.
+                val tAdj = maxOf(0.0, (t - STRAIGHT_FRAC) / (1.0 - STRAIGHT_FRAC))
+                val env  = sin(Math.PI * tAdj)           // zero at both endpoints
+                val phase = 2.0 * Math.PI * FREQ * t - SPEED * elapsedSec
+                val disp  = amplitude * len * sin(phase) * env
+                Point.fromLngLat(
+                    from.longitude + t * dx + disp * px,
+                    from.latitude  + t * dy + disp * py,
+                )
+            }
+        }
+
+        // ── Auxiliary features (label + anchor pin) ───────────────────────────
+        // Label at 25 % from the puck: always near the puck, always on-screen.
+        val labelLat = from.latitude  + 0.25 * dy
+        val labelLon = from.longitude + 0.25 * dx
+        val labelFeature = Feature.fromGeometry(Point.fromLngLat(labelLon, labelLat)).also {
+            it.addStringProperty("label", label)
+        }
+        val pinFeature = Feature.fromGeometry(Point.fromLngLat(to.longitude, to.latitude)).also {
+            it.addBooleanProperty("is_pin", true)
+        }
+
+        val lineCollection = FeatureCollection.fromFeatures(
+            listOf(Feature.fromGeometry(LineString.fromLngLats(linePoints)))
+        )
+        val auxCollection = FeatureCollection.fromFeatures(listOf(labelFeature, pinFeature))
+
+        // Update existing sources (fast path — layers stay in place).
+        val existingLine = s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE)
+        if (existingLine != null) {
+            existingLine.setGeoJson(lineCollection)
+            s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE_AUX)?.setGeoJson(auxCollection)
             return
         }
 
-        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE, collection, GeoJsonOptions().withSynchronousUpdate(true)))
+        // ── First-time setup: register images, create sources and layers ──────
+        val d = resources.displayMetrics.density
+        s.addImage(IMAGE_TAPE_PATTERN, createTapePatternBitmap((20 * d).toInt()))
 
-        // Casing — dark-red, wider than the fill so 1.5dp sticks out on each side.
-        // Original: 10dp.  Reduced by 25%: 7.5dp.
+        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE,     lineCollection, GeoJsonOptions().withSynchronousUpdate(true)))
+        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE_AUX, auxCollection,  GeoJsonOptions().withSynchronousUpdate(true)))
+
+        // Casing — dark border, 1.5dp wider on each side than the tape fill.
         s.addLayer(
             LineLayer(LAYER_DRAG_LINE_CASING, SOURCE_DRAG_LINE).apply {
                 setProperties(
-                    PropertyFactory.lineColor("#8B0000"),
-                    PropertyFactory.lineWidth(7.5f),
-                    PropertyFactory.lineOpacity(0.6f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineColor("#1A1A1A"),
+                    PropertyFactory.lineWidth(13f),
+                    PropertyFactory.lineOpacity(0.9f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
             }
         )
 
-        // Fill — red, drawn on top of the casing.
-        // Original: 6dp.  Reduced by 25%: 4.5dp.
+        // Tape — yellow/black diagonal-stripe pattern (construction tape look).
         s.addLayer(
             LineLayer(LAYER_DRAG_LINE_FILL, SOURCE_DRAG_LINE).apply {
                 setProperties(
-                    PropertyFactory.lineColor("#FF0000"),
-                    PropertyFactory.lineWidth(4.5f),
-                    PropertyFactory.lineOpacity(0.6f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.linePattern(IMAGE_TAPE_PATTERN),
+                    PropertyFactory.lineWidth(10f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
             }
         )
 
-        // Distance label at the midpoint, rotated to follow the line.
+        // Distance label — point-based at 25 % from puck, so it stays on-screen
+        // even when the anchor is far away or the line extends off the viewport.
         s.addLayer(
-            SymbolLayer(LAYER_DRAG_LINE_LABEL, SOURCE_DRAG_LINE).apply {
+            SymbolLayer(LAYER_DRAG_LINE_LABEL, SOURCE_DRAG_LINE_AUX).apply {
+                setFilter(Expression.has("label"))
                 setProperties(
                     PropertyFactory.textField(Expression.get("label")),
-                    PropertyFactory.symbolPlacement(Property.SYMBOL_PLACEMENT_LINE_CENTER),
                     PropertyFactory.textSize(18f),
-                    PropertyFactory.textColor("#FFFFFF"),
-                    PropertyFactory.textHaloColor("#8B0000"),
-                    PropertyFactory.textHaloWidth(2f),
+                    PropertyFactory.textColor("#FFCC00"),
+                    PropertyFactory.textHaloColor("#1A1A1A"),
+                    PropertyFactory.textHaloWidth(2.5f),
+                    PropertyFactory.textOffset(arrayOf(0f, -1.5f)),
                     PropertyFactory.textAllowOverlap(true),
+                    PropertyFactory.textIgnorePlacement(true),
                 )
             }
         )
+
+        // Anchor pin — outer dark ring with yellow stroke.
+        s.addLayer(
+            CircleLayer(LAYER_DRAG_LINE_PIN_OUTER, SOURCE_DRAG_LINE_AUX).apply {
+                setFilter(Expression.has("is_pin"))
+                setProperties(
+                    PropertyFactory.circleRadius(9f),
+                    PropertyFactory.circleColor("#1A1A1A"),
+                    PropertyFactory.circleOpacity(0.92f),
+                    PropertyFactory.circleStrokeColor("#FFCC00"),
+                    PropertyFactory.circleStrokeWidth(3f),
+                )
+            }
+        )
+
+        // Anchor pin — yellow inner dot (completes the pin look).
+        s.addLayer(
+            CircleLayer(LAYER_DRAG_LINE_PIN_INNER, SOURCE_DRAG_LINE_AUX).apply {
+                setFilter(Expression.has("is_pin"))
+                setProperties(
+                    PropertyFactory.circleRadius(4f),
+                    PropertyFactory.circleColor("#FFCC00"),
+                    PropertyFactory.circleOpacity(1f),
+                )
+            }
+        )
+    }
+
+    /**
+     * Creates the diagonal-stripe tile used by the construction-tape line pattern.
+     *
+     * The tile is [tileSizePx]×[tileSizePx] pixels.  Each pixel's colour is
+     * determined by `(x - y) mod tileSizePx`: yellow in the first half, dark in
+     * the second half.  This produces 45° stripes that tile seamlessly along the
+     * horizontal axis (= along the line direction in MapLibre's pattern space).
+     */
+    private fun createTapePatternBitmap(tileSizePx: Int): Bitmap {
+        val half = tileSizePx / 2
+        val bmp  = Bitmap.createBitmap(tileSizePx, tileSizePx, Bitmap.Config.ARGB_8888)
+        for (x in 0 until tileSizePx) {
+            for (y in 0 until tileSizePx) {
+                val pos = ((x - y) % tileSizePx + tileSizePx) % tileSizePx
+                bmp.setPixel(x, y,
+                    if (pos < half) 0xFFFFCC00.toInt()   // yellow
+                    else            0xFF1A1A1A.toInt()    // near-black
+                )
+            }
+        }
+        return bmp
     }
 
     // ── Benchmark ─────────────────────────────────────────────────────────────
