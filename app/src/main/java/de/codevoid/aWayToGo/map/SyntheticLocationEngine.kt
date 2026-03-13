@@ -1,5 +1,6 @@
 package de.codevoid.aWayToGo.map
 
+import android.app.PendingIntent
 import android.location.Location
 import android.os.Looper
 import org.maplibre.android.location.engine.LocationEngine
@@ -52,4 +53,13 @@ class SyntheticLocationEngine : LocationEngine {
     ) {
         callbacks -= callback
     }
+
+    // PendingIntent overloads are required by the LocationEngine interface but
+    // not used by this synthetic engine — background delivery is not needed.
+    override fun requestLocationUpdates(
+        request: LocationEngineRequest,
+        pendingIntent: PendingIntent,
+    ) {}
+
+    override fun removeLocationUpdates(pendingIntent: PendingIntent) {}
 }

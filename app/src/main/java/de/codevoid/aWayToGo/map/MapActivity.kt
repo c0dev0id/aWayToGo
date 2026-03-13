@@ -79,12 +79,9 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import android.location.LocationListener
+import android.location.LocationManager
 import org.maplibre.android.location.LocationComponentActivationOptions
-import org.maplibre.android.location.engine.LocationEngine
-import org.maplibre.android.location.engine.LocationEngineCallback
-import org.maplibre.android.location.engine.LocationEngineProvider
-import org.maplibre.android.location.engine.LocationEngineRequest
-import org.maplibre.android.location.engine.LocationEngineResult
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
@@ -267,13 +264,8 @@ class MapActivity : ComponentActivity() {
     // to avoid a feedback loop: locationComponent → rawGpsLocation → prediction.
     private val syntheticEngine = SyntheticLocationEngine()
     private var rawGpsLocation: Location? = null
-    private var realLocationEngine: LocationEngine? = null
-    private val rawLocationCallback = object : LocationEngineCallback<LocationEngineResult> {
-        override fun onSuccess(result: LocationEngineResult) {
-            result.lastLocation?.let { rawGpsLocation = it }
-        }
-        override fun onFailure(exception: Exception) { /* ignore */ }
-    }
+    private var locationManager: LocationManager? = null
+    private val rawLocationListener = LocationListener { loc -> rawGpsLocation = loc }
 
     // ── OSD state (tracked between Choreographer frames) ──────────────────────
     private var osdLastFrameNs = 0L
@@ -971,16 +963,17 @@ class MapActivity : ComponentActivity() {
             isLocationComponentEnabled = true
         }
 
-        // Subscribe to the real GPS engine for raw fixes fed into dead-reckoning.
-        // syntheticEngine is driven by the Choreographer loop; reading from the real
-        // engine here avoids a feedback loop.
-        val engine = LocationEngineProvider.getBestLocationEngine(this)
-        realLocationEngine = engine
-        val request = LocationEngineRequest.Builder(200L)
-            .setPriority(LocationEngineRequest.PRIORITY_HIGH_ACCURACY)
-            .build()
-        engine.requestLocationUpdates(request, rawLocationCallback, mainLooper)
-        engine.getLastLocation(rawLocationCallback)
+        // Subscribe to the system GPS for raw fixes fed into dead-reckoning.
+        // syntheticEngine is driven by the Choreographer loop; reading directly
+        // from LocationManager avoids a feedback loop through locationComponent.
+        val lm = getSystemService(LOCATION_SERVICE) as LocationManager
+        locationManager = lm
+        try {
+            lm.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
+            )
+            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { rawGpsLocation = it }
+        } catch (_: SecurityException) { }
 
         rawGpsLocation?.let { loc ->
             m.animateCamera(
@@ -3080,7 +3073,7 @@ class MapActivity : ComponentActivity() {
     override fun onPause() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
-        realLocationEngine?.removeLocationUpdates(rawLocationCallback)
+        locationManager?.removeUpdates(rawLocationListener)
         mapView.onPause()
         stopUpdateAvailableAnimation()
         super.onPause()
