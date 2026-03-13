@@ -1700,6 +1700,7 @@ class MapActivity : ComponentActivity() {
             val styleName = when (new.dragLineStyle) {
                 DragLineAnimator.Style.WHIP  -> "Whip"
                 DragLineAnimator.Style.LASSO -> "Lasso"
+                DragLineAnimator.Style.FALL  -> "Fall"
             }
             menuPanelResult.dragLineStyleLabel.text = "Drag Line: $styleName"
             dragLineAnimator.style = new.dragLineStyle
