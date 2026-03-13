@@ -69,9 +69,9 @@ dependencies {
     // Lifecycle — provides lifecycleScope on ComponentActivity
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 
-    // MapLibre — Vulkan backend. Testing without pixelRatio or textureMode to isolate
-    // the pre-rotation bug behaviour.
-    implementation("org.maplibre.gl:android-sdk:13.0.0")
+    // MapLibre — OpenGL ES backend. The Vulkan backend (android-sdk:13.0.0) has an
+    // unfixable pre-rotation bug that misrenders the map in landscape orientation.
+    implementation("org.maplibre.gl:android-sdk-opengl:13.0.0")
 
     // GeoJSON — declared explicitly because MapLibre uses `implementation` scope
     // (not `api`), so the library is not available at our compile time transitively.
