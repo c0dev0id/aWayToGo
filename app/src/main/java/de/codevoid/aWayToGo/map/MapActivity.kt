@@ -160,6 +160,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var satelliteToggleBtn: TextView
     private lateinit var darkModeToggleBtn: TextView
     private lateinit var courseUpToggleBtn: TextView
+    private lateinit var followToggleBtn: TextView
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: View
     private lateinit var versionCardView: TextView
@@ -518,6 +519,15 @@ class MapActivity : ComponentActivity() {
             ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
         )
 
+        followToggleBtn = makePillButton(this, "FOL") { viewModel.toggleFollowMode() }
+        topRightContainer.addView(
+            followToggleBtn,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
+        )
+
         root.addView(
             topRightContainer,
             FrameLayout.LayoutParams(
@@ -548,7 +558,11 @@ class MapActivity : ComponentActivity() {
             setPadding(btnPad, btnPad, btnPad, btnPad)
             isClickable = true
             isFocusable = true
-            setOnClickListener { viewModel.enableFollowMode() }
+            setOnClickListener {
+                val m   = map ?: return@setOnClickListener
+                val loc = m.locationComponent?.lastKnownLocation ?: return@setOnClickListener
+                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+            }
         }
         root.addView(
             myLocationButton,
@@ -1406,16 +1420,6 @@ class MapActivity : ComponentActivity() {
             else                                            -> View.GONE
         }
 
-        // ── Follow mode button indicator ───────────────────────────────────────
-        // Tint the location button blue when follow mode is active so the user
-        // can see at a glance whether the camera is locked to the GPS puck.
-        if (followChanged || old == null) {
-            myLocationButton.imageTintList = if (new.isFollowModeActive) {
-                android.content.res.ColorStateList.valueOf(android.graphics.Color.argb(255, 100, 180, 255))
-            } else {
-                android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
-            }
-        }
 
         // ── Fly-to on follow mode enable ───────────────────────────────────────
         // Snap the camera to GPS immediately when follow mode is turned on so
@@ -1541,6 +1545,7 @@ class MapActivity : ComponentActivity() {
         setToggleActive(satelliteToggleBtn, new.isSatelliteEnabled)
         setToggleActive(darkModeToggleBtn,  new.isDarkMode)
         setToggleActive(courseUpToggleBtn,  new.isCourseUpEnabled)
+        setToggleActive(followToggleBtn,    new.isFollowModeActive)
 
         // ── Course Up → North Up transition ───────────────────────────────────
         // When Course Up is turned off, animate the map back to 0° (north at top).

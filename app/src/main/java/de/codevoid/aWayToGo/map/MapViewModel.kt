@@ -98,6 +98,11 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isFollowModeActive = false) }
     }
 
+    /** Toggle follow mode on/off. */
+    fun toggleFollowMode() {
+        _uiState.update { it.copy(isFollowModeActive = !it.isFollowModeActive, isInPanningMode = false) }
+    }
+
     /** Expand the hamburger panel. */
     fun openMenu() {
         _uiState.update { it.copy(isMenuOpen = true) }
