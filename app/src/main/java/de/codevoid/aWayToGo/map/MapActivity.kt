@@ -846,7 +846,12 @@ class MapActivity : ComponentActivity() {
                 }
             }
             m.addOnCameraMoveStartedListener { reason ->
-                TileCache.gate.pause()
+                // Don't gate during follow mode — the camera never idles while
+                // riding, so tiles would never load.  The 2-connection cap in
+                // TileCache keeps uploads light enough not to stutter the GL thread.
+                if (!viewModel.uiState.value.isFollowModeActive) {
+                    TileCache.gate.pause()
+                }
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                     if (viewModel.uiState.value.isFollowModeActive) {
                         viewModel.disableFollowMode()

@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.map
 
 import android.content.Context
 import okhttp3.Cache
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import org.maplibre.android.module.http.HttpRequestUtil
 import java.io.File
@@ -82,8 +83,16 @@ object TileCache {
         )
         diskCache = cache
 
+        // Limit concurrent tile fetches to 2.  During manual pan the gate already
+        // blocks new requests; this cap throttles the burst when the gate opens so
+        // GL uploads arrive as a trickle rather than all at once.  During follow
+        // mode (gate not paused) it keeps background loading light enough that
+        // the GL thread is not interrupted mid-frame by upload work.
+        val dispatcher = Dispatcher().apply { maxRequestsPerHost = 2 }
+
         val client = OkHttpClient.Builder()
             .cache(cache)
+            .dispatcher(dispatcher)
             // Network interceptor: runs AFTER OkHttp's cache check, so
             // disk-cached tiles bypass the gate and return immediately.
             .addNetworkInterceptor(gate)
