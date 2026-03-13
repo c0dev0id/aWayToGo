@@ -176,7 +176,7 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
         var panSpeed = 0f
 
         if (map == null) return panSpeed
-        if (panStartNs.isEmpty() && joyDx == 0f && joyDy == 0f && joyEffectiveMag <= 0.001f) {
+        if (panStartNs.isEmpty() && joyDx == 0f && joyDy == 0f && joyEffectiveMag <= 0.01f) {
             return panSpeed
         }
 
@@ -220,10 +220,10 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
             else -> joyEffectiveMag
         }
 
-        if (joyEffectiveMag > 0.001f) {
+        if (joyEffectiveMag > 0.01f) {
             // Update last known direction while stick is active.
             val len = sqrt(joyDx * joyDx + joyDy * joyDy)
-            if (len > 0.001f) {
+            if (len > 0.01f) {
                 joyLastDirX = joyDx / len
                 joyLastDirY = joyDy / len
             }
