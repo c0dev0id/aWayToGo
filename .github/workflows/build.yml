@@ -62,6 +62,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      signed: ${{ steps.check-secrets.outputs.available }}
 
     steps:
       - name: Download debug APK
@@ -69,11 +71,24 @@ jobs:
         with:
           name: app-debug
 
+      - name: Check signing secrets
+        id: check-secrets
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up signing keystore
+        if: steps.check-secrets.outputs.available == 'true'
         run: |
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > "${{ runner.temp }}/release.keystore"
 
       - name: Align and sign APK
+        if: steps.check-secrets.outputs.available == 'true'
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
@@ -91,6 +106,7 @@ jobs:
             app-aligned.apk
 
       - name: Upload signed APK
+        if: steps.check-secrets.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: app-signed
@@ -98,6 +114,7 @@ jobs:
 
   draft-release:
     needs: sign
+    if: needs.sign.outputs.signed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
