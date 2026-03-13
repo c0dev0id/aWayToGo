@@ -127,7 +127,8 @@ private const val SAT_ANIMATE_MS    = 350L
 // ── Drag line style layer / source IDs ───────────────────────────────────────
 // SOURCE_DRAG_LINE      — the wobbly/straight line geometry.
 // SOURCE_DRAG_LINE_AUX  — two Point features: label (25 % from puck) + anchor pin.
-// Layers: dark casing, tape-pattern fill, distance label, outer pin circle, inner pin dot.
+// Layers: two-layer drop shadow, dark casing, tape-pattern fill, distance label,
+//         outer pin circle, inner pin dot.
 private const val SOURCE_DRAG_LINE          = "drag-line"
 private const val SOURCE_DRAG_LINE_AUX      = "drag-line-aux"
 private const val LAYER_DRAG_LINE_CASING    = "drag-line-casing"
@@ -135,18 +136,12 @@ private const val LAYER_DRAG_LINE_FILL      = "drag-line-fill"
 private const val LAYER_DRAG_LINE_LABEL     = "drag-line-label"
 private const val LAYER_DRAG_LINE_PIN_OUTER = "drag-line-pin-outer"
 private const val LAYER_DRAG_LINE_PIN_INNER = "drag-line-pin-inner"
+private const val LAYER_DRAG_LINE_SHADOW_OUTER = "drag-line-shadow-outer"
+private const val LAYER_DRAG_LINE_SHADOW_INNER = "drag-line-shadow-inner"
 private const val IMAGE_TAPE_PATTERN        = "tape-pattern"
 
-// ── Old drag line (dismiss animation) ────────────────────────────────────────
-// When a new drag line replaces the current one, the old line plays its
-// dismiss animation before being cleared.  Only a simple casing + fill is
-// shown — no label or pin.
-private const val SOURCE_DRAG_LINE_OLD            = "drag-line-old"
-private const val LAYER_DRAG_LINE_OLD_CASING      = "drag-line-old-casing"
-private const val LAYER_DRAG_LINE_OLD_FILL        = "drag-line-old-fill"
-private const val LAYER_DRAG_LINE_SHADOW_OUTER    = "drag-line-shadow-outer"
-private const val LAYER_DRAG_LINE_SHADOW_INNER    = "drag-line-shadow-inner"
-private const val LAYER_DRAG_LINE_OLD_SHADOW      = "drag-line-old-shadow"
+/** Duration (ms) of the smooth anchor-slide animation when re-placing the drag line. */
+private const val ANCHOR_SLIDE_MS = 500.0
 
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
@@ -293,14 +288,11 @@ class MapActivity : ComponentActivity() {
     private var anchorSetTimeNs: Long = 0L
     private val dragLineAnimator = DragLineAnimator()
 
-    // ── Old drag line dismiss animation ──────────────────────────────────────
-    // When a new anchor replaces an existing one, the old line animates out.
-    // We freeze the old from/to positions at the moment of replacement so the
-    // animation plays against the old geometry.
-    private var oldDragLineFrom: LatLng? = null
-    private var oldDragLineTo:   LatLng? = null
-    private var oldAnchorSetTimeNs: Long = 0L
-    private val oldDragLineAnimator = DragLineAnimator()
+    // ── Anchor slide animation ────────────────────────────────────────────────
+    // When the user places a new anchor while one already exists, the anchor
+    // smoothly slides from the old position to the new one over ANCHOR_SLIDE_MS.
+    private var anchorSlideFrom:    LatLng? = null
+    private var anchorSlideStartNs: Long    = 0L
 
     // ── Follow mode ───────────────────────────────────────────────────────────
     // Dead-reckoning state for smooth GPS follow.
@@ -479,13 +471,8 @@ class MapActivity : ComponentActivity() {
                     // the same smooth predicted position as the puck — not the
                     // previous frame's lastKnownLocation.
                     dragLineAnchor?.let { anchor ->
-                        setDragLine(LatLng(predLat, predLon), anchor, frameTimeNanos / 1_000_000_000.0)
-                    }
-                    // Drive the old-line dismiss animation until it clears itself.
-                    val oldFrom = oldDragLineFrom
-                    val oldTo   = oldDragLineTo
-                    if (oldFrom != null && oldTo != null) {
-                        setOldDragLine(oldFrom, oldTo)
+                        val effectiveAnchor = slideAnchor() ?: anchor
+                        setDragLine(LatLng(predLat, predLon), effectiveAnchor, frameTimeNanos / 1_000_000_000.0)
                     }
                     // Move the camera only when follow mode is active.
                     // Navigate mode targets 45° tilt; nudging every frame so the follow
@@ -1954,19 +1941,19 @@ class MapActivity : ComponentActivity() {
         val m = map ?: return
         val screenCenter = PointF(mapView.width / 2f, mapView.height / 2f)
         val target = m.projection.fromScreenLocation(screenCenter)
-        // If a drag line already exists, animate it out before placing the new anchor.
         val prevAnchor = dragLineAnchor
-        m.locationComponent.lastKnownLocation?.let { loc ->
-            if (prevAnchor != null) {
-                oldDragLineFrom    = LatLng(loc.latitude, loc.longitude)
-                oldDragLineTo      = prevAnchor
-                oldAnchorSetTimeNs = System.nanoTime()
-                oldDragLineAnimator.reset()
-            }
+        if (prevAnchor != null) {
+            // Slide the existing anchor to the new position.  If a slide is already
+            // in progress, start the new slide from the current mid-point so it
+            // doesn't snap.
+            anchorSlideFrom    = slideAnchor() ?: prevAnchor
+            anchorSlideStartNs = System.nanoTime()
+        } else {
+            // First placement — play the intro wave animation.
+            dragLineAnimator.reset()
+            anchorSetTimeNs = System.nanoTime()
         }
-        dragLineAnchor  = target
-        anchorSetTimeNs = System.nanoTime()
-        dragLineAnimator.reset()
+        dragLineAnchor = target
         m.locationComponent.lastKnownLocation?.let { loc ->
             setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
         }
@@ -2917,6 +2904,30 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
+     * Returns the current interpolated anchor position while a slide animation is in
+     * progress, or `null` when the slide has finished (or was never started).
+     *
+     * Uses a smoothstep ease-in-out curve so the anchor accelerates away from the old
+     * position and decelerates into the new one.  Clears [anchorSlideFrom] once the
+     * animation is complete so subsequent calls are cheap.
+     */
+    private fun slideAnchor(): LatLng? {
+        val from = anchorSlideFrom ?: return null
+        val to   = dragLineAnchor  ?: return null
+        val elapsedMs = (System.nanoTime() - anchorSlideStartNs) / 1_000_000.0
+        if (elapsedMs >= ANCHOR_SLIDE_MS) {
+            anchorSlideFrom = null
+            return null
+        }
+        val t  = elapsedMs / ANCHOR_SLIDE_MS
+        val st = t * t * (3.0 - 2.0 * t)   // smoothstep
+        return LatLng(
+            from.latitude  + (to.latitude  - from.latitude)  * st,
+            from.longitude + (to.longitude - from.longitude) * st,
+        )
+    }
+
+    /**
      * Draw (or update) the construction-tape drag line from [from] (puck) to [to] (anchor).
      *
      * The [DragLineAnimator] generates the animated geometry (sinusoidal wave that
@@ -3117,108 +3128,6 @@ class MapActivity : ComponentActivity() {
                     PropertyFactory.circleRadius(4f),
                     PropertyFactory.circleColor("#FFCC00"),
                     PropertyFactory.circleOpacity(1f),
-                )
-            }
-        )
-    }
-
-    /**
-     * Render (or update) the dismiss animation of the old drag line.
-     *
-     * Uses frozen [from]/[to] coordinates captured at the moment the previous
-     * anchor was replaced.  Drives [oldDragLineAnimator] and renders the result
-     * into [SOURCE_DRAG_LINE_OLD].  When the animation finishes (returns null),
-     * the old-line source is cleared and the frozen coordinates are nulled so
-     * this function stops being called.
-     */
-    private fun setOldDragLine(from: LatLng, to: LatLng) {
-        val s = style ?: return
-
-        val dx  = to.longitude - from.longitude
-        val dy  = to.latitude  - from.latitude
-        val len = sqrt(dx * dx + dy * dy)
-        if (len < 1e-10) { oldDragLineFrom = null; oldDragLineTo = null; return }
-
-        val px = -dy / len
-        val py =  dx / len
-
-        val elapsedSec = (System.nanoTime() - oldAnchorSetTimeNs) / 1_000_000_000.0
-        val samples = oldDragLineAnimator.generate(elapsedSec)
-
-        if (samples == null) {
-            // Animation finished — clear the source and stop driving it.
-            oldDragLineFrom = null
-            oldDragLineTo   = null
-            s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE_OLD)
-                ?.setGeoJson(FeatureCollection.fromFeatures(listOf<Feature>()))
-            return
-        }
-
-        val linePoints = samples.map { sample ->
-            Point.fromLngLat(
-                from.longitude + sample.t * dx + sample.offset * len * px,
-                from.latitude  + sample.t * dy + sample.offset * len * py,
-            )
-        }
-        val lineCollection = FeatureCollection.fromFeatures(
-            listOf(Feature.fromGeometry(LineString.fromLngLats(linePoints)))
-        )
-
-        // Update existing source (fast path).
-        val existingOld = s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE_OLD)
-        if (existingOld != null) {
-            existingOld.setGeoJson(lineCollection)
-            return
-        }
-
-        // First-time setup: source + layers for the old dismiss-animation line.
-        // IMAGE_TAPE_PATTERN is already registered by setDragLine().
-        s.addSource(GeoJsonSource(SOURCE_DRAG_LINE_OLD, lineCollection,
-            GeoJsonOptions().withSynchronousUpdate(true)))
-
-        // Insert below the active drag-line casing so the old line is behind.
-        val belowOld = if (s.layers.any { it.id == LAYER_DRAG_LINE_CASING })
-            LAYER_DRAG_LINE_CASING else null
-
-        fun addOldLayer(layer: Layer) {
-            if (belowOld != null) s.addLayerBelow(layer, belowOld) else s.addLayer(layer)
-        }
-
-        // Single combined shadow for the dismiss-animation old line (simplified — it's
-        // transient and fading, so the full two-layer model is unnecessary).
-        addOldLayer(
-            LineLayer(LAYER_DRAG_LINE_OLD_SHADOW, SOURCE_DRAG_LINE_OLD).apply {
-                setProperties(
-                    PropertyFactory.lineColor("#141428"),
-                    PropertyFactory.lineWidth(18f),
-                    PropertyFactory.lineBlur(7f),
-                    PropertyFactory.lineOpacity(0.18f),
-                    PropertyFactory.lineTranslate(arrayOf(2.5f, 2.5f)),
-                    PropertyFactory.lineTranslateAnchor(Property.LINE_TRANSLATE_ANCHOR_VIEWPORT),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
-                )
-            }
-        )
-
-        addOldLayer(
-            LineLayer(LAYER_DRAG_LINE_OLD_CASING, SOURCE_DRAG_LINE_OLD).apply {
-                setProperties(
-                    PropertyFactory.lineColor("#1A1A1A"),
-                    PropertyFactory.lineWidth(13f),
-                    PropertyFactory.lineOpacity(0.6f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
-                )
-            }
-        )
-        addOldLayer(
-            LineLayer(LAYER_DRAG_LINE_OLD_FILL, SOURCE_DRAG_LINE_OLD).apply {
-                setProperties(
-                    PropertyFactory.linePattern(IMAGE_TAPE_PATTERN),
-                    PropertyFactory.lineWidth(10f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
             }
         )
