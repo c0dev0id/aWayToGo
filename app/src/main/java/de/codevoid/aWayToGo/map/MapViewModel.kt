@@ -183,6 +183,7 @@ class MapViewModel : ViewModel() {
             val next = when (it.dragLineStyle) {
                 DragLineAnimator.Style.WHIP  -> DragLineAnimator.Style.LASSO
                 DragLineAnimator.Style.LASSO -> DragLineAnimator.Style.WHIP
+                DragLineAnimator.Style.FALL  -> DragLineAnimator.Style.WHIP
             }
             it.copy(dragLineStyle = next)
         }
