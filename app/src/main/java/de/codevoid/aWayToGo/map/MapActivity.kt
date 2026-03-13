@@ -2723,7 +2723,7 @@ class MapActivity : ComponentActivity() {
      *
      * Results are shown in a custom overlay when all four runs complete.
      */
-    private val bearingSmoothAlphaPresets = listOf(0.05, 0.10, 0.15, 0.20, 0.30, 0.50)
+    private val bearingSmoothAlphaPresets = listOf(0.005, 0.01, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50)
 
     private fun cycleBearingSmoothAlpha() {
         val currentIndex = bearingSmoothAlphaPresets.indexOfFirst { it == bearingSmoothAlpha }
