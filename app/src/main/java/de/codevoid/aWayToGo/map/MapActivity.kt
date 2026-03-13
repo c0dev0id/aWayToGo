@@ -48,7 +48,6 @@ import androidx.lifecycle.repeatOnLifecycle
 import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
 import de.codevoid.aWayToGo.map.ui.Anim
-import de.codevoid.aWayToGo.map.ui.AnimationLatch
 import de.codevoid.aWayToGo.map.ui.AnimatorBag
 import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
@@ -197,6 +196,9 @@ class MapActivity : ComponentActivity() {
     private val viewModel: MapViewModel by viewModels()
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
     private var renderedState: MapUiState? = null
+    // Monotonically-increasing token for animateModeTransition. Each new call
+    // increments this so stale postDelayed / slideIn() callbacks can self-discard.
+    private var modeGen = 0
 
     // Progress overlay shown during APK download (null when not downloading).
     private var downloadOverlay: View? = null
@@ -1239,6 +1241,7 @@ class MapActivity : ComponentActivity() {
      *   - Edit top bar slides up            (off screen start = -screenH)
      */
     private fun animateModeTransition(from: AppMode, to: AppMode) {
+        val gen      = ++modeGen
         val w        = resources.displayMetrics.widthPixels.toFloat()
         val h        = resources.displayMetrics.heightPixels.toFloat()
         val outDur   = 200L
@@ -1247,7 +1250,44 @@ class MapActivity : ComponentActivity() {
         val inInterp  = DecelerateInterpolator()
 
         // ── Phase 2: slide incoming elements in ───────────────────────────────
+        //
+        // Called via postDelayed(outDur) rather than withEndAction so it fires
+        // even when Phase 1 animations are cancelled by a rapid mode switch.
+        // The gen guard discards stale callbacks from superseded transitions.
         fun slideIn() {
+            if (gen != modeGen) return
+
+            // Cancel any still-running Phase 1 animations before touching
+            // visibility.  withEndAction does NOT fire on cancel, so a stale
+            // endAction from a concurrent animation cannot overwrite the state
+            // we are about to set.
+            menuPanel.animate().cancel()
+            myLocationButton.animate().cancel()
+            exploreBottomBar.animate().cancel()
+            navigateBanner.animate().cancel()
+            navigateStopBtn.animate().cancel()
+            editTopBar.animate().cancel()
+
+            // Ensure from-mode views are fully hidden and reset — their
+            // withEndActions may not have fired if they were cancelled.
+            when (from) {
+                AppMode.EXPLORE -> {
+                    menuPanel.visibility          = View.GONE;  menuPanel.translationX        = 0f
+                    myLocationButton.visibility   = View.GONE;  myLocationButton.translationX = 0f
+                    exploreBottomBar.visibility   = View.GONE;  exploreBottomBar.translationY = 0f
+                    exploreBottomBar.alpha        = 1f
+                }
+                AppMode.NAVIGATE -> {
+                    navigateOverlay.visibility   = View.GONE
+                    navigateBanner.translationY  = 0f
+                    navigateStopBtn.translationY = 0f
+                }
+                AppMode.EDIT -> {
+                    editTopBar.visibility   = View.GONE
+                    editTopBar.translationY = 0f
+                }
+            }
+
             // Animate camera tilt / focal-point offset in sync with the incoming UI.
             applyCameraForMode(to, animated = true)
 
@@ -1285,59 +1325,46 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // ── Phase 1: slide outgoing elements out, then fire slideIn() ─────────
+        // ── Phase 1: slide outgoing elements out ──────────────────────────────
+        // withEndAction per-view handles cleanup if the animation completes
+        // naturally; slideIn() handles cleanup if it was cancelled.
         when (from) {
             AppMode.EXPLORE -> {
-                // Three views leave simultaneously; fire slideIn() when all three finish.
-                val latch = AnimationLatch(3) { slideIn() }
-
                 menuPanel.animate().translationX(-w)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction {
-                        menuPanel.visibility   = View.GONE
-                        menuPanel.translationX = 0f
-                        latch.decrement()
-                    }.start()
+                    .withEndAction { menuPanel.visibility = View.GONE; menuPanel.translationX = 0f }
+                    .start()
                 myLocationButton.animate().translationX(-w)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction {
-                        myLocationButton.visibility   = View.GONE
-                        myLocationButton.translationX = 0f
-                        latch.decrement()
-                    }.start()
+                    .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
+                    .start()
                 exploreBottomBar.animate().translationY(h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction {
-                        exploreBottomBar.visibility   = View.GONE
-                        exploreBottomBar.translationY = 0f
-                        latch.decrement()
-                    }.start()
+                    .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
+                    .start()
             }
 
             AppMode.NAVIGATE -> {
-                // Banner and STOP leave simultaneously; hide the overlay container when done.
-                val latch = AnimationLatch(2) {
-                    navigateOverlay.visibility = View.GONE
-                    slideIn()
-                }
                 navigateBanner.animate().translationY(-h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { navigateBanner.translationY = 0f; latch.decrement() }.start()
+                    .withEndAction { navigateBanner.translationY = 0f }.start()
                 navigateStopBtn.animate().translationY(h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { navigateStopBtn.translationY = 0f; latch.decrement() }.start()
+                    .withEndAction { navigateStopBtn.translationY = 0f }.start()
             }
 
             AppMode.EDIT -> {
                 editTopBar.animate().translationY(-h)
                     .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction {
-                        editTopBar.visibility   = View.GONE
-                        editTopBar.translationY = 0f
-                        slideIn()
-                    }.start()
+                    .withEndAction { editTopBar.visibility = View.GONE; editTopBar.translationY = 0f }
+                    .start()
             }
         }
+
+        // Schedule Phase 2 via postDelayed rather than withEndAction/AnimationLatch.
+        // postDelayed fires even if Phase 1 animations are cancelled mid-flight,
+        // guaranteeing slideIn() is always called after outDur ms.
+        mapView.postDelayed({ slideIn() }, outDur)
     }
 
     // ── Map style helpers ─────────────────────────────────────────────────────
