@@ -58,7 +58,7 @@ jobs:
 
   sign:
     needs: build
-    if: github.event_name == 'push' || github.event.label.name == 'run-build'
+    if: (github.event_name == 'push' || github.event.label.name == 'run-build') && secrets.SIGNING_KEYSTORE_BASE64 != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -98,6 +98,7 @@ jobs:
 
   draft-release:
     needs: sign
+    if: needs.sign.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
