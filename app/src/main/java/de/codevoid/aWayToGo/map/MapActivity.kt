@@ -140,9 +140,7 @@ private const val FOLLOW_MAX_SPEED_MS = 83.3   // 300 km/h in m/s
 // α = 0.15 at 60 fps → ~50% toward a new heading in ~0.8 s.
 private const val BEARING_SMOOTH_ALPHA_DEFAULT = 0.15
 
-// Distance threshold (metres) below which flyToLocation animates directly.
-// Above this, it zooms out to a context level first, then zooms back in.
-private const val FLYTO_THRESHOLD_M = 10_000.0
+private const val FLYTO_DURATION_MS = 800
 
 
 /**
@@ -1161,8 +1159,6 @@ class MapActivity : ComponentActivity() {
 
         if (mode == AppMode.NAVIGATE && animated) {
             // Fly to GPS position with tilt and focal-point padding applied at arrival.
-            // flyToLocation uses the two-phase zoom when far from GPS, a single smooth
-            // animation when nearby — the tilt/padding are always set in the final phase.
             val gpsTarget = m.locationComponent.lastKnownLocation
                 ?.let { LatLng(it.latitude, it.longitude) }
                 ?: m.cameraPosition.target
@@ -1172,7 +1168,6 @@ class MapActivity : ComponentActivity() {
                 zoom    = 17.0,
                 tilt    = 45.0,
                 padding = doubleArrayOf(0.0, screenH * 0.5, 0.0, 0.0),
-                enableZoom = true,
             )
             return
         }
@@ -1701,7 +1696,7 @@ class MapActivity : ComponentActivity() {
         val newCameraScreen = PointF(w / 2f + dx, h / 2f + dy)
         val newCameraTarget = m.projection.fromScreenLocation(newCameraScreen)
 
-        flyToLocation(m, newCameraTarget, enableZoom = false)
+        flyToLocation(m, newCameraTarget)
     }
 
     private fun hideSearchOverlay() {
@@ -2554,59 +2549,21 @@ class MapActivity : ComponentActivity() {
         zoom: Double = m.cameraPosition.zoom,
         tilt: Double = m.cameraPosition.tilt,
         padding: DoubleArray? = null,
-        enableZoom: Boolean = true,
         onFinish: (() -> Unit)? = null,
     ) {
         val resolvedPadding = padding ?: m.cameraPosition.padding ?: doubleArrayOf(0.0, 0.0, 0.0, 0.0)
-        val from     = m.cameraPosition.target ?: run { onFinish?.invoke(); return }
-        val distance = from.distanceTo(target)
-
-        // Build the final CameraPosition (used by both the direct and phase-2 paths).
-        fun finalPos() = CameraPosition.Builder()
+        val pos = CameraPosition.Builder()
             .target(target)
             .zoom(zoom)
             .tilt(tilt)
             .bearing(m.cameraPosition.bearing)
             .padding(resolvedPadding)
             .build()
-
-        if (!enableZoom || distance < FLYTO_THRESHOLD_M) {
-            m.animateCamera(
-                CameraUpdateFactory.newCameraPosition(finalPos()),
-                600,
-                object : MapLibreMap.CancelableCallback {
-                    override fun onFinish() { onFinish?.invoke() }
-                    override fun onCancel() { onFinish?.invoke() }
-                },
-            )
-            return
-        }
-
-        // Choose a context zoom level that gives a sense of how far away we are.
-        val contextZoom = when {
-            distance > 5_000_000 -> 2.0
-            distance > 1_000_000 -> 4.0
-            distance > 200_000   -> 6.0
-            distance > 50_000    -> 8.0
-            else                 -> 10.0
-        }
-
-        // Phase 1: zoom out and pan to target simultaneously.
         m.animateCamera(
-            CameraUpdateFactory.newLatLngZoom(target, contextZoom),
-            600,
+            CameraUpdateFactory.newCameraPosition(pos),
+            FLYTO_DURATION_MS,
             object : MapLibreMap.CancelableCallback {
-                override fun onFinish() {
-                    // Phase 2: ease into the final zoom, tilt, and padding.
-                    m.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(finalPos()),
-                        500,
-                        object : MapLibreMap.CancelableCallback {
-                            override fun onFinish() { onFinish?.invoke() }
-                            override fun onCancel() { onFinish?.invoke() }
-                        },
-                    )
-                }
+                override fun onFinish() { onFinish?.invoke() }
                 override fun onCancel() { onFinish?.invoke() }
             },
         )
