@@ -305,15 +305,6 @@ class MapActivity : ComponentActivity() {
             // pan speed for OSD display.
             val panSpeed = panController.onFrame(map, frameTimeNanos, dtNs)
 
-            // ── Drag line live update ────────────────────────────────────────
-            // Keep the drag line's "from" end pinned to the current GPS position
-            // so it tracks the user as they move toward the anchored target.
-            dragLineAnchor?.let { anchor ->
-                map?.locationComponent?.lastKnownLocation?.let { loc ->
-                    setDragLine(LatLng(loc.latitude, loc.longitude), anchor)
-                }
-            }
-
             // ── GPS Follow ───────────────────────────────────────────────────
             // Smooth dead-reckoning follow:
             //   • When a new GPS fix arrives, validate it (outlier rejection) and
@@ -390,6 +381,13 @@ class MapActivity : ComponentActivity() {
                         rawGpsLocation?.accuracy?.let { acc -> it.accuracy = acc }
                     }
                     syntheticEngine.pushLocation(predicted)
+                    // ── Drag line live update ────────────────────────────────
+                    // Update here, after dead-reckoning, so the "from" end uses
+                    // the same smooth predicted position as the puck — not the
+                    // previous frame's lastKnownLocation.
+                    dragLineAnchor?.let { anchor ->
+                        setDragLine(LatLng(predLat, predLon), anchor)
+                    }
                     // Move the camera only when follow mode is active.
                     // Navigate mode targets 45° tilt; nudging every frame so the follow
                     // loop does not fight the tilt animation from applyCameraForMode.
