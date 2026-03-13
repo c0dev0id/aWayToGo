@@ -36,7 +36,7 @@ class DragLineAnimator {
 
     // ── Public configuration ────────────────────────────────────────────────
 
-    enum class Style { WHIP, LASSO, FALL }
+    enum class Style { WHIP, LASSO, FALL, SINE, GRAVITY }
 
     var style: Style = Style.WHIP
 
@@ -94,12 +94,67 @@ class DragLineAnimator {
     /** Oscillation amplitude superimposed on the fall. */
     var fallWobbleAmplitude: Double = 0.07
 
+    // ── Sine tunables ────────────────────────────────────────────────────────
+
+    /** Peak lateral displacement as a fraction of line length. */
+    var sineAmplitude: Double = 0.14
+
+    /** Number of spatial wave cycles visible along the line. */
+    var sineFrequency: Double = 1.5
+
+    /** Wave travel speed (rad/s) — much slower than WHIP for a drifting feel. */
+    var sineSpeed: Double = 2.2
+
+    /** Exponential decay time constant (s) after the throw ramp-up. */
+    var sineDecayTau: Double = 1.0
+
+    /** Duration (s) of the throw ramp-up phase. */
+    var sineThrowDuration: Double = 0.12
+
+    /** Fraction of the line near the puck kept straight. */
+    var sineStraightFrac: Double = 0.08
+
+    // ── Gravity tunables ─────────────────────────────────────────────────────
+
+    /**
+     * Initial upward displacement given to the rope on reset, as a fraction of
+     * line length.  The rope is thrown up and then falls under [gravityStrength].
+     */
+    var gravThrowImpulse: Double = 0.18
+
+    /**
+     * Downward acceleration added per frame² in normalised coordinates.
+     * At 60 Hz this causes a noticeable sag within ~1 s and the rope settles to
+     * a catenary curve whose depth is determined by [gravSlack].
+     */
+    var gravityStrength: Double = 8e-5
+
+    /** Fraction of velocity retained each frame — controls how quickly the rope settles. */
+    var gravDamping: Double = 0.982
+
+    /** Jakobsen constraint-relaxation iterations.  More = stiffer, less stretchy rope. */
+    var gravConstraintIters: Int = 8
+
+    /**
+     * Extra rope length relative to the straight puck→anchor distance.
+     * This slack allows the rope to form a catenary below the straight line.
+     * 0.08 → 8 % extra length → visible but subtle mid-span sag.
+     */
+    var gravSlack: Double = 0.08
+
     // ── Internal Verlet state (whip mode) ───────────────────────────────────
 
     private var particles = DoubleArray(0)   // interleaved [x0,y0, x1,y1, …]
     private var oldParticles = DoubleArray(0)
     private var segmentLen = 0.0
     private var verletInited = false
+
+    // ── Internal Verlet state (gravity mode) ────────────────────────────────
+
+    private var gravParticles    = DoubleArray(0)
+    private var gravOldParticles = DoubleArray(0)
+    private var gravSegLen       = 0.0
+    private var gravInited       = false
 
     // ── Output ──────────────────────────────────────────────────────────────
 
@@ -115,6 +170,7 @@ class DragLineAnimator {
     /** Reset internal state.  Call when the anchor point changes. */
     fun reset() {
         verletInited = false
+        gravInited   = false
     }
 
     /**
@@ -127,9 +183,11 @@ class DragLineAnimator {
      */
     fun generate(elapsedSec: Double): List<Sample>? {
         return when (style) {
-            Style.WHIP  -> generateWhip(elapsedSec)
-            Style.LASSO -> generateLasso(elapsedSec)
-            Style.FALL  -> generateFall(elapsedSec)
+            Style.WHIP    -> generateWhip(elapsedSec)
+            Style.LASSO   -> generateLasso(elapsedSec)
+            Style.FALL    -> generateFall(elapsedSec)
+            Style.SINE    -> generateSine(elapsedSec)
+            Style.GRAVITY -> generateGravity()
         }
     }
 
@@ -352,6 +410,134 @@ class DragLineAnimator {
         }
 
         return samples
+    }
+
+    // ── Sine implementation ─────────────────────────────────────────────────
+    //
+    // A clean travelling sinusoidal wave with an envelope that keeps the
+    // endpoints pinned.  No Verlet — the geometry is computed analytically every
+    // frame so there is no accumulated state beyond the elapsed time.
+    //
+    // Compared to WHIP:
+    //   • Much slower travel speed (2.2 vs 11 rad/s) — languid, drifting feel.
+    //   • No Jakobsen distance constraints — the wave is perfectly smooth.
+    //   • Slightly lower amplitude — less dramatic, more wire-like.
+    //
+    // Good baseline for comparing against the physics-based styles.
+
+    private fun generateSine(elapsedSec: Double): List<Sample>? {
+        val amplitude = when {
+            elapsedSec < sineThrowDuration ->
+                sineAmplitude * (elapsedSec / sineThrowDuration)
+            else ->
+                sineAmplitude * exp(-(elapsedSec - sineThrowDuration) / sineDecayTau)
+        }
+        if (amplitude < 1e-4) return null
+
+        val n = resolution.coerceAtLeast(4)
+        return (0 until n).map { i ->
+            val t    = i.toDouble() / (n - 1)
+            val tAdj = maxOf(0.0, (t - sineStraightFrac) / (1.0 - sineStraightFrac))
+            val env  = sin(Math.PI * tAdj)
+            val phase = 2.0 * Math.PI * sineFrequency * t - sineSpeed * elapsedSec
+            Sample(t, amplitude * sin(phase) * env)
+        }
+    }
+
+    // ── Gravity implementation ───────────────────────────────────────────────
+    //
+    // Verlet particle chain with real gravity and distance constraints (Jakobsen
+    // relaxation).  Inspired by Goriely & McMillen 2002 and Macklin's PBD work.
+    //
+    // On reset the rope is initialised with an upward velocity impulse so it
+    // looks like it was thrown.  Gravity (always in the +offset direction)
+    // pulls it back down, the rope overshoots the catenary, oscillates, and
+    // settles.  Velocity damping ensures high-frequency ripples die first,
+    // matching the modal analysis prediction (Early & Sykulski 2020).
+    //
+    // The rope is [gravSlack] longer than the straight puck→anchor distance so
+    // it can form a visible catenary when the kinetic energy has dissipated.
+    //
+    // NOTE: generateGravity() is called once per Choreographer frame (no
+    // elapsedSec parameter) — each call advances the simulation by one step.
+
+    private fun generateGravity(): List<Sample>? {
+        val n = resolution.coerceAtLeast(4)
+        if (!gravInited || gravParticles.size != n * 2) {
+            initGravVerlet(n)
+        }
+
+        // ── Verlet integration + gravity ──────────────────────────────────
+        for (i in 1 until n - 1) {
+            val ix = i * 2; val iy = ix + 1
+            val cx = gravParticles[ix];    val cy = gravParticles[iy]
+            val ox = gravOldParticles[ix]; val oy = gravOldParticles[iy]
+            // Velocity with damping; gravity accel in +offset direction.
+            val vx = (cx - ox) * gravDamping
+            val vy = (cy - oy) * gravDamping
+            gravOldParticles[ix] = cx; gravOldParticles[iy] = cy
+            gravParticles[ix]    = cx + vx
+            gravParticles[iy]    = cy + vy + gravityStrength
+        }
+
+        // Pin endpoints before constraint pass.
+        gravParticles[0] = 0.0;           gravParticles[1] = 0.0
+        gravParticles[(n - 1) * 2] = 1.0; gravParticles[(n - 1) * 2 + 1] = 0.0
+        gravOldParticles[0] = 0.0;            gravOldParticles[1] = 0.0
+        gravOldParticles[(n - 1) * 2] = 1.0;  gravOldParticles[(n - 1) * 2 + 1] = 0.0
+
+        // ── Jakobsen distance constraints ─────────────────────────────────
+        for (iter in 0 until gravConstraintIters) {
+            for (i in 0 until n - 1) {
+                val ax = gravParticles[i * 2];       val ay = gravParticles[i * 2 + 1]
+                val bx = gravParticles[(i + 1) * 2]; val by = gravParticles[(i + 1) * 2 + 1]
+                val ddx = bx - ax; val ddy = by - ay
+                val dist = sqrt(ddx * ddx + ddy * ddy)
+                if (dist < 1e-12) continue
+                val diff = (gravSegLen - dist) / dist * 0.5
+                val ox2 = ddx * diff; val oy2 = ddy * diff
+                if (i > 0)     { gravParticles[i * 2]       -= ox2; gravParticles[i * 2 + 1]       -= oy2 }
+                if (i + 1 < n - 1) { gravParticles[(i + 1) * 2] += ox2; gravParticles[(i + 1) * 2 + 1] += oy2 }
+            }
+        }
+
+        // Re-pin endpoints after constraints.
+        gravParticles[0] = 0.0;           gravParticles[1] = 0.0
+        gravParticles[(n - 1) * 2] = 1.0; gravParticles[(n - 1) * 2 + 1] = 0.0
+
+        // ── Settle check ─────────────────────────────────────────────────
+        var maxKE = 0.0
+        for (i in 1 until n - 1) {
+            val vx = gravParticles[i * 2]     - gravOldParticles[i * 2]
+            val vy = gravParticles[i * 2 + 1] - gravOldParticles[i * 2 + 1]
+            maxKE = maxOf(maxKE, vx * vx + vy * vy)
+        }
+        if (maxKE < 1e-12) return null
+
+        return (0 until n).map { i ->
+            Sample(t = gravParticles[i * 2], offset = gravParticles[i * 2 + 1])
+        }
+    }
+
+    private fun initGravVerlet(n: Int) {
+        gravParticles    = DoubleArray(n * 2)
+        gravOldParticles = DoubleArray(n * 2)
+        // Rope is slightly longer than the straight line so it can sag.
+        gravSegLen = (1.0 + gravSlack) / (n - 1)
+        for (i in 0 until n) {
+            val t = i.toDouble() / (n - 1)
+            // Start at the straight line position (y = 0).
+            gravParticles[i * 2]     = t
+            gravParticles[i * 2 + 1] = 0.0
+            // Give each particle an upward (−y) initial velocity by placing the
+            // "old" position below the current one.
+            // Verlet velocity = current − old, so old = current − velocity.
+            // We want velocity = −impulse * sin(π*t) (upward bell shape).
+            val impulseVel = gravThrowImpulse * sin(Math.PI * t)   // ≥ 0
+            gravOldParticles[i * 2]     = t
+            gravOldParticles[i * 2 + 1] = impulseVel   // old_y = cur_y − (−impulseVel) = +impulseVel
+        }
+        gravInited = true
     }
 
     // ── Fall implementation ─────────────────────────────────────────────────

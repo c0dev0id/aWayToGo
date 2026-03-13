@@ -1792,9 +1792,11 @@ class MapActivity : ComponentActivity() {
         // ── Drag line animation style ───────────────────────────────────────
         if (dragLineStyleChanged || old == null) {
             val styleName = when (new.dragLineStyle) {
-                DragLineAnimator.Style.WHIP  -> "Whip"
-                DragLineAnimator.Style.LASSO -> "Lasso"
-                DragLineAnimator.Style.FALL  -> "Fall"
+                DragLineAnimator.Style.WHIP    -> "Whip"
+                DragLineAnimator.Style.LASSO   -> "Lasso"
+                DragLineAnimator.Style.FALL    -> "Fall"
+                DragLineAnimator.Style.SINE    -> "Sine"
+                DragLineAnimator.Style.GRAVITY -> "Gravity"
             }
             menuPanelResult.dragLineStyleLabel.text = "Drag Line: $styleName"
             dragLineAnimator.style = new.dragLineStyle
