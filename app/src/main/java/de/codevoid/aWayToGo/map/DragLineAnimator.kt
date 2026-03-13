@@ -46,7 +46,7 @@ class DragLineAnimator {
     // ── Whip tunables ───────────────────────────────────────────────────────
 
     /** Duration (s) of the throw ramp-up phase. */
-    var whipThrowDuration: Double = 0.12
+    var whipThrowDuration: Double = 0.15
 
     /** Exponential decay time constant (s) after the throw — larger = longer settle. */
     var whipDecayTau: Double = 1.2
