@@ -141,9 +141,12 @@ private const val IMAGE_TAPE_PATTERN        = "tape-pattern"
 // When a new drag line replaces the current one, the old line plays a fall
 // animation (both endpoints detach, rope falls like a loose string) before
 // being cleared.  Only a simple casing + fill is shown — no label or pin.
-private const val SOURCE_DRAG_LINE_OLD       = "drag-line-old"
-private const val LAYER_DRAG_LINE_OLD_CASING = "drag-line-old-casing"
-private const val LAYER_DRAG_LINE_OLD_FILL   = "drag-line-old-fill"
+private const val SOURCE_DRAG_LINE_OLD            = "drag-line-old"
+private const val LAYER_DRAG_LINE_OLD_CASING      = "drag-line-old-casing"
+private const val LAYER_DRAG_LINE_OLD_FILL        = "drag-line-old-fill"
+private const val LAYER_DRAG_LINE_SHADOW_OUTER    = "drag-line-shadow-outer"
+private const val LAYER_DRAG_LINE_SHADOW_INNER    = "drag-line-shadow-inner"
+private const val LAYER_DRAG_LINE_OLD_SHADOW      = "drag-line-old-shadow"
 
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
@@ -3044,6 +3047,46 @@ class MapActivity : ComponentActivity() {
             if (belowId != null) s.addLayerBelow(layer, belowId) else s.addLayer(layer)
         }
 
+        // ── Shadow layers (below casing) ─────────────────────────────────────
+        // Two-layer umbra/penumbra model (research: cartographic shadows are
+        // cool-tinted and semi-transparent; a rope on the ground casts a tight,
+        // moderately-blurred shadow — not a large floating-object shadow).
+        // Light source at upper-left (NW) = cartographic convention → shadow SE.
+        // lineTranslateAnchor VIEWPORT keeps the SE direction fixed regardless
+        // of map bearing.
+
+        // Penumbra — wide, soft, very low opacity.
+        addDragLayer(
+            LineLayer(LAYER_DRAG_LINE_SHADOW_OUTER, SOURCE_DRAG_LINE).apply {
+                setProperties(
+                    PropertyFactory.lineColor("#141428"),
+                    PropertyFactory.lineWidth(22f),
+                    PropertyFactory.lineBlur(9f),
+                    PropertyFactory.lineOpacity(0.13f),
+                    PropertyFactory.lineTranslate(arrayOf(3f, 3f)),
+                    PropertyFactory.lineTranslateAnchor(Property.LINE_TRANSLATE_ANCHOR_VIEWPORT),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+            }
+        )
+
+        // Umbra — narrower, sharper, higher opacity.
+        addDragLayer(
+            LineLayer(LAYER_DRAG_LINE_SHADOW_INNER, SOURCE_DRAG_LINE).apply {
+                setProperties(
+                    PropertyFactory.lineColor("#141428"),
+                    PropertyFactory.lineWidth(15f),
+                    PropertyFactory.lineBlur(3f),
+                    PropertyFactory.lineOpacity(0.27f),
+                    PropertyFactory.lineTranslate(arrayOf(2f, 2f)),
+                    PropertyFactory.lineTranslateAnchor(Property.LINE_TRANSLATE_ANCHOR_VIEWPORT),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+            }
+        )
+
         // Casing — dark border, 1.5dp wider on each side than the tape fill.
         addDragLayer(
             LineLayer(LAYER_DRAG_LINE_CASING, SOURCE_DRAG_LINE).apply {
@@ -3175,6 +3218,23 @@ class MapActivity : ComponentActivity() {
         fun addOldLayer(layer: Layer) {
             if (belowOld != null) s.addLayerBelow(layer, belowOld) else s.addLayer(layer)
         }
+
+        // Single combined shadow for the falling old line (simplified — it's
+        // transient and fading, so the full two-layer model is unnecessary).
+        addOldLayer(
+            LineLayer(LAYER_DRAG_LINE_OLD_SHADOW, SOURCE_DRAG_LINE_OLD).apply {
+                setProperties(
+                    PropertyFactory.lineColor("#141428"),
+                    PropertyFactory.lineWidth(18f),
+                    PropertyFactory.lineBlur(7f),
+                    PropertyFactory.lineOpacity(0.18f),
+                    PropertyFactory.lineTranslate(arrayOf(2.5f, 2.5f)),
+                    PropertyFactory.lineTranslateAnchor(Property.LINE_TRANSLATE_ANCHOR_VIEWPORT),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+            }
+        )
 
         addOldLayer(
             LineLayer(LAYER_DRAG_LINE_OLD_CASING, SOURCE_DRAG_LINE_OLD).apply {
