@@ -78,7 +78,7 @@ object TileCache {
 
         val cache = Cache(
             directory = File(context.cacheDir, "maplibre_tiles"),
-            maxSize   = 50L * 1024 * 1024,   // 50 MB
+            maxSize   = 200L * 1024 * 1024,  // 200 MB
         )
         diskCache = cache
 

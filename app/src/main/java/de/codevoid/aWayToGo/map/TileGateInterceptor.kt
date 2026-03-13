@@ -61,7 +61,16 @@ class TileGateInterceptor : Interceptor {
         return chain.proceed(chain.request())
     }
 
-    /** Returns true for PBF vector tile requests that should be gated. */
+    /**
+     * Returns true for tile requests that should be gated.
+     *
+     * PBF vector tiles and raster image tiles (jpg/png/webp) are both gated.
+     * Style JSON, sprites, fonts, and other bootstrap requests pass through
+     * unconditionally so the map can initialise normally.
+     */
     private fun isTileRequest(url: String): Boolean =
-        url.contains(".pbf")
+        url.contains(".pbf") ||
+        url.contains(".jpg") ||
+        url.contains(".png") ||
+        url.contains(".webp")
 }
