@@ -76,6 +76,7 @@ import de.codevoid.aWayToGo.update.AppUpdater
 import de.codevoid.aWayToGo.update.ConnectivityChecker
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -83,6 +84,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -3070,18 +3072,17 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Closes the menu and runs pan benchmarks at zoom levels 8, 10, 14, 16.
+     * Closes the menu and runs render benchmarks at zoom levels 8, 10, 14, 16.
      *
-     * Uses central Tokyo (Shinjuku) as the benchmark location — one of the
-     * densest OSM-mapped areas globally (roads, buildings, transit, POIs).
-     * Camera is tilted 45° so the perspective frustum covers more geometry,
-     * maximising rendering load.
+     * Uses central Tokyo (Shinjuku) as the benchmark location.
      *
      * For each zoom level:
-     *  1. Evicts the tile disk cache so tiles must be fetched fresh.
-     *  2. Moves the camera to Shinjuku at the target zoom with 45° tilt.
-     *  3. Pans east continuously for 5 seconds while collecting GL FPS and
-     *     main-thread FPS / frame-dt metrics.
+     *  1. Pre-warms the tile cache by visiting 5 checkpoints across the movement
+     *     area and waiting for the map to become idle (all tiles loaded) at each.
+     *  2. Returns to the start position and waits for idle again.
+     *  3. Runs a 5-second choreographed camera sequence — spin, NE/SW transit,
+     *     orbital sweep, oscillating drift — with continuous bearing and tilt
+     *     changes to maximise GPU and CPU load.
      *
      * Results are shown in a custom overlay when all four runs complete.
      */
@@ -3093,31 +3094,32 @@ class MapActivity : ComponentActivity() {
 
         benchmarkJob = lifecycleScope.launch {
             val results = mutableListOf<BenchmarkResult>()
-
-            // Central Tokyo / Shinjuku — extremely dense OSM data.
-            val startTarget = LatLng(35.6896, 139.7006)
-            val benchTilt = 45.0
+            val center = LatLng(35.6896, 139.7006)   // Shinjuku, Tokyo
+            val checkpoints = listOf(0.0, 0.25, 0.5, 0.75, 1.0)
 
             for (zoom in listOf(8, 10, 14, 16)) {
-                updateBenchmarkStatus("Zoom $zoom / 16…")
 
-                // Clear tile cache on IO thread.
-                withContext(Dispatchers.IO) { TileCache.clearCache() }
+                // ── Pre-warm: visit key positions so tiles are in cache ────────
+                for ((idx, tp) in checkpoints.withIndex()) {
+                    updateBenchmarkStatus("Loading zoom $zoom… (${idx + 1}/${checkpoints.size})")
+                    m.moveCamera(CameraUpdateFactory.newCameraPosition(
+                        benchmarkCamera(tp, zoom, center)
+                    ))
+                    delay(200)          // let the map register the move and start fetching
+                    waitForMapIdle(20_000L)
+                }
 
-                // Move to start position at this zoom with 45° tilt (instant).
+                // Return to t=0 and wait for full settle before measuring.
+                updateBenchmarkStatus("Zoom $zoom ready…")
                 m.moveCamera(CameraUpdateFactory.newCameraPosition(
-                    CameraPosition.Builder()
-                        .target(startTarget)
-                        .zoom(zoom.toDouble())
-                        .tilt(benchTilt)
-                        .build()
+                    benchmarkCamera(0.0, zoom, center)
                 ))
-                delay(800)
+                delay(200)
+                waitForMapIdle(10_000L)
 
-                // Prepare collectors.
+                // ── Timed benchmark run ───────────────────────────────────────
                 val glNanos = mutableListOf<Long>()
                 benchmarkGlFrameNanos = glNanos
-
                 val glListener = MapView.OnDidFinishRenderingFrameListener { _, _, _ ->
                     benchmarkGlFrameNanos?.add(System.nanoTime())
                 }
@@ -3133,24 +3135,16 @@ class MapActivity : ComponentActivity() {
                     }
                 }
 
-                // Pan east continuously for 5 seconds in 50ms steps.
-                // Target 600 logical pixels/second. In web-mercator with 512px
-                // tiles, one logical pixel = 360 / (512 * 2^zoom) degrees of
-                // longitude (independent of latitude).
-                val degPerPx = 360.0 / (512.0 * Math.pow(2.0, zoom.toDouble()))
-                val degPerStep = 600.0 * degPerPx * 0.05  // 50ms step
-                val benchEnd = System.currentTimeMillis() + 5_000L
-                var lng = startTarget.longitude
-                while (System.currentTimeMillis() < benchEnd) {
-                    lng += degPerStep
+                val benchDurMs = 5_000L
+                val benchStartMs = System.currentTimeMillis()
+                while (true) {
+                    val elapsedMs = System.currentTimeMillis() - benchStartMs
+                    if (elapsedMs >= benchDurMs) break
+                    val t = elapsedMs / benchDurMs.toDouble()
+                    val secsLeft = ((benchDurMs - elapsedMs) / 1000L) + 1L
+                    updateBenchmarkStatus("Zoom $zoom — ${secsLeft}s")
                     m.animateCamera(
-                        CameraUpdateFactory.newCameraPosition(
-                            CameraPosition.Builder()
-                                .target(LatLng(startTarget.latitude, lng))
-                                .zoom(zoom.toDouble())
-                                .tilt(benchTilt)
-                                .build()
-                        ),
+                        CameraUpdateFactory.newCameraPosition(benchmarkCamera(t, zoom, center)),
                         100,
                     )
                     delay(50)
@@ -3167,23 +3161,94 @@ class MapActivity : ComponentActivity() {
                 val dtMin   = dtMsSamples.minOrNull() ?: 0L
                 val dtMax   = dtMsSamples.maxOrNull() ?: 0L
 
-                results.add(
-                    BenchmarkResult(
-                        zoom     = zoom,
-                        glStats  = computeFpsStats(glNanos),
-                        mainAvg  = mainAvg,
-                        mainMin  = mainMin,
-                        mainMax  = mainMax,
-                        dtAvgMs  = dtAvg,
-                        dtMinMs  = dtMin,
-                        dtMaxMs  = dtMax,
-                    )
-                )
+                results.add(BenchmarkResult(
+                    zoom    = zoom,
+                    glStats = computeFpsStats(glNanos),
+                    mainAvg = mainAvg, mainMin = mainMin, mainMax = mainMax,
+                    dtAvgMs = dtAvg,  dtMinMs = dtMin,  dtMaxMs = dtMax,
+                ))
             }
 
             dismissBenchmarkProgressOverlay()
             showBenchmarkResultsOverlay(results)
         }
+    }
+
+    /**
+     * Returns a [CameraPosition] for the benchmark at fractional time [t] ∈ [0,1].
+     *
+     * Five phases, each covering 20% of the run:
+     *   0.0–0.2  Spin in place: full 360° bearing rotation, tilt ramps 45°→60°.
+     *   0.2–0.4  Drive NE: bearing sweeps 0°→180°, tilt holds 60°.
+     *   0.4–0.6  Return SW: bearing sweeps 180°→360°, tilt eases back 60°→45°.
+     *   0.6–0.8  Orbital circle: camera traces a half-radius circle, bearing tracks.
+     *   0.8–1.0  SE drift with oscillating bearing ±90° and tilt ±15°.
+     *
+     * Movement radius is scaled per zoom level so each run crosses into new tile
+     * territory without covering an unloadably large area.
+     */
+    private fun benchmarkCamera(t: Double, zoom: Int, center: LatLng): CameraPosition {
+        val tau = 2.0 * Math.PI
+        // Radii chosen so the path covers several tile-widths at each zoom level.
+        val radius = when {
+            zoom <= 8  -> 0.30   // ~33 km — covers a few zoom-8 tiles (156 km each)
+            zoom <= 10 -> 0.10   // ~11 km — several zoom-10 tiles (39 km each)
+            zoom <= 14 -> 0.008  //  ~900 m — several zoom-14 tiles (2.4 km each)
+            else       -> 0.002  //  ~220 m — a few zoom-16 tiles (611 m each)
+        }
+
+        val lat: Double; val lng: Double; val bearing: Double; val tilt: Double
+        when {
+            t < 0.2 -> {   // spin in place, ramp tilt
+                val s = t / 0.2
+                lat = center.latitude;  lng = center.longitude
+                bearing = s * 360.0;   tilt = 45.0 + s * 15.0
+            }
+            t < 0.4 -> {   // drive NE, bearing sweeps 0→180
+                val s = (t - 0.2) / 0.2
+                lat = center.latitude  + radius * s
+                lng = center.longitude + radius * s
+                bearing = s * 180.0;   tilt = 60.0
+            }
+            t < 0.6 -> {   // return SW, bearing sweeps 180→360, tilt eases back
+                val s = (t - 0.4) / 0.2
+                lat = center.latitude  + radius * (1.0 - s)
+                lng = center.longitude + radius * (1.0 - s)
+                bearing = 180.0 + s * 180.0;   tilt = 60.0 - s * 15.0
+            }
+            t < 0.8 -> {   // full orbital circle, bearing tracks orbit angle
+                val s = (t - 0.6) / 0.2
+                lat = center.latitude  + radius * 0.5 * sin(s * tau)
+                lng = center.longitude + radius * 0.5 * cos(s * tau)
+                bearing = s * 360.0;   tilt = 45.0
+            }
+            else    -> {   // SE drift with oscillating bearing and tilt
+                val s = (t - 0.8) / 0.2
+                lat = center.latitude  + radius * 0.5 * sin(s * tau * 2.0)
+                lng = center.longitude + radius * s
+                bearing = 180.0 + sin(s * tau * 1.5) * 90.0
+                tilt = 45.0 + sin(s * tau * 2.0) * 15.0
+            }
+        }
+
+        return CameraPosition.Builder()
+            .target(LatLng(lat, lng))
+            .zoom(zoom.toDouble())
+            .bearing(bearing)
+            .tilt(tilt.coerceIn(0.0, 60.0))
+            .build()
+    }
+
+    /**
+     * Suspends until MapLibre reports the map is idle (all tile loading complete
+     * and no animations in progress), or until [timeoutMs] elapses.
+     */
+    private suspend fun waitForMapIdle(timeoutMs: Long = 20_000L) {
+        val done = CompletableDeferred<Unit>()
+        val listener = MapView.OnDidBecomeIdleListener { done.complete(Unit) }
+        mapView.addOnDidBecomeIdleListener(listener)
+        withTimeoutOrNull(timeoutMs) { done.await() }
+        mapView.removeOnDidBecomeIdleListener(listener)
     }
 
     private fun showBenchmarkProgressOverlay() {
