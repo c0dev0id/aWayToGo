@@ -177,6 +177,11 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isCourseUpEnabled = !it.isCourseUpEnabled) }
     }
 
+    /** Toggles the debug frequent-update polling (every 5 min while screen is on). */
+    fun toggleFrequentUpdates() {
+        _uiState.update { it.copy(isFrequentUpdatesEnabled = !it.isFrequentUpdatesEnabled) }
+    }
+
     /** Open the map-lock context menu (triggered by long-press on the crosshair). */
     fun openMapLockMenu() {
         _uiState.update { it.copy(isMapLockMenuOpen = true) }

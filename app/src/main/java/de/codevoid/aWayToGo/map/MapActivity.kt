@@ -29,7 +29,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
+import java.io.File
 import android.widget.ScrollView
 import android.widget.TextView
 import android.animation.Animator
@@ -74,7 +74,6 @@ import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
 import de.codevoid.aWayToGo.update.AppUpdater
 import de.codevoid.aWayToGo.update.ConnectivityChecker
-import de.codevoid.aWayToGo.update.DownloadProgress
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
 import kotlinx.coroutines.Dispatchers
@@ -241,12 +240,11 @@ class MapActivity : ComponentActivity() {
     private var renderedState: MapUiState? = null
 
     // Progress overlay shown during APK download (null when not downloading).
-    private var downloadOverlay: View? = null
-    private var downloadProgressBar: ProgressBar? = null
-    private var downloadLabel: TextView? = null
     private var downloadJob: Job? = null
-    private var isDownloadOverlayVisible = false
-    private var lastDownloadProgress: DownloadProgress? = null
+    // non-null once the APK has been fully downloaded and is ready to install.
+    private var downloadedApk: File? = null
+    // drives 5-min polling when Frequent Updates is enabled.
+    private var frequentUpdateJob: Job? = null
 
     // ── Benchmark ─────────────────────────────────────────────────────────────
     private var benchmarkJob: Job? = null
@@ -255,11 +253,6 @@ class MapActivity : ComponentActivity() {
     @Volatile private var benchmarkGlFrameNanos: MutableList<Long>? = null
 
     private val appUpdater by lazy { AppUpdater(this) }
-
-    // non-null when an update has been found but not yet downloaded.
-    private var pendingUpdateUrl: String? = null
-    // drives the version card blink loop while an update is pending.
-    private var updateAnimJob: Job? = null
     private val prefs by lazy { getSharedPreferences("app_prefs", MODE_PRIVATE) }
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -965,6 +958,8 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
             // Run Benchmark → starts the benchmark.
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
+            // Frequent Updates → 5-min update polling while screen is on.
+            result.debugContent.getChildAt(2).setOnClickListener { viewModel.toggleFrequentUpdates() }
         }
         root.addView(
             menuPanel,
@@ -1646,8 +1641,9 @@ class MapActivity : ComponentActivity() {
         val searchChanged        = old?.isSearchOpen != new.isSearchOpen
         val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
         val debugMenuChanged     = old?.isInDebugMenu != new.isInDebugMenu
-        val debugModeChanged     = old?.isDebugMode != new.isDebugMode
-        val mapLockMenuChanged   = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
+        val debugModeChanged          = old?.isDebugMode != new.isDebugMode
+        val frequentUpdatesChanged    = old?.isFrequentUpdatesEnabled != new.isFrequentUpdatesEnabled
+        val mapLockMenuChanged        = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -1766,6 +1762,14 @@ class MapActivity : ComponentActivity() {
             osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
             menuPanelResult.debugToggleLabel.text =
                 "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
+        }
+
+        // ── Frequent Updates polling ────────────────────────────────────────────
+        if (frequentUpdatesChanged || old == null) {
+            menuPanelResult.frequentUpdatesLabel.text =
+                "Frequent Updates: ${if (new.isFrequentUpdatesEnabled) "ON" else "OFF"}"
+            if (new.isFrequentUpdatesEnabled) startFrequentUpdatePolling()
+            else stopFrequentUpdatePolling()
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -2531,183 +2535,82 @@ class MapActivity : ComponentActivity() {
 
     /**
      * Silently checks for an update at most once every 24 hours on resume.
-     *
-     * - Requires a validated internet connection ([ConnectivityChecker.isStableOnline]).
-     * - If an update has already been found this session, just (re-)starts the animation.
-     * - The 24 h rate-limit only applies to automatic checks; manual taps bypass it.
-     * - On success, sets [pendingUpdateUrl] and starts [startUpdateAvailableAnimation].
+     * If an update is found, begins downloading it immediately.
+     * If the APK is already downloaded, restores the green "update" card.
      */
     private fun checkUpdateIfDue() {
-        // Already found an update this session — restore the animation only.
-        pendingUpdateUrl?.let { url ->
-            AppUpdater.versionHashFromUrl(url)?.let { hash -> startUpdateAvailableAnimation(hash) }
-            return
-        }
+        downloadedApk?.let { setCardReady(); return }
+        if (downloadJob?.isActive == true) return
         val lastCheck = prefs.getLong("last_update_check_ms", 0L)
         if (System.currentTimeMillis() - lastCheck < 24 * 60 * 60 * 1_000L) return
         if (!ConnectivityChecker.isStableOnline(this)) return
-
         lifecycleScope.launch {
             prefs.edit().putLong("last_update_check_ms", System.currentTimeMillis()).apply()
             val url = appUpdater.checkForUpdate() ?: return@launch
             appUpdater.cleanupStaleFiles(url)
-            pendingUpdateUrl = url
-            AppUpdater.versionHashFromUrl(url)?.let { hash -> startUpdateAvailableAnimation(hash) }
+            startDownload(url)
         }
-    }
-
-    /**
-     * Colours the version card with the blue accent and starts the blink loop:
-     * old hash (5 s) → 500 ms fade → [newHash] (2 s) → 500 ms fade → repeat.
-     */
-    private fun startUpdateAvailableAnimation(newHash: String) {
-        stopUpdateAvailableAnimation()
-        val d = resources.displayMetrics.density
-        versionCardView.background = GradientDrawable().apply {
-            setColor(Color.argb(220, 0, 80, 160))
-            cornerRadius = 16f * d
-        }
-        updateAnimJob = lifecycleScope.launch {
-            while (isActive) {
-                versionCardView.alpha = 1f
-                versionCardView.text = BuildConfig.GIT_COMMIT
-                delay(5_000)
-
-                versionCardView.animate().alpha(0f).setDuration(500).start()
-                delay(500)
-                versionCardView.text = newHash
-                versionCardView.animate().alpha(1f).setDuration(200).start()
-                delay(2_000)
-
-                versionCardView.animate().alpha(0f).setDuration(500).start()
-                delay(500)
-                versionCardView.text = BuildConfig.GIT_COMMIT
-                versionCardView.animate().alpha(1f).setDuration(200).start()
-            }
-        }
-    }
-
-    /** Cancels the update blink loop and restores the card to full opacity. */
-    private fun stopUpdateAvailableAnimation() {
-        updateAnimJob?.cancel()
-        updateAnimJob = null
-        versionCardView.animate().cancel()
-        versionCardView.alpha = 1f
     }
 
     /**
      * Tap handler for the version card.
      *
-     * **Path A — card is flashing (update already found):**
-     * Starts the download immediately without re-checking GitHub.
-     * On cancel or error the animation resumes, since the update is still available.
-     *
-     * **Path B — card is not flashing (manual check):**
-     * Shows "checking…", calls [AppUpdater.checkForUpdate], then either "up to date"
-     * or starts the download.  Not rate-limited — always runs when tapped.
+     * - Green card (download ready): opens the package installer.
+     * - Download in progress: no-op (card already shows progress).
+     * - Otherwise: checks GitHub and starts a download if a new version is found.
      */
     private fun onVersionCardTapped() {
-        // If downloading with the overlay hidden, re-show it.
-        if (downloadJob?.isActive == true && !isDownloadOverlayVisible) {
-            showDownloadOverlay()
-            lastDownloadProgress?.let { updateDownloadUi(it) }
-            return
-        }
-
-        // ── Path A: update already found, card is flashing ───────────────────
-        val url = pendingUpdateUrl
-        if (url != null && downloadJob?.isActive != true) {
-            stopUpdateAvailableAnimation()
-            resetVersionCard()
-            showDownloadOverlay()
-            downloadJob = lifecycleScope.launch {
-                try {
-                    val apk = appUpdater.downloadApk(url) { progress ->
-                        lastDownloadProgress = progress
-                        updateDownloadUi(progress)
-                    }
-                    pendingUpdateUrl = null
-                    dismissDownloadOverlay()
-                    resetVersionCard()
-                    appUpdater.installApk(apk)
-                } catch (_: CancellationException) {
-                    dismissDownloadOverlay()
-                    resetVersionCard()
-                    AppUpdater.versionHashFromUrl(url)?.let { startUpdateAvailableAnimation(it) }
-                } catch (_: Exception) {
-                    dismissDownloadOverlay()
-                    versionCardView.text = "error"
-                    delay(2_000)
-                    resetVersionCard()
-                    AppUpdater.versionHashFromUrl(url)?.let { startUpdateAvailableAnimation(it) }
-                }
-            }
-            return
-        }
-
-        // ── Path B: manual check (card not flashing, not downloading) ─────────
+        downloadedApk?.let { apk -> appUpdater.installApk(apk); return }
+        if (downloadJob?.isActive == true) return
         if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
         versionCardView.text = "checking…"
-
         lifecycleScope.launch {
-            val apkUrl = appUpdater.checkForUpdate()
-            if (apkUrl == null) {
+            val url = appUpdater.checkForUpdate()
+            if (url == null) {
                 versionCardView.text = "up to date"
                 delay(2_000)
-                versionCardView.text = BuildConfig.GIT_COMMIT
+                resetVersionCard()
                 return@launch
             }
+            appUpdater.cleanupStaleFiles(url)
+            startDownload(url)
+        }
+    }
 
-            appUpdater.cleanupStaleFiles(apkUrl)
-            pendingUpdateUrl = apkUrl
-
-            showDownloadOverlay()
-            downloadJob = launch {
-                try {
-                    val apk = appUpdater.downloadApk(apkUrl) { progress ->
-                        lastDownloadProgress = progress
-                        updateDownloadUi(progress)
-                    }
-                    pendingUpdateUrl = null
-                    dismissDownloadOverlay()
-                    resetVersionCard()
-                    appUpdater.installApk(apk)
-                } catch (_: CancellationException) {
-                    dismissDownloadOverlay()
-                    resetVersionCard()
-                    AppUpdater.versionHashFromUrl(apkUrl)?.let { startUpdateAvailableAnimation(it) }
-                } catch (_: Exception) {
-                    dismissDownloadOverlay()
-                    versionCardView.text = "error"
-                    delay(2_000)
-                    resetVersionCard()
-                    AppUpdater.versionHashFromUrl(apkUrl)?.let { startUpdateAvailableAnimation(it) }
+    /**
+     * Downloads the APK at [url], showing progress on the version card.
+     * On success the card turns green and shows "update".
+     * On error the card shows "error" for 2 s then resets.
+     */
+    private fun startDownload(url: String) {
+        if (downloadJob?.isActive == true) return
+        downloadJob = lifecycleScope.launch {
+            try {
+                val apk = appUpdater.downloadApk(url) { p ->
+                    val sizeText = "${formatMb(p.bytesDownloaded)}/${formatMb(p.totalBytes)} MB"
+                    val pct = if (p.totalBytes > 0) (p.bytesDownloaded * 100 / p.totalBytes).toInt() else 0
+                    versionCardView.text = sizeText
+                    updateVersionCardProgress(pct)
                 }
+                downloadedApk = apk
+                setCardReady()
+            } catch (_: CancellationException) {
+                resetVersionCard()
+            } catch (_: Exception) {
+                versionCardView.text = "error"
+                delay(2_000)
+                resetVersionCard()
             }
         }
     }
 
-    private fun formatMb(bytes: Long): String =
-        "%.2f".format(bytes / 1_048_576.0)
-
-    private fun formatSpeed(bytesPerSecond: Long): String {
-        val mbps = bytesPerSecond / 1_048_576.0
-        return if (mbps >= 1.0) "%.1f MB/s".format(mbps)
-        else "%.0f KB/s".format(bytesPerSecond / 1_024.0)
-    }
-
-    private fun updateDownloadUi(p: DownloadProgress) {
-        val sizeText = "${formatMb(p.bytesDownloaded)}/${formatMb(p.totalBytes)} MB"
-        val pct = if (p.totalBytes > 0) (p.bytesDownloaded * 100 / p.totalBytes).toInt() else 0
-
-        if (isDownloadOverlayVisible) {
-            downloadProgressBar?.progress = pct
-            val speedText = if (p.bytesPerSecond > 0) " · ${formatSpeed(p.bytesPerSecond)}" else ""
-            downloadLabel?.text = "$sizeText$speedText"
-        } else {
-            // Show progress on the version card.
-            versionCardView.text = sizeText
-            updateVersionCardProgress(pct)
+    /** Sets the version card to the green "ready to install" state. */
+    private fun setCardReady() {
+        val d = resources.displayMetrics.density
+        versionCardView.text = "update"
+        versionCardView.background = GradientDrawable().apply {
+            setColor(Color.argb(220, 0, 140, 60))
+            cornerRadius = 16f * d
         }
     }
 
@@ -2723,119 +2626,42 @@ class MapActivity : ComponentActivity() {
             cornerRadius = r
         }
         val clip = ClipDrawable(accent, Gravity.START, ClipDrawable.HORIZONTAL)
-        val layers = LayerDrawable(arrayOf(base, clip))
-        versionCardView.background = layers
+        versionCardView.background = LayerDrawable(arrayOf(base, clip))
         clip.level = pct * 100   // ClipDrawable level is 0–10000
     }
 
     private fun resetVersionCard() {
-        stopUpdateAvailableAnimation()
         val d = resources.displayMetrics.density
         versionCardView.text = BuildConfig.GIT_COMMIT
         versionCardView.background = GradientDrawable().apply {
             setColor(Color.argb(160, 0, 0, 0))
             cornerRadius = 16f * d
         }
-        lastDownloadProgress = null
     }
 
-    /** Shows a semi-transparent overlay with a progress bar, size label, and cancel button. */
-    private fun showDownloadOverlay() {
-        // Remove any existing overlay first.
-        dismissDownloadOverlay()
+    private fun formatMb(bytes: Long): String = "%.1f".format(bytes / 1_048_576.0)
 
-        val d = resources.displayMetrics.density
-        isDownloadOverlayVisible = true
-
-        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max      = 100
-            progress = 0
-        }
-        downloadProgressBar = bar
-
-        val title = TextView(this).apply {
-            text = "Downloading…"
-            setTextColor(Color.WHITE)
-            textSize = 18f
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val cancelBtn = TextView(this).apply {
-            text = "✕"
-            setTextColor(Color.WHITE)
-            textSize = 20f
-            setPadding((8 * d).toInt(), 0, 0, 0)
-            setOnClickListener { downloadJob?.cancel() }
-        }
-
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(title)
-            addView(cancelBtn)
-        }
-
-        val sizeLabel = TextView(this).apply {
-            text = ""
-            setTextColor(Color.argb(200, 255, 255, 255))
-            textSize = 14f
-            setPadding(0, (6 * d).toInt(), 0, 0)
-        }
-        downloadLabel = sizeLabel
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.argb(230, 24, 24, 24))
-                cornerRadius = 16f * d
+    /** Starts a coroutine that checks for updates every 5 minutes while the screen is on. */
+    private fun startFrequentUpdatePolling() {
+        stopFrequentUpdatePolling()
+        frequentUpdateJob = lifecycleScope.launch {
+            while (isActive) {
+                if (downloadedApk == null && downloadJob?.isActive != true &&
+                    ConnectivityChecker.isStableOnline(this@MapActivity)) {
+                    val url = appUpdater.checkForUpdate()
+                    if (url != null) {
+                        appUpdater.cleanupStaleFiles(url)
+                        startDownload(url)
+                    }
+                }
+                delay(5 * 60 * 1_000L)
             }
-            setPadding((24 * d).toInt(), (20 * d).toInt(), (24 * d).toInt(), (20 * d).toInt())
-            addView(headerRow)
-            addView(bar, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = (12 * d).toInt() })
-            addView(sizeLabel)
-            // Consume taps on the card so they don't hide the overlay.
-            isClickable = true
         }
-
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.argb(160, 0, 0, 0))
-            isClickable = true
-            // Tap outside the card → hide overlay (download continues).
-            setOnClickListener { hideDownloadOverlayKeepDownloading() }
-            addView(container, FrameLayout.LayoutParams(
-                (280 * d).toInt(),
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER,
-            ))
-        }
-        downloadOverlay = overlay
-
-        (window.decorView as ViewGroup).addView(
-            overlay,
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-        )
     }
 
-    /** Hides the overlay but keeps the download running; progress moves to the version card. */
-    private fun hideDownloadOverlayKeepDownloading() {
-        dismissDownloadOverlay()
-        // Push current progress into the version card.
-        lastDownloadProgress?.let { updateDownloadUi(it) }
-    }
-
-    /** Removes the overlay views and resets overlay-related references. */
-    private fun dismissDownloadOverlay() {
-        downloadOverlay?.let { (window.decorView as? ViewGroup)?.removeView(it) }
-        downloadOverlay     = null
-        downloadProgressBar = null
-        downloadLabel       = null
-        isDownloadOverlayVisible = false
+    private fun stopFrequentUpdatePolling() {
+        frequentUpdateJob?.cancel()
+        frequentUpdateJob = null
     }
 
     /**
@@ -3566,6 +3392,7 @@ class MapActivity : ComponentActivity() {
             sm.registerListener(compassListener, s, SensorManager.SENSOR_DELAY_GAME)
         }
         checkUpdateIfDue()
+        if (viewModel.uiState.value.isFrequentUpdatesEnabled) startFrequentUpdatePolling()
     }
 
     override fun onPause() {
@@ -3576,7 +3403,7 @@ class MapActivity : ComponentActivity() {
         sensorManager?.unregisterListener(compassListener)
         sensorManager = null
         mapView.onPause()
-        stopUpdateAvailableAnimation()
+        stopFrequentUpdatePolling()
         super.onPause()
     }
 
@@ -3587,7 +3414,8 @@ class MapActivity : ComponentActivity() {
 
     override fun onDestroy() {
         animBag.cancelAll()
-        updateAnimJob?.cancel()
+        downloadJob?.cancel()
+        frequentUpdateJob?.cancel()
         benchmarkJob?.cancel()
         super.onDestroy()
         mapView.onDestroy()
