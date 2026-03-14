@@ -129,7 +129,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
                     gravity = Gravity.CENTER_VERTICAL
                     maxLines = 1
                 },
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
             )
         }
     }
@@ -198,7 +198,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
         alpha       = 0f
-        addView(debugRowInSettings, LinearLayout.LayoutParams(panelW, itemH))
+        addView(debugRowInSettings, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
     }
 
     // ── Debug submenu content ──────────────────────────────────────────────────
@@ -234,7 +234,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
         addView(
             debugToggleLabel,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
         )
     }
 
@@ -271,7 +271,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
         addView(
             frequentUpdatesLabel,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
         )
     }
 
@@ -279,9 +279,9 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
         alpha       = 0f
-        addView(debugToggleItem,       LinearLayout.LayoutParams(panelW, itemH))
-        addView(runBenchmarkItem,      LinearLayout.LayoutParams(panelW, itemH))
-        addView(frequentUpdatesItem,   LinearLayout.LayoutParams(panelW, itemH))
+        addView(debugToggleItem,       LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+        addView(runBenchmarkItem,      LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+        addView(frequentUpdatesItem,   LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
     }
 
     // ── Ghost header — Settings layer ──────────────────────────────────────────
@@ -353,20 +353,20 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
             topMargin = itemH
         })
 
-        addView(settingsContent, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+        addView(settingsContent, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             topMargin = itemH
         })
 
-        addView(debugContent, FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+        addView(debugContent, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             topMargin = itemH
         })
 
         // Ghost headers added BEFORE hamburgerBtn so the button renders on top.
-        addView(settingsGhostHeader, FrameLayout.LayoutParams(panelW, itemH).apply {
+        addView(settingsGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
             gravity = Gravity.TOP or Gravity.START
         })
 
-        addView(debugGhostHeader, FrameLayout.LayoutParams(panelW, itemH).apply {
+        addView(debugGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
             gravity = Gravity.TOP or Gravity.START
         })
 

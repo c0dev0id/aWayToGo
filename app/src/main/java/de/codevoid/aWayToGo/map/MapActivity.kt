@@ -212,7 +212,9 @@ class MapActivity : ComponentActivity() {
     private lateinit var menuDismissOverlay: View
     private var panelFullHeight = -1               // measured on first open; -1 = not yet measured
     private var settingsMenuHeight = -1            // measured on first enter; -1 = not yet measured
+    private var settingsMenuWidth = -1             // measured on first enter; -1 = not yet measured
     private var debugMenuHeight = -1               // measured on first enter; -1 = not yet measured
+    private var debugMenuWidth = -1                // measured on first enter; -1 = not yet measured
     private var menuAnimator: ValueAnimator? = null
     private var settingsMenuAnimator: ValueAnimator? = null
     private var debugMenuAnimator: ValueAnimator? = null
@@ -2244,43 +2246,59 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Returns the settings panel height in pixels (64dp header + settings items).
+     * Returns the settings panel (width, height) in pixels.
      *
-     * Measured on first call by forcing a layout pass on settingsContent.
-     * Cached thereafter.
+     * Width = max(280dp, widest item measured at UNSPECIFIED).
+     * Height = 64dp header + settings items.
+     * Cached after first measurement.
      */
-    private fun getOrMeasureSettingsHeight(): Int {
-        if (settingsMenuHeight > 0) return settingsMenuHeight
+    private fun getOrMeasureSettingsSize(): Pair<Int, Int> {
+        if (settingsMenuWidth > 0 && settingsMenuHeight > 0)
+            return Pair(settingsMenuWidth, settingsMenuHeight)
         val d      = resources.displayMetrics.density
         val itemH  = (64 * d).toInt()
-        val panelW = (280 * d).toInt()
-        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
-        val hSpec  = View.MeasureSpec.makeMeasureSpec(
-            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
-        )
-        menuPanelResult.settingsContent.measure(wSpec, hSpec)
-        settingsMenuHeight = itemH + menuPanelResult.settingsContent.measuredHeight
-        return settingsMenuHeight
+        val minW   = (280 * d).toInt()
+        val unspec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val content = menuPanelResult.settingsContent
+        var maxW = minW
+        for (i in 0 until content.childCount) {
+            content.getChildAt(i).measure(unspec, unspec)
+            maxW = maxOf(maxW, content.getChildAt(i).measuredWidth)
+        }
+        val wSpec = View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
+        content.measure(wSpec, hSpec)
+        settingsMenuWidth  = maxW
+        settingsMenuHeight = itemH + content.measuredHeight
+        return Pair(settingsMenuWidth, settingsMenuHeight)
     }
 
     /**
-     * Returns the debug panel height in pixels (64dp header + debug items).
+     * Returns the debug panel (width, height) in pixels.
      *
-     * Measured on first call by forcing a layout pass on debugContent.
-     * Cached thereafter.
+     * Width = max(280dp, widest item measured at UNSPECIFIED).
+     * Height = 64dp header + debug items.
+     * Cached after first measurement.
      */
-    private fun getOrMeasureDebugHeight(): Int {
-        if (debugMenuHeight > 0) return debugMenuHeight
+    private fun getOrMeasureDebugSize(): Pair<Int, Int> {
+        if (debugMenuWidth > 0 && debugMenuHeight > 0)
+            return Pair(debugMenuWidth, debugMenuHeight)
         val d      = resources.displayMetrics.density
         val itemH  = (64 * d).toInt()
-        val panelW = (280 * d).toInt()
-        val wSpec  = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
-        val hSpec  = View.MeasureSpec.makeMeasureSpec(
-            resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST,
-        )
-        menuPanelResult.debugContent.measure(wSpec, hSpec)
-        debugMenuHeight = itemH + menuPanelResult.debugContent.measuredHeight
-        return debugMenuHeight
+        val minW   = (280 * d).toInt()
+        val unspec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val content = menuPanelResult.debugContent
+        var maxW = minW
+        for (i in 0 until content.childCount) {
+            content.getChildAt(i).measure(unspec, unspec)
+            maxW = maxOf(maxW, content.getChildAt(i).measuredWidth)
+        }
+        val wSpec = View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
+        content.measure(wSpec, hSpec)
+        debugMenuWidth  = maxW
+        debugMenuHeight = itemH + content.measuredHeight
+        return Pair(debugMenuWidth, debugMenuHeight)
     }
 
     /**
@@ -2311,8 +2329,9 @@ class MapActivity : ComponentActivity() {
         debugContent.visibility = View.VISIBLE
         debugContent.alpha      = 0f
 
-        val targetH = getOrMeasureDebugHeight()
+        val (targetW, targetH) = getOrMeasureDebugSize()
         val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW  = lp.width
         val startH  = lp.height
 
         debugMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
@@ -2320,6 +2339,7 @@ class MapActivity : ComponentActivity() {
             interpolator = Anim.ENTER
             addUpdateListener { va ->
                 val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
                 lp.height = (startH + (targetH - startH) * t).toInt()
                 menuPanel.layoutParams     = lp
                 debugGhost.translationY    = ghostStartY * (1f - t)
@@ -2359,8 +2379,9 @@ class MapActivity : ComponentActivity() {
         settingsContent.alpha      = 0f
         settingsContent.visibility = View.VISIBLE
 
-        val targetH = getOrMeasureSettingsHeight()
+        val (targetW, targetH) = getOrMeasureSettingsSize()
         val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW  = lp.width
         val startH  = lp.height
 
         debugMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
@@ -2368,6 +2389,7 @@ class MapActivity : ComponentActivity() {
             interpolator = Anim.EXIT
             addUpdateListener { va ->
                 val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
                 lp.height = (startH + (targetH - startH) * t).toInt()
                 menuPanel.layoutParams     = lp
                 debugGhost.translationY    = ghostEndY * t
@@ -2421,8 +2443,9 @@ class MapActivity : ComponentActivity() {
         settingsContent.visibility = View.VISIBLE
         settingsContent.alpha      = 0f
 
-        val targetH   = getOrMeasureSettingsHeight()
+        val (targetW, targetH) = getOrMeasureSettingsSize()
         val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW    = lp.width
         val startH    = lp.height
 
         val barTargetRot    = floatArrayOf(-45f, 0f, +45f)
@@ -2440,6 +2463,7 @@ class MapActivity : ComponentActivity() {
             interpolator = Anim.ENTER
             addUpdateListener { va ->
                 val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
                 lp.height = (startH + (targetH - startH) * t).toInt()
                 menuPanel.layoutParams = lp
                 ghost.translationY = ghostStartY * (1f - t)
@@ -2485,7 +2509,9 @@ class MapActivity : ComponentActivity() {
         scroll.visibility = View.VISIBLE
 
         val targetH   = getOrMeasurePanelHeight()
+        val targetW   = (280 * d).toInt()
         val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW    = lp.width
         val startH    = lp.height
 
         val barTargetRot    = floatArrayOf(90f, 90f, 90f)
@@ -2503,6 +2529,7 @@ class MapActivity : ComponentActivity() {
             interpolator = Anim.EXIT
             addUpdateListener { va ->
                 val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
                 lp.height = (startH + (targetH - startH) * t).toInt()
                 menuPanel.layoutParams = lp
                 ghost.translationY     = ghostEndY * t
@@ -3486,8 +3513,10 @@ class MapActivity : ComponentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
-        // Invalidate the panel height cache — screen height (the AT_MOST bound) changed.
+        // Invalidate the panel size caches — screen dimensions changed.
         panelFullHeight = -1
+        settingsMenuHeight = -1; settingsMenuWidth = -1
+        debugMenuHeight = -1;    debugMenuWidth = -1
 
         // Re-apply camera padding with the new screen height, no animation so the
         // map does not sweep during the transition.
