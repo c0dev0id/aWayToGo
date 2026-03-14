@@ -13,6 +13,8 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.TrafficStats
+import android.net.Uri
+import android.provider.Settings
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
@@ -2595,6 +2597,21 @@ class MapActivity : ComponentActivity() {
      */
     private fun onVersionCardTapped() {
         downloadedApk?.let { apk ->
+            // On Android 8+, "Install unknown apps" must be enabled for this app
+            // in Settings before the package installer will accept the intent.
+            // If the permission is missing, open the settings page and let the
+            // user enable it; they can tap the card again once they return.
+            if (!packageManager.canRequestPackageInstalls()) {
+                versionCardView.text = "allow in settings"
+                versionCardView.isClickable = false
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName"),
+                    )
+                )
+                return
+            }
             versionCardView.text = "installing…"
             versionCardView.isClickable = false   // block re-taps until installer opens
             try {
