@@ -127,6 +127,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
                     setTextColor(Color.WHITE)
                     textSize = 20f
                     gravity = Gravity.CENTER_VERTICAL
+                    maxLines = 1
                 },
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
             )
@@ -206,6 +207,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         setTextColor(Color.WHITE)
         textSize = 20f
         gravity = Gravity.CENTER_VERTICAL
+        maxLines = 1
     }
 
     val debugToggleItem = LinearLayout(context).apply {
@@ -243,6 +245,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         setTextColor(Color.WHITE)
         textSize = 20f
         gravity = Gravity.CENTER_VERTICAL
+        maxLines = 1
     }
     val frequentUpdatesItem = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -296,6 +299,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
                 setTextColor(Color.WHITE)
                 textSize = 20f
                 gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+                maxLines = 1
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
@@ -322,6 +326,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
                 setTextColor(Color.WHITE)
                 textSize = 20f
                 gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+                maxLines = 1
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
