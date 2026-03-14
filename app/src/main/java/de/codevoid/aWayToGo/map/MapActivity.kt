@@ -2560,7 +2560,11 @@ class MapActivity : ComponentActivity() {
      * - Otherwise: checks GitHub and starts a download if a new version is found.
      */
     private fun onVersionCardTapped() {
-        downloadedApk?.let { apk -> appUpdater.installApk(apk); return }
+        downloadedApk?.let { apk ->
+            versionCardView.text = "installing…"
+            appUpdater.installApk(apk)
+            return
+        }
         if (downloadJob?.isActive == true) return
         if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
         versionCardView.text = "checking…"
@@ -2608,10 +2612,15 @@ class MapActivity : ComponentActivity() {
     private fun setCardReady() {
         val d = resources.displayMetrics.density
         versionCardView.text = "update"
-        versionCardView.background = GradientDrawable().apply {
+        val bg = GradientDrawable().apply {
             setColor(Color.argb(220, 0, 140, 60))
             cornerRadius = 16f * d
         }
+        versionCardView.background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            bg,
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.WHITE); cornerRadius = 16f * d },
+        )
     }
 
     private fun updateVersionCardProgress(pct: Int) {
