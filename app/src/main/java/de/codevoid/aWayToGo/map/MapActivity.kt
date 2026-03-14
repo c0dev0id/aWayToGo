@@ -2613,7 +2613,11 @@ class MapActivity : ComponentActivity() {
                 return
             }
             versionCardView.text = "installing…"
-            versionCardView.isClickable = false   // block re-taps until installer opens
+            versionCardView.isClickable = false
+            // As a HOME-category launcher with singleTask, our window has affinity
+            // priority and Android tends to keep it on top even after startActivity().
+            // Moving our task to the back first lets the installer task surface.
+            moveTaskToBack(true)
             try {
                 appUpdater.installApk(apk)
             } catch (_: Exception) {
