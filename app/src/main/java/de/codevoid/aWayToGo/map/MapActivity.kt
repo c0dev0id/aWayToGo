@@ -578,6 +578,10 @@ class MapActivity : ComponentActivity() {
         TileCache.init(this)
         remoteControl = RemoteControlManager(this)
 
+        // Restore debug settings persisted from the previous session.
+        if (prefs.getBoolean("debug_mode", false))       viewModel.toggleDebugMode()
+        if (prefs.getBoolean("frequent_updates", false)) viewModel.toggleFrequentUpdates()
+
         val styleUrl = styleUrl(isDark = false)
 
         // Root layout — TwoFingerLockLayout disables map scrolling while a
@@ -1775,12 +1779,14 @@ class MapActivity : ComponentActivity() {
             osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
             menuPanelResult.debugToggleLabel.text =
                 "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
+            if (debugModeChanged) prefs.edit().putBoolean("debug_mode", new.isDebugMode).apply()
         }
 
         // ── Frequent Updates polling ────────────────────────────────────────────
         if (frequentUpdatesChanged || old == null) {
             menuPanelResult.frequentUpdatesLabel.text =
                 "Frequent Updates: ${if (new.isFrequentUpdatesEnabled) "ON" else "OFF"}"
+            if (frequentUpdatesChanged) prefs.edit().putBoolean("frequent_updates", new.isFrequentUpdatesEnabled).apply()
             if (new.isFrequentUpdatesEnabled) startFrequentUpdatePolling()
             else stopFrequentUpdatePolling()
         }
