@@ -2933,8 +2933,8 @@ class MapActivity : ComponentActivity() {
      * decays to a straight line).
      *
      * Visual: yellow/black diagonal-stripe pattern (construction tape), dark outline.
-     * The distance label is placed 25 % along the line from the puck so it is
-     * always on-screen. A small pin marks the anchor point.
+     * The distance label is centred on the line and rotated to follow it.
+     * A small pin marks the anchor point.
      *
      * Sources and layers are created on the first call; subsequent calls only push
      * new GeoJSON data.
@@ -2973,21 +2973,18 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // ── Auxiliary features (label + anchor pin) ───────────────────────────
-        // Label at 25 % from the puck: always near the puck, always on-screen.
-        val labelLat = from.latitude  + 0.25 * dy
-        val labelLon = from.longitude + 0.25 * dx
-        val labelFeature = Feature.fromGeometry(Point.fromLngLat(labelLon, labelLat)).also {
-            it.addStringProperty("label", label)
-        }
+        // ── Auxiliary features (anchor pin) ───────────────────────────────────
         val pinFeature = Feature.fromGeometry(Point.fromLngLat(to.longitude, to.latitude)).also {
             it.addBooleanProperty("is_pin", true)
         }
 
-        val lineCollection = FeatureCollection.fromFeatures(
-            listOf(Feature.fromGeometry(LineString.fromLngLats(linePoints)))
-        )
-        val auxCollection = FeatureCollection.fromFeatures(listOf(labelFeature, pinFeature))
+        // Label is embedded on the line feature so symbol-placement:line-center
+        // renders it centered along the line, following its curvature.
+        val lineFeature = Feature.fromGeometry(LineString.fromLngLats(linePoints)).also {
+            it.addStringProperty("label", label)
+        }
+        val lineCollection = FeatureCollection.fromFeatures(listOf(lineFeature))
+        val auxCollection  = FeatureCollection.fromFeatures(listOf(pinFeature))
 
         // Update existing sources (fast path — layers stay in place).
         val existingLine = s.getSourceAs<GeoJsonSource>(SOURCE_DRAG_LINE)
@@ -3087,20 +3084,22 @@ class MapActivity : ComponentActivity() {
             }
         )
 
-        // Distance label — point-based at 25 % from puck, so it stays on-screen
-        // even when the anchor is far away or the line extends off the viewport.
+        // Distance label — placed at the geometric centre of the line and rotated
+        // to follow it, so it reads as part of the tape rather than floating above.
         addDragLayer(
-            SymbolLayer(LAYER_DRAG_LINE_LABEL, SOURCE_DRAG_LINE_AUX).apply {
+            SymbolLayer(LAYER_DRAG_LINE_LABEL, SOURCE_DRAG_LINE).apply {
                 setFilter(Expression.has("label"))
                 setProperties(
+                    PropertyFactory.symbolPlacement(Property.SYMBOL_PLACEMENT_LINE_CENTER),
                     PropertyFactory.textField(Expression.get("label")),
-                    PropertyFactory.textSize(18f),
+                    PropertyFactory.textSize(16f),
                     PropertyFactory.textColor("#FFCC00"),
                     PropertyFactory.textHaloColor("#1A1A1A"),
-                    PropertyFactory.textHaloWidth(2.5f),
-                    PropertyFactory.textOffset(arrayOf(0f, -1.5f)),
+                    PropertyFactory.textHaloWidth(3f),
                     PropertyFactory.textAllowOverlap(true),
                     PropertyFactory.textIgnorePlacement(true),
+                    PropertyFactory.textKeepUpright(true),
+                    PropertyFactory.textMaxAngle(25f),
                 )
             }
         )
