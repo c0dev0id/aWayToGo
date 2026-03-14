@@ -794,14 +794,8 @@ class MapActivity : ComponentActivity() {
             isFocusable = true
             setOnClickListener { onVersionCardTapped() }
         }
-        root.addView(
-            versionCardView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.END,
-            ).apply { setMargins(0, 0, btnMargin, btnMargin) },
-        )
+        // versionCardView is added to root AFTER the dismiss overlays (see below)
+        // so it sits above them in z-order and always receives taps directly.
 
         // Search overlay — bottom-anchored panel that fades in/out over the map.
         // Added before the menu dismiss overlay so the menu still sits on top.
@@ -929,6 +923,17 @@ class MapActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
+        )
+
+        // Version card added here (above dismiss overlays in z-order) so it always
+        // receives taps directly, even when the menu dismiss overlay is visible.
+        root.addView(
+            versionCardView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END,
+            ).apply { setMargins(0, 0, btnMargin, btnMargin) },
         )
 
         // Popup menu panel — the hamburger button IS this panel's top-left corner.
