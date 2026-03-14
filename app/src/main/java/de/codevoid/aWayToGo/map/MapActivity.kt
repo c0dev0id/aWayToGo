@@ -1948,11 +1948,10 @@ class MapActivity : ComponentActivity() {
             // doesn't snap.
             anchorSlideFrom    = slideAnchor() ?: prevAnchor
             anchorSlideStartNs = System.nanoTime()
-        } else {
-            // First placement — play the intro wave animation.
-            dragLineAnimator.reset()
-            anchorSetTimeNs = System.nanoTime()
         }
+        // Always restart the wave so it animates during the slide and settles after.
+        dragLineAnimator.reset()
+        anchorSetTimeNs = System.nanoTime()
         dragLineAnchor = target
         m.locationComponent.lastKnownLocation?.let { loc ->
             setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
