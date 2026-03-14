@@ -2594,7 +2594,14 @@ class MapActivity : ComponentActivity() {
     private fun onVersionCardTapped() {
         downloadedApk?.let { apk ->
             versionCardView.text = "installing…"
-            appUpdater.installApk(apk)
+            versionCardView.isClickable = false   // block re-taps until installer opens
+            try {
+                appUpdater.installApk(apk)
+            } catch (_: Exception) {
+                // startActivity failed (e.g. no handler for the intent) — restore the card.
+                versionCardView.isClickable = true
+                versionCardView.text = "error"
+            }
             return
         }
         if (downloadJob?.isActive == true) return
@@ -2643,6 +2650,7 @@ class MapActivity : ComponentActivity() {
     /** Sets the version card to the green "ready to install" state. */
     private fun setCardReady() {
         val d = resources.displayMetrics.density
+        versionCardView.isClickable = true   // re-enable in case we're returning from installer
         versionCardView.text = "update"
         val bg = GradientDrawable().apply {
             setColor(Color.argb(220, 0, 140, 60))
