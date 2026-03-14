@@ -10,8 +10,10 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.MediaStore
 import android.net.TrafficStats
 import android.net.Uri
 import android.provider.Settings
@@ -3333,37 +3335,75 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun formatBenchmarkResults(results: List<BenchmarkResult>): String {
+        val dm = resources.displayMetrics
         val sb = StringBuilder()
+
         sb.appendLine("aWayToGo Benchmark Results")
-        sb.appendLine("Build: ${BuildConfig.GIT_COMMIT}  (${BuildConfig.BUILD_TIME})")
-        sb.appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})")
+        sb.appendLine("=".repeat(44))
         sb.appendLine()
+
+        sb.appendLine("Build")
+        sb.appendLine("  commit   ${BuildConfig.GIT_COMMIT}")
+        sb.appendLine("  built    ${BuildConfig.BUILD_TIME}")
+        sb.appendLine()
+
+        sb.appendLine("Device")
+        sb.appendLine("  ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+        sb.appendLine("  Android ${android.os.Build.VERSION.RELEASE}  (API ${android.os.Build.VERSION.SDK_INT})")
+        sb.appendLine("  screen   ${dm.widthPixels}×${dm.heightPixels} px  ${dm.densityDpi} dpi  density ${dm.density}")
+        sb.appendLine()
+
+        sb.appendLine("MapLibre configuration")
+        sb.appendLine("  sdk              android-sdk-opengl 13.0.0")
+        sb.appendLine("  tile cache       200 MB disk  (maplibre_tiles/)")
+        sb.appendLine("  max req/host     2  (OkHttp Dispatcher)")
+        sb.appendLine("  tile gate        network interceptor — blocks new fetches during camera motion")
+        sb.appendLine("  gate formats     .pbf  .jpg  .png  .webp")
+        sb.appendLine("  gate timeout     2000 ms safety fallback")
+        sb.appendLine()
+
+        sb.appendLine("Benchmark setup")
+        sb.appendLine("  location         Shinjuku, Tokyo  (35.6896 N  139.7006 E)")
+        sb.appendLine("  zoom levels      8  10  14  16")
+        sb.appendLine("  preload          5 checkpoints × onDidBecomeIdle  (≤ 20 s each)")
+        sb.appendLine("  timed run        5 s per level")
+        sb.appendLine("  camera sequence  spin → NE transit → SW return → orbit → SE drift")
+        sb.appendLine("  tilt range       45°–60°  bearing: continuous rotation + reversals")
+        sb.appendLine()
+
+        sb.appendLine("Results")
+        sb.appendLine("-".repeat(44))
         for (r in results) {
             sb.appendLine("Zoom ${r.zoom}")
             sb.appendLine("  GL:   avg ${"%.0f".format(r.glStats.avg)}  min ${"%.0f".format(r.glStats.min)}  max ${"%.0f".format(r.glStats.max)} fps")
             sb.appendLine("  Main: avg ${"%.0f".format(r.mainAvg)}  min ${"%.0f".format(r.mainMin)}  max ${"%.0f".format(r.mainMax)} fps")
             sb.appendLine("  dt:   avg ${r.dtAvgMs}  min ${r.dtMinMs}  max ${r.dtMaxMs} ms")
         }
-        return sb.toString()
-    }
 
-    private fun shareBenchmarkResults(text: String) {
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "aWayToGo Benchmark Results")
-            putExtra(Intent.EXTRA_TEXT, text)
-        }
-        startActivity(Intent.createChooser(intent, "Share benchmark results"))
+        return sb.toString()
     }
 
     private fun saveBenchmarkResults(text: String) {
         val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
             .format(java.util.Date())
-        val file = java.io.File(getExternalFilesDir(null), "benchmark_$ts.txt")
-        file.writeText(text)
-        android.widget.Toast.makeText(
-            this, "Saved to ${file.name}", android.widget.Toast.LENGTH_LONG
-        ).show()
+        val filename = "bench_$ts.txt"
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, filename)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(
+            MediaStore.Downloads.getContentUri("external"), values
+        )
+        if (uri == null) {
+            android.widget.Toast.makeText(this, "Save failed", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        contentResolver.update(uri, values, null, null)
+        android.widget.Toast.makeText(this, "Saved: $filename", android.widget.Toast.LENGTH_LONG).show()
     }
 
     private fun showBenchmarkResultsOverlay(results: List<BenchmarkResult>) {
@@ -3418,15 +3458,8 @@ class MapActivity : ComponentActivity() {
 
         val resultText = formatBenchmarkResults(results)
 
-        val shareBtn = TextView(this).apply {
-            text = "Share"
-            setTextColor(Color.argb(220, 180, 180, 255))
-            textSize = 15f
-            gravity = Gravity.CENTER
-        }
-
         val saveBtn = TextView(this).apply {
-            text = "Save"
+            text = "Save to Downloads"
             setTextColor(Color.argb(220, 180, 180, 255))
             textSize = 15f
             gravity = Gravity.CENTER
@@ -3443,7 +3476,6 @@ class MapActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            addView(shareBtn, lp)
             addView(saveBtn, lp)
             addView(closeBtn, lp)
         }
@@ -3477,7 +3509,6 @@ class MapActivity : ComponentActivity() {
             ))
         }
 
-        shareBtn.setOnClickListener { shareBenchmarkResults(resultText) }
         saveBtn.setOnClickListener { saveBenchmarkResults(resultText) }
         closeBtn.setOnClickListener {
             (window.decorView as? ViewGroup)?.removeView(overlay)
