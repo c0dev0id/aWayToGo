@@ -727,15 +727,7 @@ class MapActivity : ComponentActivity() {
                 .apply { setMargins(btnMargin, 0, 0, btnMargin) },
         )
 
-        // Crosshair — gradient arms fading to transparent + circular reticle at centre.
-        // Only visible in panning mode.
         crosshairView = CrosshairView(this).apply { visibility = View.GONE }
-        root.addView(
-            crosshairView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
-            ),
-        )
 
         // ── Mode overlays ─────────────────────────────────────────────────────
         // Only one set is visible at a time; renderUiState() manages visibility.
@@ -913,9 +905,26 @@ class MapActivity : ComponentActivity() {
             result.navigateRow.setOnClickListener        { closeMapLockMenu()         } // stub
             result.quickSearchRow.setOnClickListener     { closeMapLockMenu()         } // stub
         }
+        val ringRadiusPx = ringDiameterPx / 2
         root.addView(
             mapLockPanel,
-            FrameLayout.LayoutParams(ringDiameterPx, ringDiameterPx, Gravity.CENTER),
+            FrameLayout.LayoutParams(ringDiameterPx, ringDiameterPx, Gravity.TOP or Gravity.START)
+                .apply {
+                    setMargins(
+                        resources.displayMetrics.widthPixels  / 2 - ringRadiusPx,
+                        resources.displayMetrics.heightPixels / 2 - ringRadiusPx,
+                        0, 0,
+                    )
+                },
+        )
+
+        // CrosshairView above the lock panel so ring/icon remain visible through the hole.
+        // No click listener — touch events fall through to the dismiss overlay below.
+        root.addView(
+            crosshairView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
         )
 
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
@@ -1885,7 +1894,7 @@ class MapActivity : ComponentActivity() {
 
         val d      = resources.displayMetrics.density
         val panelW = (280 * d).toInt()
-        val panelH = 4 * (64 * d).toInt()  // 4 items × 64 dp each
+        val panelH = (80 * d).toInt() + 4 * (64 * d).toInt()  // ring zone + 4 items × 64 dp
         val lp     = mapLockPanel.layoutParams as FrameLayout.LayoutParams
         val startW = lp.width
         val startH = lp.height
@@ -3653,6 +3662,17 @@ class MapActivity : ComponentActivity() {
         panelFullHeight = -1
         settingsMenuHeight = -1; settingsMenuWidth = -1
         debugMenuHeight = -1;    debugMenuWidth = -1
+
+        // Recalculate map lock panel margins so it stays centred after rotation.
+        run {
+            val d = resources.displayMetrics.density
+            val ringDiamPx   = (80 * d).toInt()
+            val ringRadiusPx = ringDiamPx / 2
+            val lp = mapLockPanel.layoutParams as FrameLayout.LayoutParams
+            lp.leftMargin = resources.displayMetrics.widthPixels  / 2 - ringRadiusPx
+            lp.topMargin  = resources.displayMetrics.heightPixels / 2 - ringRadiusPx
+            mapLockPanel.layoutParams = lp
+        }
 
         // Re-apply camera padding with the new screen height, no animation so the
         // map does not sweep during the transition.

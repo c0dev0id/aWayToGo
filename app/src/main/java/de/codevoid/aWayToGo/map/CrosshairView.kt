@@ -27,7 +27,7 @@ class CrosshairView(context: Context) : View(context) {
     private companion object {
         const val CENTER_SIZE_DP     = 50f
         const val LOCK_RING_RADIUS_DP = 40f  // slightly outside the 25 dp crosshair radius
-        const val LOCK_RING_STROKE_DP =  3f
+        const val LOCK_RING_STROKE_DP =  5f
     }
 
     private val density      = context.resources.displayMetrics.density
@@ -42,7 +42,7 @@ class CrosshairView(context: Context) : View(context) {
 
     private val lockRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style     = Paint.Style.STROKE
-        color     = Color.WHITE
+        color     = Color.argb(220, 20, 20, 20)
         strokeCap = Paint.Cap.ROUND
     }
 

@@ -2,7 +2,11 @@ package de.codevoid.aWayToGo.map.ui
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
@@ -31,6 +35,30 @@ data class MapLockMenuPanelResult(
     val quickSearchRow: View,
 )
 
+private class MapLockMenuFrame(context: Context) : FrameLayout(context) {
+    private val d = context.resources.displayMetrics.density
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 20, 20, 20)
+    }
+    private val holeRadiusPx = 40 * d   // LOCK_RING_RADIUS_DP — same as ring
+
+    init { setWillNotDraw(false) }
+
+    override fun onDraw(canvas: Canvas) {
+        val cornerRadius = 32 * d
+        val full = Path().also { p ->
+            p.addRoundRect(RectF(0f, 0f, width.toFloat(), height.toFloat()),
+                cornerRadius, cornerRadius, Path.Direction.CW)
+        }
+        val hole = Path().also { p ->
+            // Circle centred at (holeRadiusPx, holeRadiusPx) = top-left corner of ring area
+            p.addCircle(holeRadiusPx, holeRadiusPx, holeRadiusPx, Path.Direction.CW)
+        }
+        full.op(hole, Path.Op.DIFFERENCE)
+        canvas.drawPath(full, bgPaint)
+    }
+}
+
 /**
  * Builds the map-lock popup menu: a dark rounded panel with four action rows,
  * using the same visual style as the main hamburger menu.
@@ -47,7 +75,6 @@ data class MapLockMenuPanelResult(
  */
 fun buildMapLockMenuPanel(context: Context): MapLockMenuPanelResult {
     val d      = context.resources.displayMetrics.density
-    val radius = 32 * d
     val panelW = (280 * d).toInt()
     val itemH  = (64 * d).toInt()
     val iconSz = (28 * d).toInt()
@@ -102,19 +129,15 @@ fun buildMapLockMenuPanel(context: Context): MapLockMenuPanelResult {
         addView(quickSearchRow,     LinearLayout.LayoutParams(panelW, itemH))
     }
 
-    val root = FrameLayout(context).apply {
-        background = GradientDrawable().apply {
-            shape        = GradientDrawable.RECTANGLE
-            cornerRadius = radius
-            setColor(Color.argb(220, 20, 20, 20))
-        }
-        clipToOutline = true
+    val root = MapLockMenuFrame(context).apply {
         // Start fully transparent; runOpenMapLockMenuAnimation fades + scales it in.
         alpha      = 0f
         visibility = View.GONE
         addView(
             contentList,
-            FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT),
+            FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = (80 * d).toInt()
+            },
         )
     }
 
