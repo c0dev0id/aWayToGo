@@ -54,6 +54,8 @@ class MapViewModel : ViewModel() {
                 isInDebugMenu      = false,
                 isInOfflineMapsMenu = false,
                 isInTileSelectMode = false,
+                isInMapStyleMenu   = false,
+                isInMapStyleMode   = false,
                 isSearchOpen       = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
                 isInPanningMode    = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
@@ -112,7 +114,7 @@ class MapViewModel : ViewModel() {
 
     /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false, isInTileSelectMode = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false, isInTileSelectMode = false, isInMapStyleMenu = false, isInMapStyleMode = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -218,6 +220,26 @@ class MapViewModel : ViewModel() {
     /** Exit tile-selection mode. */
     fun exitTileSelectMode() {
         _uiState.update { it.copy(isInTileSelectMode = false) }
+    }
+
+    /** Enter the Map Style submenu layer (menu must already be open). */
+    fun enterMapStyleMenu() {
+        _uiState.update { it.copy(isInMapStyleMenu = true) }
+    }
+
+    /** Return from the Map Style submenu to the main menu layer. */
+    fun exitMapStyleMenu() {
+        _uiState.update { it.copy(isInMapStyleMenu = false, isInMapStyleMode = false) }
+    }
+
+    /** Enter map style mode: panel expands, chrome slides off screen. */
+    fun enterMapStyleMode() {
+        _uiState.update { it.copy(isInMapStyleMode = true) }
+    }
+
+    /** Exit map style mode: panel collapses back to submenu size, chrome returns. */
+    fun exitMapStyleMode() {
+        _uiState.update { it.copy(isInMapStyleMode = false) }
     }
 
     /** Enter the Offline Maps submenu layer (menu must already be open).

@@ -22,6 +22,8 @@ package de.codevoid.aWayToGo.map
  * | [isFuelStationsEnabled]     | Fuel station POI symbols visible on the map.               |
  * | [isInOfflineMapsMenu]       | Offline Maps submenu layer is open.                         |
  * | [isOfflineMode]             | All tile requests served from cache only; no network.        |
+ * | [isInMapStyleMenu]          | Map Style submenu layer is open (preset list visible).      |
+ * | [isInMapStyleMode]          | Map style mode active: panel expanded, chrome off screen.   |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -41,4 +43,6 @@ data class MapUiState(
     val isInOfflineMapsMenu: Boolean = false,
     val isInTileSelectMode: Boolean = false,
     val isOfflineMode: Boolean = false,
+    val isInMapStyleMenu: Boolean = false,
+    val isInMapStyleMode: Boolean = false,
 )

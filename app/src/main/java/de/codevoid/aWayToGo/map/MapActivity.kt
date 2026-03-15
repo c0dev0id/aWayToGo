@@ -266,6 +266,10 @@ class MapActivity : ComponentActivity() {
     private var offlineMapsMenuAnimator: ValueAnimator? = null
     private var offlineMapsMenuWidth  = -1
     private var offlineMapsMenuHeight = -1
+    private var mapStyleMenuAnimator: ValueAnimator? = null
+    private var mapStyleModeAnimator: ValueAnimator? = null
+    private var mapStyleMenuWidth  = -1
+    private var mapStyleMenuHeight = -1
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
@@ -1096,6 +1100,8 @@ class MapActivity : ComponentActivity() {
                     s.isInDebugMenu       -> viewModel.exitDebugMenu()
                     s.isInSettingsMenu    -> viewModel.exitSettingsMenu()
                     s.isInOfflineMapsMenu -> viewModel.exitOfflineMapsMenu()
+                    s.isInMapStyleMode    -> viewModel.exitMapStyleMode()
+                    s.isInMapStyleMenu    -> viewModel.exitMapStyleMenu()
                     else                  -> toggleMenu()
                 }
             },
@@ -1119,6 +1125,12 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(4).setOnClickListener {
                 lifecycleScope.launch(Dispatchers.IO) { TileCache.clearCache() }
             }
+            // Map Style row → opens the map style submenu.
+            result.mapStyleRowInList.setOnClickListener { viewModel.enterMapStyleMenu() }
+            // Road preset → enters map style mode.
+            result.mapStyleContent.getChildAt(0).setOnClickListener { viewModel.enterMapStyleMode() }
+            // Offroad preset → enters map style mode.
+            result.mapStyleContent.getChildAt(1).setOnClickListener { viewModel.enterMapStyleMode() }
             // Offline Maps row → opens the offline maps submenu and activates tile-select mode.
             result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
             // Apply row inside offline maps submenu → syncs cache to selection.
@@ -1916,6 +1928,8 @@ class MapActivity : ComponentActivity() {
         val debugMenuChanged     = old?.isInDebugMenu != new.isInDebugMenu
         val offlineMapsMenuChanged    = old?.isInOfflineMapsMenu != new.isInOfflineMapsMenu
         val tileSelectModeChanged     = old?.isInTileSelectMode != new.isInTileSelectMode
+        val mapStyleMenuChanged       = old?.isInMapStyleMenu != new.isInMapStyleMenu
+        val mapStyleModeChanged       = old?.isInMapStyleMode != new.isInMapStyleMode
         val debugModeChanged          = old?.isDebugMode != new.isDebugMode
         val frequentUpdatesChanged    = old?.isFrequentUpdatesEnabled != new.isFrequentUpdatesEnabled
         val offlineModeChanged        = old?.isOfflineMode != new.isOfflineMode
@@ -2030,6 +2044,29 @@ class MapActivity : ComponentActivity() {
                     menuPanelResult.offlineMapsRowIcon.alpha          = 1f
                     hamburgerBars.forEach { it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
                 }
+                if (old.isInMapStyleMenu) {
+                    mapStyleMenuAnimator?.cancel()
+                    mapStyleModeAnimator?.cancel()
+                    menuPanelResult.mapStyleGhostHeader.visibility = View.GONE
+                    menuPanelResult.mapStyleGhostHeader.alpha      = 0f
+                    menuPanelResult.mapStyleContent.visibility     = View.GONE
+                    menuPanelResult.mapStyleContent.alpha          = 0f
+                    menuPanelResult.mainMenuScroll.visibility      = View.VISIBLE
+                    menuPanelResult.mainMenuScroll.alpha           = 1f
+                    menuPanelResult.mapStyleRowIcon.alpha          = 1f
+                    hamburgerBars.forEach { it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
+                    if (old.isInMapStyleMode) {
+                        // Instantly restore chrome that was slid off-screen.
+                        myLocationButton.visibility   = View.VISIBLE
+                        myLocationButton.translationX = 0f
+                        exploreBottomBar.visibility   = View.VISIBLE
+                        exploreBottomBar.translationY = 0f
+                        topRightContainer.visibility  = View.VISIBLE
+                        topRightContainer.translationX = 0f
+                        versionCardView.visibility    = View.VISIBLE
+                        versionCardView.translationX  = 0f
+                    }
+                }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
                 runCloseMenuAnimation(instant = modeChanged)
@@ -2058,6 +2095,18 @@ class MapActivity : ComponentActivity() {
             } else {
                 runExitOfflineMapsAnimation()
             }
+        }
+
+        // ── Map Style submenu transition ───────────────────────────────────────
+        if (old != null && mapStyleMenuChanged && new.isMenuOpen && !new.isInMapStyleMode) {
+            if (new.isInMapStyleMenu) runEnterMapStyleMenuAnimation()
+            else runExitMapStyleMenuAnimation()
+        }
+
+        // ── Map Style mode transition ──────────────────────────────────────────
+        if (old != null && mapStyleModeChanged && new.isMenuOpen) {
+            if (new.isInMapStyleMode) runEnterMapStyleMode()
+            else runExitMapStyleMode()
         }
 
         // ── Tile select mode transition ────────────────────────────────────────
@@ -2780,7 +2829,7 @@ class MapActivity : ComponentActivity() {
         val settingsContent = menuPanelResult.settingsContent
         val rowIcon         = menuPanelResult.settingsRowIcon
 
-        val ghostStartY = (6 * itemH).toFloat()
+        val ghostStartY = (7 * itemH).toFloat()
         ghost.translationY = ghostStartY
         ghost.alpha        = 0f
         ghost.visibility   = View.VISIBLE
@@ -2849,7 +2898,7 @@ class MapActivity : ComponentActivity() {
         val settingsContent = menuPanelResult.settingsContent
         val rowIcon         = menuPanelResult.settingsRowIcon
 
-        val ghostEndY = (6 * itemH).toFloat()
+        val ghostEndY = (7 * itemH).toFloat()
         scroll.alpha      = 0f
         scroll.visibility = View.VISIBLE
 
@@ -2940,7 +2989,7 @@ class MapActivity : ComponentActivity() {
         val offlineContent  = menuPanelResult.offlineMapsContent
         val rowIcon         = menuPanelResult.offlineMapsRowIcon
 
-        val ghostStartY = (5 * itemH).toFloat()
+        val ghostStartY = (6 * itemH).toFloat()
         ghost.translationY = ghostStartY
         ghost.alpha        = 0f
         ghost.visibility   = View.VISIBLE
@@ -3002,7 +3051,7 @@ class MapActivity : ComponentActivity() {
         val offlineContent  = menuPanelResult.offlineMapsContent
         val rowIcon         = menuPanelResult.offlineMapsRowIcon
 
-        val ghostEndY = (5 * itemH).toFloat()
+        val ghostEndY = (6 * itemH).toFloat()
         scroll.alpha      = 0f
         scroll.visibility = View.VISIBLE
 
@@ -3051,6 +3100,259 @@ class MapActivity : ComponentActivity() {
                     rowIcon.alpha              = 1f
                 }
             })
+            start()
+        })
+    }
+
+    // ── Map Style submenu + mode ──────────────────────────────────────────────
+
+    private fun getOrMeasureMapStyleSize(): Pair<Int, Int> {
+        if (mapStyleMenuWidth > 0 && mapStyleMenuHeight > 0)
+            return Pair(mapStyleMenuWidth, mapStyleMenuHeight)
+        val d      = resources.displayMetrics.density
+        val itemH  = (64 * d).toInt()
+        val minW   = (420 * d).toInt()
+        val unspec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val content = menuPanelResult.mapStyleContent
+        var maxW = minW
+        for (i in 0 until content.childCount) {
+            content.getChildAt(i).measure(unspec, unspec)
+            maxW = maxOf(maxW, content.getChildAt(i).measuredWidth)
+        }
+        val wSpec = View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
+        content.measure(wSpec, hSpec)
+        mapStyleMenuWidth  = maxW
+        mapStyleMenuHeight = itemH + content.measuredHeight
+        return Pair(mapStyleMenuWidth, mapStyleMenuHeight)
+    }
+
+    private fun runEnterMapStyleMenuAnimation() {
+        mapStyleMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost       = menuPanelResult.mapStyleGhostHeader
+        val scroll      = menuPanelResult.mainMenuScroll
+        val content     = menuPanelResult.mapStyleContent
+        val rowIcon     = menuPanelResult.mapStyleRowIcon
+
+        // Map Style is at list index 4 (0-based); absolute Y = (4+1)*itemH
+        val ghostStartY = (5 * itemH).toFloat()
+        ghost.translationY = ghostStartY
+        ghost.alpha        = 0f
+        ghost.visibility   = View.VISIBLE
+
+        content.visibility = View.VISIBLE
+        content.alpha      = 0f
+
+        val (targetW, targetH) = getOrMeasureMapStyleSize()
+        val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width
+        val startH = lp.height
+
+        val barTargetRot    = floatArrayOf(-45f, 0f, +45f)
+        val barTargetScale  = floatArrayOf(0.5f, 1.0f, 0.5f)
+        val barTargetTransX = floatArrayOf(-1.5f * d, +2f * d, -1.5f * d)
+        val barTargetTransY = floatArrayOf(+1.5f * d,  0f,     -1.5f * d)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
+        val iconStartAlpha  = rowIcon.alpha
+
+        mapStyleMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY  = ghostStartY * (1f - t)
+                ghost.alpha         = t
+                scroll.alpha        = 1f - t
+                content.alpha       = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                rowIcon.alpha       = iconStartAlpha * (1f - t)
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    scroll.visibility = View.GONE
+                }
+            })
+            start()
+        })
+    }
+
+    private fun runExitMapStyleMenuAnimation() {
+        mapStyleMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost   = menuPanelResult.mapStyleGhostHeader
+        val scroll  = menuPanelResult.mainMenuScroll
+        val content = menuPanelResult.mapStyleContent
+        val rowIcon = menuPanelResult.mapStyleRowIcon
+
+        val ghostEndY = (5 * itemH).toFloat()
+        scroll.alpha      = 0f
+        scroll.visibility = View.VISIBLE
+
+        val targetH = getOrMeasurePanelHeight()
+        val targetW = (280 * d).toInt()
+        val lp      = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW  = lp.width
+        val startH  = lp.height
+
+        val barTargetRot    = floatArrayOf(90f, 90f, 90f)
+        val barTargetScale  = floatArrayOf(1.0f, 1.0f, 1.0f)
+        val barTargetTransX = floatArrayOf(0f, 0f, 0f)
+        val barTargetTransY = floatArrayOf(0f, 0f, 0f)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
+        val iconStartAlpha  = rowIcon.alpha
+
+        mapStyleMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY = ghostEndY * t
+                ghost.alpha        = 1f - t
+                scroll.alpha       = t
+                content.alpha      = (1f - t / 0.7f).coerceIn(0f, 1f)
+                rowIcon.alpha      = iconStartAlpha + (1f - iconStartAlpha) * t
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    ghost.visibility = View.GONE
+                    ghost.alpha      = 0f
+                    content.visibility = View.GONE
+                    content.alpha      = 0f
+                    rowIcon.alpha      = 1f
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Expands the menu panel to 50% screen width × full screen height (minus margins),
+     * and slides all non-menu Explore chrome off screen.
+     *
+     * Called when [MapUiState.isInMapStyleMode] transitions to true.
+     */
+    private fun runEnterMapStyleMode() {
+        mapStyleModeAnimator?.cancel()
+        val d         = resources.displayMetrics.density
+        val btnMargin = (16 * d).toInt()
+        val screenW   = resources.displayMetrics.widthPixels
+        val screenH   = resources.displayMetrics.heightPixels
+        val targetW   = screenW / 2
+        val targetH   = screenH - 2 * btnMargin
+
+        val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width
+        val startH = lp.height
+
+        val w    = screenW.toFloat()
+        val h    = screenH.toFloat()
+        val dur  = 350L
+        val intr = DecelerateInterpolator()
+
+        // Slide chrome off screen.
+        myLocationButton.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
+            .start()
+        exploreBottomBar.animate().translationY(h).setDuration(dur).setInterpolator(intr)
+            .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
+            .start()
+        topRightContainer.animate().translationX(w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { topRightContainer.visibility = View.GONE; topRightContainer.translationX = 0f }
+            .start()
+        versionCardView.animate().translationX(w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { versionCardView.visibility = View.GONE; versionCardView.translationX = 0f }
+            .start()
+
+        // Expand panel.
+        mapStyleModeAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = dur
+            interpolator = intr
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+            }
+            start()
+        })
+    }
+
+    /**
+     * Collapses the menu panel back to the map style submenu size and
+     * slides Explore chrome back on screen.
+     *
+     * Called when [MapUiState.isInMapStyleMode] transitions to false.
+     */
+    private fun runExitMapStyleMode() {
+        mapStyleModeAnimator?.cancel()
+        val (targetW, targetH) = getOrMeasureMapStyleSize()
+
+        val lp     = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width
+        val startH = lp.height
+
+        val w    = resources.displayMetrics.widthPixels.toFloat()
+        val h    = resources.displayMetrics.heightPixels.toFloat()
+        val dur  = 350L
+        val intr = DecelerateInterpolator()
+
+        // Slide chrome back in (only from EXPLORE mode).
+        if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
+            myLocationButton.translationX = -w
+            myLocationButton.visibility   = View.VISIBLE
+            myLocationButton.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+
+            exploreBottomBar.translationY = h
+            exploreBottomBar.visibility   = View.VISIBLE
+            exploreBottomBar.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
+
+            topRightContainer.translationX = w
+            topRightContainer.visibility   = View.VISIBLE
+            topRightContainer.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+
+            versionCardView.translationX = w
+            versionCardView.visibility   = View.VISIBLE
+            versionCardView.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+        }
+
+        // Collapse panel.
+        mapStyleModeAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = dur
+            interpolator = intr
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+            }
             start()
         })
     }

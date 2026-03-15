@@ -22,7 +22,7 @@ import de.codevoid.aWayToGo.R
  * [hamburgerBars] are the three bar views that make up the hamburger icon;
  * stored separately so [MapActivity.runOpenMenuAnimation] and
  * [MapActivity.runCloseMenuAnimation] can rotate them individually.
- * [mainMenuScroll] is the ScrollView holding the 6 main-menu items; faded
+ * [mainMenuScroll] is the ScrollView holding the main-menu items; faded
  * during settings transitions.
  * [settingsRowInList] is the "Settings" item inside the main menu list;
  * its click is wired by MapActivity to enter the settings layer.
@@ -44,6 +44,12 @@ import de.codevoid.aWayToGo.R
  * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
  * [frequentUpdatesLabel] is the TextView for the Frequent Updates toggle row.
  * [offlineModeLabel] is the TextView for the Offline Mode toggle row in the debug submenu.
+ * [mapStyleRowInList] is the "Map Style" item inside the main menu list.
+ * [mapStyleRowIcon] is the icon ImageView inside [mapStyleRowInList].
+ * [mapStyleGhostHeader] is a full-width clone of the Map Style row placed at
+ * the panel's top (y=0), initially GONE.
+ * [mapStyleContent] is the LinearLayout that holds the style preset rows (Road, Offroad),
+ * initially GONE.
  * [offlineMapsRowInList] is the "Offline Maps" item inside the main menu list.
  * [offlineMapsRowIcon] is the icon ImageView inside [offlineMapsRowInList].
  * [offlineMapsGhostHeader] is a full-width clone of the Offline Maps row placed at
@@ -66,6 +72,10 @@ data class MenuPanelResult(
     val debugToggleLabel: TextView,
     val frequentUpdatesLabel: TextView,
     val offlineModeLabel: TextView,
+    val mapStyleRowInList: View,
+    val mapStyleRowIcon: ImageView,
+    val mapStyleGhostHeader: View,
+    val mapStyleContent: LinearLayout,
     val offlineMapsRowInList: View,
     val offlineMapsRowIcon: ImageView,
     val offlineMapsGhostHeader: View,
@@ -192,6 +202,9 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
     // during the enter-settings animation (icon appears to teleport left→right).
     val settingsRowIcon = settingsRowInList.getChildAt(0) as ImageView
 
+    val mapStyleRowInList = menuItem(R.drawable.ic_menu_settings, "Map Style")
+    val mapStyleRowIcon   = mapStyleRowInList.getChildAt(0) as ImageView
+
     val offlineMapsRowInList = menuItem(R.drawable.ic_menu_offline_maps, "Offline Maps")
     val offlineMapsRowIcon   = offlineMapsRowInList.getChildAt(0) as ImageView
 
@@ -201,6 +214,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(menuItem(R.drawable.ic_menu_trips,        "My Trips"),      LinearLayout.LayoutParams(panelW, itemH))
         addView(menuItem(R.drawable.ic_menu_recordings,   "My Recordings"), LinearLayout.LayoutParams(panelW, itemH))
         addView(menuItem(R.drawable.ic_menu_poi_groups,   "My POI Groups"), LinearLayout.LayoutParams(panelW, itemH))
+        addView(mapStyleRowInList,                                           LinearLayout.LayoutParams(panelW, itemH))
         addView(offlineMapsRowInList,                                        LinearLayout.LayoutParams(panelW, itemH))
         addView(settingsRowInList,                                           LinearLayout.LayoutParams(panelW, itemH))
     }
@@ -337,6 +351,15 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(clearCacheItem,        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
     }
 
+    // ── Map Style submenu content ─────────────────────────────────────────────
+    val mapStyleContent = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(menuItem(R.drawable.ic_menu_settings, "Road"),    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+        addView(menuItem(R.drawable.ic_menu_settings, "Offroad"), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+    }
+
     // ── Offline Maps submenu content ──────────────────────────────────────────
     val offlineDownloadLabel = TextView(context).apply {
         text = "Apply"
@@ -427,6 +450,33 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         )
     }
 
+    // ── Ghost header — Map Style layer ────────────────────────────────────────
+    val mapStyleGhostHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(
+            TextView(context).apply {
+                text = "Map Style"
+                setTextColor(Color.WHITE)
+                textSize = 20f
+                gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+                maxLines = 1
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_settings))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
+    }
+
     // ── Ghost header — Offline Maps layer ─────────────────────────────────────
     val offlineMapsGhostHeader = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -475,6 +525,10 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
             topMargin = itemH
         })
 
+        addView(mapStyleContent, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = itemH
+        })
+
         addView(offlineMapsContent, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             topMargin = itemH
         })
@@ -485,6 +539,10 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         })
 
         addView(debugGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
+            gravity = Gravity.TOP or Gravity.START
+        })
+
+        addView(mapStyleGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
             gravity = Gravity.TOP or Gravity.START
         })
 
@@ -511,6 +569,10 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         debugToggleLabel         = debugToggleLabel,
         frequentUpdatesLabel     = frequentUpdatesLabel,
         offlineModeLabel         = offlineModeLabel,
+        mapStyleRowInList        = mapStyleRowInList,
+        mapStyleRowIcon          = mapStyleRowIcon,
+        mapStyleGhostHeader      = mapStyleGhostHeader,
+        mapStyleContent          = mapStyleContent,
         offlineMapsRowInList     = offlineMapsRowInList,
         offlineMapsRowIcon       = offlineMapsRowIcon,
         offlineMapsGhostHeader   = offlineMapsGhostHeader,
