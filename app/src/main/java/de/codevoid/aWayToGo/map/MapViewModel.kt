@@ -192,4 +192,9 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isMapLockMenuOpen = false) }
     }
 
+    /** Toggle fuel station POI overlay on/off. */
+    fun toggleFuelStations() {
+        _uiState.update { it.copy(isFuelStationsEnabled = !it.isFuelStationsEnabled) }
+    }
+
 }

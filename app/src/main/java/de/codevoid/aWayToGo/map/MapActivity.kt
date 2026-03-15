@@ -116,6 +116,7 @@ import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.sources.TileSet
+import org.maplibre.android.style.sources.VectorSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
@@ -150,6 +151,8 @@ private const val ANCHOR_SLIDE_MS = 500.0
 
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
+
+private const val LAYER_FUEL = "fuel-stations"
 
 
 private const val LOCATION_PERMISSION_REQUEST = 1
@@ -204,6 +207,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var darkModeToggleBtn: TextView
     private lateinit var courseUpToggleBtn: TextView
     private lateinit var followToggleBtn: TextView
+    private lateinit var fuelStationToggleBtn: TextView
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: CrosshairView
     private lateinit var versionCardView: TextView
@@ -679,6 +683,15 @@ class MapActivity : ComponentActivity() {
         followToggleBtn = makePillButton(this, "FOL") { viewModel.toggleFollowMode() }
         topRightContainer.addView(
             followToggleBtn,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
+        )
+
+        fuelStationToggleBtn = makePillButton(this, "FUEL") { viewModel.toggleFuelStations() }
+        topRightContainer.addView(
+            fuelStationToggleBtn,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1540,6 +1553,9 @@ class MapActivity : ComponentActivity() {
             if (viewModel.uiState.value.isSatelliteEnabled) {
                 applySatelliteLayer(enabled = true, animated = false)
             }
+            if (viewModel.uiState.value.isFuelStationsEnabled) {
+                applyFuelStationsLayer(enabled = true)
+            }
         }
     }
 
@@ -1644,6 +1660,29 @@ class MapActivity : ComponentActivity() {
                 })
                 start()
             })
+        }
+    }
+
+    private fun applyFuelStationsLayer(enabled: Boolean) {
+        val s = style ?: return
+        if (enabled) {
+            if (s.getLayerAs<SymbolLayer>(LAYER_FUEL) != null) return
+            val sourceId = s.sources
+                .filterIsInstance<VectorSource>()
+                .firstOrNull()?.id ?: return
+            val layer = SymbolLayer(LAYER_FUEL, sourceId).apply {
+                sourceLayer = "poi"
+                setFilter(Expression.eq(Expression.get("class"), Expression.literal("fuel")))
+                setProperties(
+                    PropertyFactory.iconImage("fuel"),
+                    PropertyFactory.iconAllowOverlap(true),
+                    PropertyFactory.iconIgnorePlacement(true),
+                    PropertyFactory.iconSize(1.2f),
+                )
+            }
+            s.addLayer(layer)
+        } else {
+            s.getLayerAs<SymbolLayer>(LAYER_FUEL)?.let { s.removeLayer(it) }
         }
     }
 
@@ -1814,17 +1853,22 @@ class MapActivity : ComponentActivity() {
         // ── Map style toggles ──────────────────────────────────────────────────
         val satChanged  = old?.isSatelliteEnabled != new.isSatelliteEnabled
         val darkChanged = old?.isDarkMode         != new.isDarkMode
+        val fuelChanged = old?.isFuelStationsEnabled != new.isFuelStationsEnabled
 
         if (darkChanged) {
-            reloadStyle(new.isDarkMode)   // callback handles satellite re-add
+            reloadStyle(new.isDarkMode)   // callback handles satellite and fuel re-add
         } else if (satChanged) {
             applySatelliteLayer(enabled = new.isSatelliteEnabled, animated = old != null)
         }
+        if (fuelChanged) {
+            applyFuelStationsLayer(enabled = new.isFuelStationsEnabled)
+        }
 
-        setToggleActive(satelliteToggleBtn, new.isSatelliteEnabled)
-        setToggleActive(darkModeToggleBtn,  new.isDarkMode)
-        setToggleActive(courseUpToggleBtn,  new.isCourseUpEnabled)
-        setToggleActive(followToggleBtn,    new.isFollowModeActive)
+        setToggleActive(satelliteToggleBtn,   new.isSatelliteEnabled)
+        setToggleActive(darkModeToggleBtn,    new.isDarkMode)
+        setToggleActive(courseUpToggleBtn,    new.isCourseUpEnabled)
+        setToggleActive(followToggleBtn,      new.isFollowModeActive)
+        setToggleActive(fuelStationToggleBtn, new.isFuelStationsEnabled)
 
         // ── Course Up → North Up transition ───────────────────────────────────
         // When Course Up is turned off, animate the map back to 0° (north at top)

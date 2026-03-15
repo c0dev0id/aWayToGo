@@ -19,6 +19,7 @@ package de.codevoid.aWayToGo.map
  *                               When false, north always points up (North Up).              |
  * | [isFrequentUpdatesEnabled]  | Debug: check for updates every 5 min while screen is on.  |
  * | [isMapLockMenuOpen]         | Map-lock context menu open (long-press on crosshair).      |
+ * | [isFuelStationsEnabled]     | Fuel station POI symbols visible on the map.               |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -34,4 +35,5 @@ data class MapUiState(
     val isCourseUpEnabled: Boolean = false,
     val isFrequentUpdatesEnabled: Boolean = false,
     val isMapLockMenuOpen: Boolean = false,
+    val isFuelStationsEnabled: Boolean = false,
 )
