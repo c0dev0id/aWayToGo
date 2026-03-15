@@ -98,6 +98,17 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
     private var joyLastDirX = 0f
     private var joyLastDirY = 0f
 
+    // ── Bearing / metersPerPx cache ───────────────────────────────────────────
+    // These values change only when bearing, latitude, or zoom change — not every
+    // frame while panning straight.  Cache them to skip redundant trig calls.
+    private var cachedBearing     = Double.NaN
+    private var cachedCosB        = 0.0
+    private var cachedSinB        = 0.0
+    private var cachedLat         = Double.NaN
+    private var cachedZoom        = Double.NaN
+    private var cachedCosLat      = 1.0
+    private var cachedMetersPerPx = 0.0
+
     /**
      * Call when a D-pad or zoom key is pressed ([RemoteEvent.KeyDown]).
      *
@@ -241,15 +252,26 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
             // Bearing-aware pan: rotate screen-space vector by map bearing so
             // pushing UP always scrolls map content down regardless of rotation.
             val newLatLng = if (target != null && (totalDx != 0f || totalDy != 0f)) {
-                val bearingRad  = Math.toRadians(pos.bearing)
-                val cosB        = cos(bearingRad).toFloat()
-                val sinB        = sin(bearingRad).toFloat()
-                val rotatedDx   = totalDx * cosB - totalDy * sinB
-                val rotatedDy   = totalDx * sinB + totalDy * cosB
-                val latRad      = Math.toRadians(target.latitude)
-                val metersPerPx = MERCATOR_CIRCUMFERENCE * cos(latRad) / Math.pow(2.0, pos.zoom)
-                val latDelta    = -(rotatedDy * metersPerPx) / METERS_PER_DEGREE_LAT
-                val lngDelta    =  (rotatedDx * metersPerPx) / (METERS_PER_DEGREE_LAT * cos(latRad))
+                if (pos.bearing != cachedBearing) {
+                    cachedBearing = pos.bearing
+                    val bearingRad = Math.toRadians(pos.bearing)
+                    cachedCosB = cos(bearingRad)
+                    cachedSinB = sin(bearingRad)
+                }
+                val cosB      = cachedCosB.toFloat()
+                val sinB      = cachedSinB.toFloat()
+                val rotatedDx = totalDx * cosB - totalDy * sinB
+                val rotatedDy = totalDx * sinB + totalDy * cosB
+
+                val lat = target.latitude
+                if (lat != cachedLat || pos.zoom != cachedZoom) {
+                    cachedLat         = lat
+                    cachedZoom        = pos.zoom
+                    cachedCosLat      = cos(Math.toRadians(lat))
+                    cachedMetersPerPx = MERCATOR_CIRCUMFERENCE * cachedCosLat / Math.pow(2.0, pos.zoom)
+                }
+                val latDelta = -(rotatedDy * cachedMetersPerPx) / METERS_PER_DEGREE_LAT
+                val lngDelta =  (rotatedDx * cachedMetersPerPx) / (METERS_PER_DEGREE_LAT * cachedCosLat)
                 LatLng(target.latitude + latDelta, target.longitude + lngDelta)
             } else target
 
