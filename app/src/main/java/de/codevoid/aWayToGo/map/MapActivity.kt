@@ -816,7 +816,7 @@ class MapActivity : ComponentActivity() {
             setOnClickListener {
                 val m   = map ?: return@setOnClickListener
                 val loc = m.locationComponent?.lastKnownLocation ?: return@setOnClickListener
-                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+                flyToLocation(m, LatLng(loc.latitude, loc.longitude), zoom = 16.0)
             }
         }
         root.addView(
