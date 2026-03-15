@@ -1218,7 +1218,9 @@ class MapActivity : ComponentActivity() {
                     TileCache.gate.pause()
                 }
                 fuelTooltipCard.visibility = View.GONE
-                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE
+                    && !viewModel.uiState.value.isInTileSelectMode
+                ) {
                     // User started panning — cancel any in-progress lock-ring animation.
                     cancelLockRingAnimation()
                     if (viewModel.uiState.value.isFollowModeActive) {
@@ -1913,6 +1915,7 @@ class MapActivity : ComponentActivity() {
         // EDIT always shows the crosshair (it acts as the placement cursor).
         // Otherwise the crosshair is shown only while the user is manually panning.
         crosshairView.visibility = when {
+            new.isInTileSelectMode                          -> View.GONE
             new.mode == AppMode.EDIT || new.isInPanningMode -> View.VISIBLE
             else                                            -> View.GONE
         }
