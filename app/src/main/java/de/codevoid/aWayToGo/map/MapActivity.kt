@@ -1222,12 +1222,6 @@ class MapActivity : ComponentActivity() {
             }
 
             m.addOnCameraMoveStartedListener { reason ->
-                // Don't gate during follow mode — the camera never idles while
-                // riding, so tiles would never load.  The 2-connection cap in
-                // TileCache keeps uploads light enough not to stutter the GL thread.
-                if (!viewModel.uiState.value.isFollowModeActive) {
-                    TileCache.gate.pause()
-                }
                 fuelTooltipCard.visibility = View.GONE
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE
                     && !viewModel.uiState.value.isInTileSelectMode
@@ -1255,11 +1249,7 @@ class MapActivity : ComponentActivity() {
                     false
                 }
             }
-            // Open the gate when the camera stops.  MapLibre will immediately
-            // start filling in any missing tiles; the map is static, so
-            // uploads do not drop visible frames.
             m.addOnCameraIdleListener {
-                TileCache.gate.resume()
                 queryFuelTooltip()
             }
 
