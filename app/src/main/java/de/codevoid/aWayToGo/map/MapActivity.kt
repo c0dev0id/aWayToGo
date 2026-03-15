@@ -300,7 +300,6 @@ class MapActivity : ComponentActivity() {
     private var benchmarkStatusLabel: TextView? = null
     @Volatile private var benchmarkGlFrameNanos: MutableList<Long>? = null
 
-    private val prefs by lazy { getSharedPreferences("app_prefs", MODE_PRIVATE) }
 
     // ── Search ────────────────────────────────────────────────────────────────
     private lateinit var searchOverlayResult: SearchOverlayResult
@@ -622,8 +621,6 @@ class MapActivity : ComponentActivity() {
         remoteControl = RemoteControlManager(this)
 
         // Restore debug settings persisted from the previous session.
-        if (prefs.getBoolean("debug_mode", false))       viewModel.toggleDebugMode()
-        if (prefs.getBoolean("frequent_updates", false)) viewModel.toggleFrequentUpdates()
 
         val styleUrl = styleUrl(isDark = false)
 
@@ -2244,14 +2241,12 @@ class MapActivity : ComponentActivity() {
             osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
             menuPanelResult.debugToggleLabel.text =
                 "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
-            if (debugModeChanged) prefs.edit().putBoolean("debug_mode", new.isDebugMode).apply()
         }
 
         // ── Frequent Updates polling ────────────────────────────────────────────
         if (frequentUpdatesChanged || old == null) {
             menuPanelResult.frequentUpdatesLabel.text =
                 "Frequent Updates: ${if (new.isFrequentUpdatesEnabled) "ON" else "OFF"}"
-            if (frequentUpdatesChanged) prefs.edit().putBoolean("frequent_updates", new.isFrequentUpdatesEnabled).apply()
             if (new.isFrequentUpdatesEnabled) viewModel.startFrequentUpdatePolling()
             else viewModel.stopFrequentUpdatePolling()
         }
@@ -2276,7 +2271,6 @@ class MapActivity : ComponentActivity() {
 
         // ── Offline mode ────────────────────────────────────────────────────────
         if (offlineModeChanged || old == null) {
-            TileCache.isOfflineMode = new.isOfflineMode
             menuPanelResult.offlineModeLabel.text =
                 "Offline Mode: ${if (new.isOfflineMode) "ON" else "OFF"}"
             if (offlineModeChanged) {
@@ -4930,7 +4924,7 @@ class MapActivity : ComponentActivity() {
         sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { s ->
             sm.registerListener(compassListener, s, SensorManager.SENSOR_DELAY_GAME)
         }
-        viewModel.checkUpdateIfDue(prefs)
+        viewModel.checkUpdateIfDue()
         if (viewModel.uiState.value.isFrequentUpdatesEnabled) viewModel.startFrequentUpdatePolling()
     }
 
