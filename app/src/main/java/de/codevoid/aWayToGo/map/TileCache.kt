@@ -68,6 +68,10 @@ object TileCache {
 
     private var initialised = false
     private var diskCache: Cache? = null
+    private var _client: OkHttpClient? = null
+
+    /** Exposed for offline tile pre-seeding (uses the same 200 MB disk cache). */
+    val httpClient: OkHttpClient get() = _client ?: error("TileCache.init() not called")
 
     /**
      * Build the OkHttp client and hand it to MapLibre.
@@ -98,6 +102,7 @@ object TileCache {
             .addNetworkInterceptor(gate)
             .build()
 
+        _client = client
         HttpRequestUtil.setOkHttpClient(client)
     }
 

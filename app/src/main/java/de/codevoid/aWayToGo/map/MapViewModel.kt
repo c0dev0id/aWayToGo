@@ -52,6 +52,7 @@ class MapViewModel : ViewModel() {
                 isMenuOpen         = false,
                 isInSettingsMenu   = false,
                 isInDebugMenu      = false,
+                isInOfflineMapsMenu = false,
                 isSearchOpen       = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
                 isInPanningMode    = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
@@ -110,7 +111,7 @@ class MapViewModel : ViewModel() {
 
     /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -195,6 +196,16 @@ class MapViewModel : ViewModel() {
     /** Toggle fuel station POI overlay on/off. */
     fun toggleFuelStations() {
         _uiState.update { it.copy(isFuelStationsEnabled = !it.isFuelStationsEnabled) }
+    }
+
+    /** Enter the Offline Maps submenu layer (menu must already be open). */
+    fun enterOfflineMapsMenu() {
+        _uiState.update { it.copy(isInOfflineMapsMenu = true) }
+    }
+
+    /** Return from the Offline Maps submenu to the main menu layer. */
+    fun exitOfflineMapsMenu() {
+        _uiState.update { it.copy(isInOfflineMapsMenu = false) }
     }
 
 }

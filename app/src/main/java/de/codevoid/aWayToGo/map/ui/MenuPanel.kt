@@ -43,6 +43,13 @@ import de.codevoid.aWayToGo.R
  * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
  * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
  * [frequentUpdatesLabel] is the TextView for the Frequent Updates toggle row.
+ * [offlineMapsRowInList] is the "Offline Maps" item inside the main menu list.
+ * [offlineMapsRowIcon] is the icon ImageView inside [offlineMapsRowInList].
+ * [offlineMapsGhostHeader] is a full-width clone of the Offline Maps row placed at
+ * the panel's top (y=0), initially GONE.
+ * [offlineMapsContent] is the LinearLayout that holds the download action row,
+ * initially GONE.
+ * [offlineDownloadLabel] is the TextView for the download/cancel action.
  */
 data class MenuPanelResult(
     val root: View,
@@ -57,6 +64,11 @@ data class MenuPanelResult(
     val debugContent: LinearLayout,
     val debugToggleLabel: TextView,
     val frequentUpdatesLabel: TextView,
+    val offlineMapsRowInList: View,
+    val offlineMapsRowIcon: ImageView,
+    val offlineMapsGhostHeader: View,
+    val offlineMapsContent: LinearLayout,
+    val offlineDownloadLabel: TextView,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -178,13 +190,16 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
     // during the enter-settings animation (icon appears to teleport left→right).
     val settingsRowIcon = settingsRowInList.getChildAt(0) as ImageView
 
+    val offlineMapsRowInList = menuItem(R.drawable.ic_menu_offline_maps, "Offline Maps")
+    val offlineMapsRowIcon   = offlineMapsRowInList.getChildAt(0) as ImageView
+
     val contentList = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         addView(menuItem(R.drawable.ic_menu_locations,    "My Locations"),  LinearLayout.LayoutParams(panelW, itemH))
         addView(menuItem(R.drawable.ic_menu_trips,        "My Trips"),      LinearLayout.LayoutParams(panelW, itemH))
         addView(menuItem(R.drawable.ic_menu_recordings,   "My Recordings"), LinearLayout.LayoutParams(panelW, itemH))
         addView(menuItem(R.drawable.ic_menu_poi_groups,   "My POI Groups"), LinearLayout.LayoutParams(panelW, itemH))
-        addView(menuItem(R.drawable.ic_menu_offline_maps, "Offline Maps"),  LinearLayout.LayoutParams(panelW, itemH))
+        addView(offlineMapsRowInList,                                        LinearLayout.LayoutParams(panelW, itemH))
         addView(settingsRowInList,                                           LinearLayout.LayoutParams(panelW, itemH))
     }
 
@@ -284,6 +299,40 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(frequentUpdatesItem,   LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
     }
 
+    // ── Offline Maps submenu content ──────────────────────────────────────────
+    val offlineDownloadLabel = TextView(context).apply {
+        text = "Download current area"
+        setTextColor(Color.WHITE)
+        textSize = 20f
+        gravity  = Gravity.CENTER_VERTICAL
+        maxLines = 1
+    }
+
+    val offlineDownloadItem = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        isClickable = true
+        isFocusable = true
+        background  = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(60, 255, 255, 255)), null,
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.WHITE) },
+        )
+        addView(ImageView(context).apply {
+            setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_offline_maps))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }, LinearLayout.LayoutParams(iconSz, iconSz))
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(offlineDownloadLabel, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+    }
+
+    val offlineMapsContent = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(offlineDownloadItem, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+    }
+
     // ── Ghost header — Settings layer ──────────────────────────────────────────
     // Layout: [text fills middle, right-aligned] [gap] [icon on RIGHT]
     // The hamburgerBtn (back arrow, 64dp) overlays the left portion of this row.
@@ -340,6 +389,33 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         )
     }
 
+    // ── Ghost header — Offline Maps layer ─────────────────────────────────────
+    val offlineMapsGhostHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(
+            TextView(context).apply {
+                text = "Offline Maps"
+                setTextColor(Color.WHITE)
+                textSize = 20f
+                gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+                maxLines = 1
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_offline_maps))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
+    }
+
     // ── Root panel ────────────────────────────────────────────────────────────
     val root = FrameLayout(context).apply {
         background = GradientDrawable().apply {
@@ -361,12 +437,20 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
             topMargin = itemH
         })
 
+        addView(offlineMapsContent, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = itemH
+        })
+
         // Ghost headers added BEFORE hamburgerBtn so the button renders on top.
         addView(settingsGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
             gravity = Gravity.TOP or Gravity.START
         })
 
         addView(debugGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
+            gravity = Gravity.TOP or Gravity.START
+        })
+
+        addView(offlineMapsGhostHeader, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, itemH).apply {
             gravity = Gravity.TOP or Gravity.START
         })
 
@@ -385,8 +469,13 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         settingsContent    = settingsContent,
         debugRowInSettings = debugRowInSettings,
         debugGhostHeader   = debugGhostHeader,
-        debugContent          = debugContent,
-        debugToggleLabel      = debugToggleLabel,
-        frequentUpdatesLabel  = frequentUpdatesLabel,
+        debugContent             = debugContent,
+        debugToggleLabel         = debugToggleLabel,
+        frequentUpdatesLabel     = frequentUpdatesLabel,
+        offlineMapsRowInList     = offlineMapsRowInList,
+        offlineMapsRowIcon       = offlineMapsRowIcon,
+        offlineMapsGhostHeader   = offlineMapsGhostHeader,
+        offlineMapsContent       = offlineMapsContent,
+        offlineDownloadLabel     = offlineDownloadLabel,
     )
 }

@@ -20,6 +20,7 @@ package de.codevoid.aWayToGo.map
  * | [isFrequentUpdatesEnabled]  | Debug: check for updates every 5 min while screen is on.  |
  * | [isMapLockMenuOpen]         | Map-lock context menu open (long-press on crosshair).      |
  * | [isFuelStationsEnabled]     | Fuel station POI symbols visible on the map.               |
+ * | [isInOfflineMapsMenu]       | Offline Maps submenu layer is open.                         |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -36,4 +37,5 @@ data class MapUiState(
     val isFrequentUpdatesEnabled: Boolean = false,
     val isMapLockMenuOpen: Boolean = false,
     val isFuelStationsEnabled: Boolean = false,
+    val isInOfflineMapsMenu: Boolean = false,
 )

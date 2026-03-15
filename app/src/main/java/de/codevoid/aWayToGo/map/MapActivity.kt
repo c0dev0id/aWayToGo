@@ -2,8 +2,12 @@ package de.codevoid.aWayToGo.map
 
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.tan
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -89,10 +93,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Request
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -127,8 +133,9 @@ private const val STYLE_OUTDOOR = "https://api.maptiler.com/maps/outdoor-v2/styl
 private const val STYLE_DARK    = "https://api.maptiler.com/maps/dataviz-dark/style.json?key="
 private const val SOURCE_SATELLITE  = "satellite-raster-src"
 private const val LAYER_SATELLITE   = "satellite-raster-layer"
-private const val SAT_TILE_TEMPLATE = "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key="
-private const val SAT_ANIMATE_MS    = 350L
+private const val SAT_TILE_TEMPLATE   = "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key="
+private const val SAT_ANIMATE_MS      = 350L
+private const val TILES_V3_TEMPLATE   = "https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key="
 
 // ── Drag line style layer / source IDs ───────────────────────────────────────
 // SOURCE_DRAG_LINE      — the wobbly/straight line geometry.
@@ -228,6 +235,10 @@ class MapActivity : ComponentActivity() {
     private var menuAnimator: ValueAnimator? = null
     private var settingsMenuAnimator: ValueAnimator? = null
     private var debugMenuAnimator: ValueAnimator? = null
+    private var offlineMapsMenuAnimator: ValueAnimator? = null
+    private var offlineMapsMenuWidth  = -1
+    private var offlineMapsMenuHeight = -1
+    private var offlineDownloadJob: Job? = null
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
@@ -980,9 +991,10 @@ class MapActivity : ComponentActivity() {
             onToggleMenu = {
                 val s = viewModel.uiState.value
                 when {
-                    s.isInDebugMenu    -> viewModel.exitDebugMenu()
-                    s.isInSettingsMenu -> viewModel.exitSettingsMenu()
-                    else               -> toggleMenu()
+                    s.isInDebugMenu       -> viewModel.exitDebugMenu()
+                    s.isInSettingsMenu    -> viewModel.exitSettingsMenu()
+                    s.isInOfflineMapsMenu -> viewModel.exitOfflineMapsMenu()
+                    else                  -> toggleMenu()
                 }
             },
         ).also { result ->
@@ -999,6 +1011,10 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
             // Frequent Updates → 5-min update polling while screen is on.
             result.debugContent.getChildAt(2).setOnClickListener { viewModel.toggleFrequentUpdates() }
+            // Offline Maps row → enters the offline maps submenu layer.
+            result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
+            // Download / cancel row inside offline maps content.
+            result.offlineMapsContent.getChildAt(0).setOnClickListener { onOfflineDownloadTapped() }
         }
         root.addView(
             menuPanel,
@@ -1706,6 +1722,7 @@ class MapActivity : ComponentActivity() {
         val searchChanged        = old?.isSearchOpen != new.isSearchOpen
         val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
         val debugMenuChanged     = old?.isInDebugMenu != new.isInDebugMenu
+        val offlineMapsMenuChanged    = old?.isInOfflineMapsMenu != new.isInOfflineMapsMenu
         val debugModeChanged          = old?.isDebugMode != new.isDebugMode
         val frequentUpdatesChanged    = old?.isFrequentUpdatesEnabled != new.isFrequentUpdatesEnabled
         val mapLockMenuChanged        = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
@@ -1802,6 +1819,17 @@ class MapActivity : ComponentActivity() {
                     menuPanelResult.settingsRowIcon.alpha = 1f
                     hamburgerBars.forEach { it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
                 }
+                if (old.isInOfflineMapsMenu) {
+                    offlineMapsMenuAnimator?.cancel()
+                    menuPanelResult.offlineMapsGhostHeader.visibility = View.GONE
+                    menuPanelResult.offlineMapsGhostHeader.alpha      = 0f
+                    menuPanelResult.offlineMapsContent.visibility     = View.GONE
+                    menuPanelResult.offlineMapsContent.alpha          = 0f
+                    menuPanelResult.mainMenuScroll.visibility         = View.VISIBLE
+                    menuPanelResult.mainMenuScroll.alpha              = 1f
+                    menuPanelResult.offlineMapsRowIcon.alpha          = 1f
+                    hamburgerBars.forEach { it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
+                }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
                 runCloseMenuAnimation(instant = modeChanged)
@@ -1820,6 +1848,16 @@ class MapActivity : ComponentActivity() {
         if (old != null && debugMenuChanged && new.isMenuOpen) {
             if (new.isInDebugMenu) runEnterDebugAnimation()
             else runExitDebugAnimation()
+        }
+
+        // ── Offline Maps submenu transition ────────────────────────────────────
+        if (old != null && offlineMapsMenuChanged && new.isMenuOpen) {
+            if (new.isInOfflineMapsMenu) {
+                syncOfflineDownloadLabel()
+                runEnterOfflineMapsAnimation()
+            } else {
+                runExitOfflineMapsAnimation()
+            }
         }
 
         // ── Debug overlay ──────────────────────────────────────────────────────
@@ -2637,6 +2675,229 @@ class MapActivity : ComponentActivity() {
             })
             start()
         })
+    }
+
+    // ── Offline Maps submenu ──────────────────────────────────────────────────
+
+    /**
+     * Returns the offline maps panel (width, height) in pixels.
+     * Cached after first measurement.
+     */
+    private fun getOrMeasureOfflineMapsSize(): Pair<Int, Int> {
+        if (offlineMapsMenuWidth > 0 && offlineMapsMenuHeight > 0)
+            return Pair(offlineMapsMenuWidth, offlineMapsMenuHeight)
+        val d      = resources.displayMetrics.density
+        val itemH  = (64 * d).toInt()
+        val minW   = (280 * d).toInt()
+        val unspec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val content = menuPanelResult.offlineMapsContent
+        var maxW = minW
+        for (i in 0 until content.childCount) {
+            content.getChildAt(i).measure(unspec, unspec)
+            maxW = maxOf(maxW, content.getChildAt(i).measuredWidth)
+        }
+        val wSpec = View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
+        content.measure(wSpec, hSpec)
+        offlineMapsMenuWidth  = maxW
+        offlineMapsMenuHeight = itemH + content.measuredHeight
+        return Pair(offlineMapsMenuWidth, offlineMapsMenuHeight)
+    }
+
+    private fun runEnterOfflineMapsAnimation() {
+        offlineMapsMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost           = menuPanelResult.offlineMapsGhostHeader
+        val scroll          = menuPanelResult.mainMenuScroll
+        val offlineContent  = menuPanelResult.offlineMapsContent
+        val rowIcon         = menuPanelResult.offlineMapsRowIcon
+
+        val ghostStartY = (5 * itemH).toFloat()
+        ghost.translationY = ghostStartY
+        ghost.alpha        = 0f
+        ghost.visibility   = View.VISIBLE
+
+        offlineContent.visibility = View.VISIBLE
+        offlineContent.alpha      = 0f
+
+        val (targetW, targetH) = getOrMeasureOfflineMapsSize()
+        val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW    = lp.width
+        val startH    = lp.height
+
+        val barTargetRot    = floatArrayOf(-45f, 0f, +45f)
+        val barTargetScale  = floatArrayOf(0.5f, 1.0f, 0.5f)
+        val barTargetTransX = floatArrayOf(-1.5f * d, +2f * d, -1.5f * d)
+        val barTargetTransY = floatArrayOf(+1.5f * d,  0f,     -1.5f * d)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
+        val iconStartAlpha  = rowIcon.alpha
+
+        offlineMapsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY = ghostStartY * (1f - t)
+                ghost.alpha        = t
+                scroll.alpha       = 1f - t
+                offlineContent.alpha = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+                rowIcon.alpha = iconStartAlpha * (1f - t)
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    scroll.visibility = View.GONE
+                }
+            })
+            start()
+        })
+    }
+
+    private fun runExitOfflineMapsAnimation() {
+        offlineMapsMenuAnimator?.cancel()
+        val d     = resources.displayMetrics.density
+        val itemH = (64 * d).toInt()
+
+        val ghost           = menuPanelResult.offlineMapsGhostHeader
+        val scroll          = menuPanelResult.mainMenuScroll
+        val offlineContent  = menuPanelResult.offlineMapsContent
+        val rowIcon         = menuPanelResult.offlineMapsRowIcon
+
+        val ghostEndY = (5 * itemH).toFloat()
+        scroll.alpha      = 0f
+        scroll.visibility = View.VISIBLE
+
+        val targetH   = getOrMeasurePanelHeight()
+        val targetW   = (280 * d).toInt()
+        val lp        = menuPanel.layoutParams as FrameLayout.LayoutParams
+        val startW    = lp.width
+        val startH    = lp.height
+
+        val barTargetRot    = floatArrayOf(90f, 90f, 90f)
+        val barTargetScale  = floatArrayOf(1.0f, 1.0f, 1.0f)
+        val barTargetTransX = floatArrayOf(0f, 0f, 0f)
+        val barTargetTransY = floatArrayOf(0f, 0f, 0f)
+        val barStartRot     = FloatArray(3) { hamburgerBars[it].rotation }
+        val barStartScale   = FloatArray(3) { hamburgerBars[it].scaleX }
+        val barStartTransX  = FloatArray(3) { hamburgerBars[it].translationX }
+        val barStartTransY  = FloatArray(3) { hamburgerBars[it].translationY }
+        val iconStartAlpha  = rowIcon.alpha
+
+        offlineMapsMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (targetW - startW) * t).toInt()
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                menuPanel.layoutParams = lp
+                ghost.translationY     = ghostEndY * t
+                ghost.alpha            = 1f - t
+                scroll.alpha           = t
+                offlineContent.alpha   = (1f - t / 0.7f).coerceIn(0f, 1f)
+                rowIcon.alpha          = iconStartAlpha + (1f - iconStartAlpha) * t
+                hamburgerBars.forEachIndexed { i, bar ->
+                    bar.rotation     = barStartRot[i]    + (barTargetRot[i]    - barStartRot[i])    * t
+                    bar.scaleX       = barStartScale[i]  + (barTargetScale[i]  - barStartScale[i])  * t
+                    bar.translationX = barStartTransX[i] + (barTargetTransX[i] - barStartTransX[i]) * t
+                    bar.translationY = barStartTransY[i] + (barTargetTransY[i] - barStartTransY[i]) * t
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    ghost.visibility           = View.GONE
+                    ghost.alpha                = 0f
+                    offlineContent.visibility  = View.GONE
+                    offlineContent.alpha       = 0f
+                    rowIcon.alpha              = 1f
+                }
+            })
+            start()
+        })
+    }
+
+    private fun onOfflineDownloadTapped() {
+        if (offlineDownloadJob?.isActive == true) {
+            offlineDownloadJob?.cancel()
+            offlineDownloadJob = null
+            syncOfflineDownloadLabel()
+            return
+        }
+        val m = map ?: return
+        val bounds = m.projection.visibleRegion.latLngBounds
+        offlineDownloadJob = lifecycleScope.launch {
+            val urls  = buildOfflineTileUrls(bounds, minZoom = 8, maxZoom = 14, maxTiles = 3_000)
+            val total = urls.size
+            var done  = 0
+            menuPanelResult.offlineDownloadLabel.text = "Starting… (0 / $total)"
+            for (url in urls) {
+                if (!isActive) break
+                try {
+                    val req = Request.Builder().url(url).build()
+                    TileCache.httpClient.newCall(req).execute().close()
+                } catch (_: Exception) { /* skip unreachable tiles */ }
+                done++
+                if (done % 20 == 0 || done == total) {
+                    menuPanelResult.offlineDownloadLabel.text = "Downloading… $done / $total"
+                }
+            }
+            val label = if (isActive) "Done ($done tiles)" else "Cancelled"
+            menuPanelResult.offlineDownloadLabel.text = label
+            offlineDownloadJob = null
+        }
+    }
+
+    private fun syncOfflineDownloadLabel() {
+        menuPanelResult.offlineDownloadLabel.text = when {
+            offlineDownloadJob?.isActive == true -> "Cancel download"
+            else -> "Download current area"
+        }
+    }
+
+    private fun buildOfflineTileUrls(
+        bounds: LatLngBounds,
+        minZoom: Int,
+        maxZoom: Int,
+        maxTiles: Int,
+    ): List<String> {
+        val key  = BuildConfig.MAPTILER_KEY
+        val urls = mutableListOf<String>()
+        for (z in minZoom..maxZoom) {
+            val xMin = lonToTile(bounds.longitudeWest,  z)
+            val xMax = lonToTile(bounds.longitudeEast,  z)
+            val yMin = latToTile(bounds.latitudeNorth,  z)
+            val yMax = latToTile(bounds.latitudeSouth,  z)
+            for (x in xMin..xMax) for (y in yMin..yMax) {
+                urls += TILES_V3_TEMPLATE
+                    .replace("{z}", "$z")
+                    .replace("{x}", "$x")
+                    .replace("{y}", "$y") + key
+                if (urls.size >= maxTiles) return urls
+            }
+        }
+        return urls
+    }
+
+    private fun lonToTile(lon: Double, zoom: Int): Int =
+        floor((lon + 180.0) / 360.0 * (1 shl zoom)).toInt().coerceIn(0, (1 shl zoom) - 1)
+
+    private fun latToTile(lat: Double, zoom: Int): Int {
+        val latRad = Math.toRadians(lat.coerceIn(-85.051129, 85.051129))
+        return floor((1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * (1 shl zoom))
+            .toInt().coerceIn(0, (1 shl zoom) - 1)
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────
