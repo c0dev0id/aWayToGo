@@ -2837,7 +2837,7 @@ class MapActivity : ComponentActivity() {
             return Pair(offlineMapsMenuWidth, offlineMapsMenuHeight)
         val d      = resources.displayMetrics.density
         val itemH  = (64 * d).toInt()
-        val minW   = (280 * d).toInt()
+        val minW   = (420 * d).toInt()
         val unspec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         val content = menuPanelResult.offlineMapsContent
         var maxW = minW
@@ -3112,10 +3112,12 @@ class MapActivity : ComponentActivity() {
         tileSelectCard.text = cardText
         // Mirror the count in the submenu Download label so the user can read it
         // without looking away from the bottom-right card.
-        menuPanelResult.offlineDownloadLabel.text = if (count == 0) {
-            "Download current area"
-        } else {
-            "Download ($count tiles)"
+        val newLabel = if (count == 0) "Download current area" else "Download ($count tiles)"
+        if (menuPanelResult.offlineDownloadLabel.text != newLabel) {
+            menuPanelResult.offlineDownloadLabel.text = newLabel
+            // Label width changed — force re-measure on next submenu open.
+            offlineMapsMenuWidth  = -1
+            offlineMapsMenuHeight = -1
         }
     }
 
