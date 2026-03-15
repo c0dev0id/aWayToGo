@@ -3465,15 +3465,9 @@ class MapActivity : ComponentActivity() {
             }
             versionCardView.text = "installing…"
             versionCardView.isClickable = false
-            // Start the installer while still in the foreground so Android's
-            // background activity launch restriction (API 29+) does not silently
-            // drop the intent.  After launching, move our task to the back so the
-            // installer window can surface on top.
             try {
                 appUpdater.installApk(apk)
-                moveTaskToBack(true)
             } catch (_: Exception) {
-                // startActivity failed (e.g. no handler for the intent) — restore the card.
                 versionCardView.isClickable = true
                 versionCardView.text = "error"
             }

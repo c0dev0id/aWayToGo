@@ -1,8 +1,9 @@
 package de.codevoid.aWayToGo.update
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import androidx.core.content.FileProvider
+import android.content.pm.PackageInstaller
 import de.codevoid.aWayToGo.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -133,23 +134,34 @@ class AppUpdater(private val context: Context) {
         downloader.download(url, apkFile, onProgress)
 
     /**
-     * Opens the downloaded APK file with the system package installer.
+     * Installs the downloaded APK via the [PackageInstaller] session API.
      *
-     * Requires `REQUEST_INSTALL_PACKAGES` permission and a `<provider>` entry in the
-     * manifest with authority `${applicationId}.fileprovider`.
+     * Unlike `ACTION_VIEW` with a file URI, the system itself controls the
+     * install confirmation dialog.  This avoids the problem where a launcher
+     * activity with `singleTask` + HOME category pushes the installer's
+     * activity behind its own task on `startActivity()`.
+     *
+     * Requires `REQUEST_INSTALL_PACKAGES` permission.
      */
     fun installApk(file: File) {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(
+            PackageInstaller.SessionParams.MODE_FULL_INSTALL
         )
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val sessionId = installer.createSession(params)
+        installer.openSession(sessionId).use { session ->
+            file.inputStream().use { input ->
+                val out = session.openWrite("update.apk", 0, file.length())
+                input.copyTo(out)
+                session.fsync(out)
+                out.close()
             }
-        )
+            val intent = Intent(context, context.javaClass)
+            val pi = PendingIntent.getActivity(
+                context, sessionId, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            session.commit(pi.intentSender)
+        }
     }
 }
