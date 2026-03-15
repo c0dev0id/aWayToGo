@@ -53,6 +53,7 @@ class MapViewModel : ViewModel() {
                 isInSettingsMenu   = false,
                 isInDebugMenu      = false,
                 isInOfflineMapsMenu = false,
+                isInTileSelectMode = false,
                 isSearchOpen       = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
                 isInPanningMode    = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
@@ -196,6 +197,22 @@ class MapViewModel : ViewModel() {
     /** Toggle fuel station POI overlay on/off. */
     fun toggleFuelStations() {
         _uiState.update { it.copy(isFuelStationsEnabled = !it.isFuelStationsEnabled) }
+    }
+
+    /** Enter the tile-selection / offline-download overlay (closes the menu). */
+    fun enterTileSelectMode() {
+        _uiState.update { it.copy(
+            isMenuOpen          = false,
+            isInSettingsMenu    = false,
+            isInDebugMenu       = false,
+            isInOfflineMapsMenu = false,
+            isInTileSelectMode  = true,
+        )}
+    }
+
+    /** Exit tile-selection mode. */
+    fun exitTileSelectMode() {
+        _uiState.update { it.copy(isInTileSelectMode = false) }
     }
 
     /** Enter the Offline Maps submenu layer (menu must already be open). */

@@ -1,10 +1,12 @@
 package de.codevoid.aWayToGo.map
 
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.PI
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -68,6 +70,7 @@ import de.codevoid.aWayToGo.map.ui.MapLockMenuPanelResult
 import de.codevoid.aWayToGo.map.ui.buildMapLockMenuPanel
 import de.codevoid.aWayToGo.map.ui.MenuPanelResult
 import de.codevoid.aWayToGo.map.ui.buildMenuPanel
+import de.codevoid.aWayToGo.map.ui.TileGridOverlay
 import android.content.ClipData
 import android.content.ClipboardManager
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
@@ -220,6 +223,12 @@ class MapActivity : ComponentActivity() {
     private lateinit var crosshairView: CrosshairView
     private lateinit var versionCardView: TextView
     private lateinit var fuelTooltipCard: TextView
+    private lateinit var topRightContainer: android.widget.LinearLayout
+    private lateinit var tileGridOverlay: TileGridOverlay
+    private lateinit var tileDownloadButton: TextView
+    private lateinit var tileSelectCard: TextView
+    private var tileDownloadJob: Job? = null
+    private var tileSelectDownloadTotal = 0
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
     // Three horizontal bar views that make up the hamburger icon.
@@ -643,7 +652,7 @@ class MapActivity : ComponentActivity() {
         val density = resources.displayMetrics.density
 
         // Top-right container: OSD debug info (debug builds only) + map toggle buttons.
-        val topRightContainer = LinearLayout(this).apply {
+        topRightContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
@@ -979,6 +988,64 @@ class MapActivity : ComponentActivity() {
             ).apply { bottomMargin = (80 * density).toInt() },
         )
 
+        // ── Tile select mode views ─────────────────────────────────────────────
+        // TileGridOverlay — MATCH_PARENT transparent canvas; draws tile grid + selection highlights.
+        tileGridOverlay = TileGridOverlay(this).apply { visibility = View.GONE }
+        root.addView(
+            tileGridOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        // Download button — slides up from bottom centre when entering tile select mode.
+        tileDownloadButton = TextView(this).apply {
+            text = "Download"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            gravity  = Gravity.CENTER
+            setPadding((28 * density).toInt(), (14 * density).toInt(), (28 * density).toInt(), (14 * density).toInt())
+            background = GradientDrawable().apply {
+                shape        = GradientDrawable.RECTANGLE
+                cornerRadius = 32 * density
+                setColor(Color.argb(230, 21, 101, 192))   // blue pill
+            }
+            isClickable = true
+            isFocusable  = true
+            visibility   = View.GONE
+            setOnClickListener { startTileDownload() }
+        }
+        root.addView(
+            tileDownloadButton,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+            ).apply { bottomMargin = (24 * density).toInt() },
+        )
+
+        // Tile selection / progress card — bottom-right.
+        tileSelectCard = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity  = Gravity.CENTER_VERTICAL
+            setPadding((12 * density).toInt(), (8 * density).toInt(), (12 * density).toInt(), (8 * density).toInt())
+            background = GradientDrawable().apply {
+                setColor(Color.argb(200, 0, 0, 0))
+                cornerRadius = 16 * density
+            }
+            visibility = View.GONE
+        }
+        root.addView(
+            tileSelectCard,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END,
+            ).apply { setMargins(0, 0, (16 * density).toInt(), (72 * density).toInt()) },
+        )
+
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
         menuDismissOverlay = View(this).apply {
@@ -1019,6 +1086,7 @@ class MapActivity : ComponentActivity() {
             onToggleMenu = {
                 val s = viewModel.uiState.value
                 when {
+                    s.isInTileSelectMode  -> viewModel.exitTileSelectMode()
                     s.isInDebugMenu       -> viewModel.exitDebugMenu()
                     s.isInSettingsMenu    -> viewModel.exitSettingsMenu()
                     s.isInOfflineMapsMenu -> viewModel.exitOfflineMapsMenu()
@@ -1039,8 +1107,8 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
             // Frequent Updates → 5-min update polling while screen is on.
             result.debugContent.getChildAt(2).setOnClickListener { viewModel.toggleFrequentUpdates() }
-            // Offline Maps row → enters the offline maps submenu layer.
-            result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
+            // Offline Maps row → enters full-screen tile-selection mode.
+            result.offlineMapsRowInList.setOnClickListener { viewModel.enterTileSelectMode() }
             // Download / cancel row inside offline maps content.
             result.offlineMapsContent.getChildAt(0).setOnClickListener { onOfflineDownloadTapped() }
         }
@@ -1097,14 +1165,24 @@ class MapActivity : ComponentActivity() {
             // interrupted by upload work mid-animation.
             // Touch gestures additionally trigger visual panning mode.
             // A tap on the map surface closes the search panel (all elements).
-            m.addOnMapClickListener {
-                if (viewModel.uiState.value.isSearchOpen) {
-                    closeSearch()
-                    true  // consumed — don't propagate further
-                } else {
-                    false
+            m.addOnMapClickListener { latLng ->
+                val s = viewModel.uiState.value
+                when {
+                    s.isInTileSelectMode -> {
+                        val z = m.cameraPosition.zoom.roundToInt().coerceIn(8, 14)
+                        val x = lonToTile(latLng.longitude, z)
+                        val y = latToTile(latLng.latitude,  z)
+                        tileGridOverlay.toggleTile(z, x, y)
+                        tileGridOverlay.invalidate()
+                        updateTileSelectCard()
+                        true
+                    }
+                    s.isSearchOpen -> { closeSearch(); true }
+                    else -> false
                 }
             }
+            m.addOnCameraMoveListener { tileGridOverlay.invalidate() }
+
             m.addOnCameraMoveStartedListener { reason ->
                 // Don't gate during follow mode — the camera never idles while
                 // riding, so tiles would never load.  The 2-connection cap in
@@ -1160,8 +1238,9 @@ class MapActivity : ComponentActivity() {
                 }
             }
             m.setStyle(styleUrl) { s ->
-                map   = m
-                style = s
+                map               = m
+                style             = s
+                tileGridOverlay.map = m
                 enableLocationIfReady()
             }
         }
@@ -1798,6 +1877,7 @@ class MapActivity : ComponentActivity() {
         val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
         val debugMenuChanged     = old?.isInDebugMenu != new.isInDebugMenu
         val offlineMapsMenuChanged    = old?.isInOfflineMapsMenu != new.isInOfflineMapsMenu
+        val tileSelectModeChanged     = old?.isInTileSelectMode != new.isInTileSelectMode
         val debugModeChanged          = old?.isDebugMode != new.isDebugMode
         val frequentUpdatesChanged    = old?.isFrequentUpdatesEnabled != new.isFrequentUpdatesEnabled
         val mapLockMenuChanged        = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
@@ -1909,7 +1989,13 @@ class MapActivity : ComponentActivity() {
                 }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
-                runCloseMenuAnimation(instant = modeChanged)
+                // Skip animation entirely when tile-select mode is taking over —
+                // runEnterTileSelectMode() slides the panel out as part of its own sequence.
+                if (!new.isInTileSelectMode) {
+                    runCloseMenuAnimation(instant = modeChanged)
+                } else {
+                    menuDismissOverlay.visibility = View.GONE
+                }
             }
         }
 
@@ -1935,6 +2021,12 @@ class MapActivity : ComponentActivity() {
             } else {
                 runExitOfflineMapsAnimation()
             }
+        }
+
+        // ── Tile select mode transition ────────────────────────────────────────
+        if (old != null && tileSelectModeChanged) {
+            if (new.isInTileSelectMode) runEnterTileSelectMode()
+            else runExitTileSelectMode()
         }
 
         // ── Debug overlay ──────────────────────────────────────────────────────
@@ -2904,6 +2996,243 @@ class MapActivity : ComponentActivity() {
             })
             start()
         })
+    }
+
+    // ── Tile select mode ──────────────────────────────────────────────────────
+
+    /**
+     * Slide all Explore-mode chrome to the screen edges and reveal the tile grid.
+     *
+     * Called when [MapUiState.isInTileSelectMode] transitions to true.
+     * The menu panel is already at button size (close animation was skipped);
+     * it slides left along with my-location and the bottom bar.
+     */
+    private fun runEnterTileSelectMode() {
+        val d     = resources.displayMetrics.density
+        val w     = resources.displayMetrics.widthPixels.toFloat()
+        val h     = resources.displayMetrics.heightPixels.toFloat()
+        val dur   = 300L
+        val intr  = DecelerateInterpolator()
+
+        // Cancel any in-progress menu resize (panel is already at button size).
+        menuAnimator?.cancel()
+
+        // Reset menu panel to button size so the slide starts from the correct position.
+        val btnSz = (64 * d).toInt()
+        (menuPanel.layoutParams as FrameLayout.LayoutParams).also { lp ->
+            lp.width = btnSz; lp.height = btnSz; menuPanel.layoutParams = lp
+        }
+        hamburgerBars.forEach { it.rotation = 0f; it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
+
+        // ── Slide Explore chrome off screen ───────────────────────────────────
+        menuPanel.visibility = View.VISIBLE
+        menuPanel.translationX = 0f
+        menuPanel.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { menuPanel.visibility = View.GONE; menuPanel.translationX = 0f }
+            .start()
+
+        myLocationButton.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
+            .start()
+
+        exploreBottomBar.animate().translationY(h).setDuration(dur).setInterpolator(intr)
+            .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
+            .start()
+
+        topRightContainer.animate().translationX(w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { topRightContainer.visibility = View.GONE; topRightContainer.translationX = 0f }
+            .start()
+
+        versionCardView.animate().translationX(w).setDuration(dur).setInterpolator(intr)
+            .withEndAction { versionCardView.visibility = View.GONE; versionCardView.translationX = 0f }
+            .start()
+
+        // ── Fade in tile grid ──────────────────────────────────────────────────
+        tileGridOverlay.alpha = 0f
+        tileGridOverlay.visibility = View.VISIBLE
+        tileGridOverlay.animate().alpha(1f).setDuration(dur).start()
+
+        // ── Slide up Download button ──────────────────────────────────────────
+        tileDownloadButton.translationY = h
+        tileDownloadButton.visibility = View.VISIBLE
+        tileDownloadButton.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
+
+        // ── Slide in tile info card ────────────────────────────────────────────
+        updateTileSelectCard()
+        tileSelectCard.translationX = w
+        tileSelectCard.alpha = 1f
+        tileSelectCard.visibility = View.VISIBLE
+        tileSelectCard.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+    }
+
+    /**
+     * Slide all Explore-mode chrome back on screen and hide the tile grid.
+     *
+     * Called when [MapUiState.isInTileSelectMode] transitions to false.
+     * If a download is running the tile card remains visible as a progress indicator.
+     */
+    private fun runExitTileSelectMode() {
+        val d    = resources.displayMetrics.density
+        val w    = resources.displayMetrics.widthPixels.toFloat()
+        val h    = resources.displayMetrics.heightPixels.toFloat()
+        val dur  = 300L
+        val intr = DecelerateInterpolator()
+
+        // ── Slide Explore chrome back in (only from EXPLORE mode) ─────────────
+        if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
+            menuPanel.translationX = -w
+            menuPanel.visibility = View.VISIBLE
+            menuPanel.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+
+            myLocationButton.translationX = -w
+            myLocationButton.visibility = View.VISIBLE
+            myLocationButton.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+
+            exploreBottomBar.translationY = h
+            exploreBottomBar.visibility = View.VISIBLE
+            exploreBottomBar.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
+
+            topRightContainer.translationX = w
+            topRightContainer.visibility = View.VISIBLE
+            topRightContainer.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+
+            versionCardView.translationX = w
+            versionCardView.visibility = View.VISIBLE
+            versionCardView.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+        }
+
+        // ── Fade out tile grid ─────────────────────────────────────────────────
+        tileGridOverlay.animate().alpha(0f).setDuration(dur)
+            .withEndAction { tileGridOverlay.visibility = View.GONE; tileGridOverlay.alpha = 1f }
+            .start()
+
+        // ── Slide down Download button ─────────────────────────────────────────
+        tileDownloadButton.animate().translationY(h).setDuration(dur)
+            .withEndAction { tileDownloadButton.visibility = View.GONE; tileDownloadButton.translationY = 0f }
+            .start()
+
+        // ── Hide tile info card — unless a download is running ─────────────────
+        if (tileDownloadJob?.isActive != true) {
+            tileSelectCard.animate().translationX(w).setDuration(dur)
+                .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.translationX = 0f }
+                .start()
+        }
+    }
+
+    /** Update the tile selection info card with the current tile count and size estimate. */
+    private fun updateTileSelectCard() {
+        val count = tileGridOverlay.countDownloadTiles()
+        val d = resources.displayMetrics.density
+        tileSelectCard.background = GradientDrawable().apply {
+            setColor(Color.argb(200, 0, 0, 0))
+            cornerRadius = 16 * d
+        }
+        tileSelectCard.text = if (count == 0) {
+            "No tiles selected"
+        } else {
+            val mb = count * 20.0 / 1024.0   // ~20 KB per vector tile
+            "%d tiles · ~%.1f MB".format(count, mb)
+        }
+    }
+
+    /**
+     * Start downloading all tiles covered by the current selection (z8–z14).
+     *
+     * The tile select card becomes a progress bar (same ClipDrawable technique as
+     * the version card during APK download).  Tile select mode is exited immediately
+     * so the map chrome slides back in while the download continues in the background.
+     */
+    private fun startTileDownload() {
+        if (tileGridOverlay.selectedTiles.isEmpty()) return
+        val urls = buildTileUrlsForSelection()
+        if (urls.isEmpty()) return
+        val total = urls.size
+
+        // Set up the card as a progress bar synchronously, before the state-flow
+        // dispatch runs runExitTileSelectMode().  Since tileDownloadJob will be
+        // non-null and active at that point, the card won't be hidden.
+        updateTileDownloadProgress(0, total)
+        tileSelectCard.text = "0 / $total"
+
+        tileDownloadJob = lifecycleScope.launch {
+            var done = 0
+            for (url in urls) {
+                if (!isActive) break
+                try {
+                    TileCache.httpClient.newCall(Request.Builder().url(url).build()).execute().close()
+                } catch (_: Exception) { /* skip unreachable tile */ }
+                done++
+                if (done % 20 == 0 || done == total) {
+                    val pct = (done * 100 / total).coerceIn(0, 100)
+                    tileSelectCard.text = "$done / $total"
+                    updateTileDownloadProgress(pct, total)
+                }
+            }
+            // Completion
+            val d = resources.displayMetrics.density
+            tileSelectCard.text = if (isActive) "Done ($done tiles)" else "Cancelled"
+            tileSelectCard.background = GradientDrawable().apply {
+                setColor(Color.argb(200, 0, 0, 0))
+                cornerRadius = 16 * d
+            }
+            tileDownloadJob = null
+            delay(3_000)
+            tileSelectCard.animate().alpha(0f).setDuration(300)
+                .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
+                .start()
+        }
+
+        // Exit tile select mode — UI slides back in; renderUiState sees
+        // tileDownloadJob.isActive == true and keeps the progress card visible.
+        viewModel.exitTileSelectMode()
+    }
+
+    /** Update the tile download card's ClipDrawable progress fill. */
+    private fun updateTileDownloadProgress(pct: Int, @Suppress("UNUSED_PARAMETER") total: Int) {
+        val d = resources.displayMetrics.density
+        val r = 16f * d
+        val base   = GradientDrawable().apply { setColor(Color.argb(200, 0, 0, 0)); cornerRadius = r }
+        val accent = GradientDrawable().apply { setColor(Color.argb(220, 0, 80, 160)); cornerRadius = r }
+        val clip   = ClipDrawable(accent, Gravity.START, ClipDrawable.HORIZONTAL)
+        tileSelectCard.background = LayerDrawable(arrayOf(base, clip))
+        clip.level = pct * 100   // ClipDrawable level is 0–10000
+    }
+
+    /**
+     * Build a deduplicated list of tile URLs for all z8–z14 tiles covered by
+     * the current z12-canonical selection.
+     */
+    private fun buildTileUrlsForSelection(): List<String> {
+        val apiKey  = BuildConfig.MAPTILER_KEY
+        val tileSet = mutableSetOf<Long>()
+
+        fun pack(z: Int, x: Int, y: Int): Long =
+            z.toLong() * 100_000_000L + x.toLong() * 16_384L + y
+
+        for (k in tileGridOverlay.selectedTiles) {
+            val x12 = (k / 4096L).toInt()
+            val y12 = (k % 4096L).toInt()
+            // z12 + z13/z14 descendants
+            tileSet.add(pack(12, x12, y12))
+            for (dz in 1..2) {
+                val s = 1 shl dz
+                for (dx in 0 until s) for (dy in 0 until s)
+                    tileSet.add(pack(12 + dz, x12 * s + dx, y12 * s + dy))
+            }
+            // z8–z11 ancestors (deduplicated via set)
+            for (dz in 1..4) tileSet.add(pack(12 - dz, x12 shr dz, y12 shr dz))
+        }
+
+        return tileSet.map { packed ->
+            val z   = (packed / 100_000_000L).toInt()
+            val rem = packed % 100_000_000L
+            val x   = (rem / 16_384L).toInt()
+            val y   = (rem % 16_384L).toInt()
+            TILES_V3_TEMPLATE
+                .replace("{z}", "$z")
+                .replace("{x}", "$x")
+                .replace("{y}", "$y") + apiKey
+        }
     }
 
     private fun onOfflineDownloadTapped() {

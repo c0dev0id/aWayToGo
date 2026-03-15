@@ -38,4 +38,5 @@ data class MapUiState(
     val isMapLockMenuOpen: Boolean = false,
     val isFuelStationsEnabled: Boolean = false,
     val isInOfflineMapsMenu: Boolean = false,
+    val isInTileSelectMode: Boolean = false,
 )
