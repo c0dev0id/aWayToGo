@@ -246,6 +246,7 @@ class MapActivity : ComponentActivity() {
     @Volatile private var tileDownloadBytes = 0L
     private var tileDownloadStartNs = 0L
     private var tileDownloadClip: ClipDrawable? = null
+    private var osdLastTilePct = -1
     /** Camera position saved when entering tile-select mode; restored on exit. */
     private var tileSelectSavedCamera: CameraPosition? = null
 
@@ -575,11 +576,14 @@ class MapActivity : ComponentActivity() {
                 val done  = tileDownloadDone
                 val bytes = tileDownloadBytes
                 val pct   = (done * 100 / dlTotal).coerceIn(0, 100)
-                tileDownloadClip?.level = pct * 100
-                val elapsedS = (frameTimeNanos - tileDownloadStartNs) / 1_000_000_000.0
-                val rate     = if (elapsedS > 0.5) bytes / elapsedS else 0.0
-                val rateText = if (rate > 0) " (%.1fMB/s)".format(rate / (1024.0 * 1024.0)) else ""
-                tileSelectCard.text = "$done/$dlTotal$rateText"
+                if (pct != osdLastTilePct) {
+                    osdLastTilePct          = pct
+                    tileDownloadClip?.level = pct * 100
+                    val elapsedS  = (frameTimeNanos - tileDownloadStartNs) / 1_000_000_000.0
+                    val rate      = if (elapsedS > 0.5) bytes / elapsedS else 0.0
+                    val rateText  = if (rate > 0) " (%.1fMB/s)".format(rate / (1024.0 * 1024.0)) else ""
+                    tileSelectCard.text = "$done/$dlTotal$rateText"
+                }
             }
 
             Choreographer.getInstance().postFrameCallback(this)
@@ -1132,6 +1136,7 @@ class MapActivity : ComponentActivity() {
                     tileDownloadTotal = 0
                     tileDownloadBytes = 0L
                     tileDownloadClip  = null
+                    osdLastTilePct    = -1
                     getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                         .putBoolean(PREF_APPLY_PENDING, false).apply()
                     updateTileSelectCard()
@@ -3725,6 +3730,7 @@ class MapActivity : ComponentActivity() {
         tileDownloadDone  = 0
         tileDownloadBytes = 0L
         tileDownloadStartNs = System.nanoTime()
+        osdLastTilePct    = -1
 
         // Mark as pending so we resume on app restart.
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
@@ -3812,6 +3818,7 @@ class MapActivity : ComponentActivity() {
         tileDownloadDone  = 0
         tileDownloadTotal = 0
         tileDownloadBytes = 0L
+        osdLastTilePct    = -1
         delay(3_000)
         tileSelectCard.animate().alpha(0f).setDuration(300)
             .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
