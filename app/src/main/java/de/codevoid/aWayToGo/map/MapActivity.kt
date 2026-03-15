@@ -1178,14 +1178,21 @@ class MapActivity : ComponentActivity() {
             // tile requests competing with the current viewport, improving gl_fps during pan.
             m.setPrefetchZoomDelta(2)
             m.uiSettings.apply {
-                isRotateGesturesEnabled  = true
-                isTiltGesturesEnabled    = true
-                isCompassEnabled         = true
+                isRotateGesturesEnabled      = true
+                isTiltGesturesEnabled        = true
+                isCompassEnabled             = true
                 // Disable MapLibre's built-in scroll gesture.  Single-finger panning is
                 // handled by our own touch listener (direct 1:1 camera movement with no
                 // touch-slop delay).  Multi-touch gestures (pinch-zoom, rotate, tilt) are
                 // still fully handled by MapLibre.
-                isScrollGesturesEnabled  = false
+                isScrollGesturesEnabled      = false
+                // Disable double-tap-to-zoom.  With double-tap detection active MapLibre's
+                // internal GestureDetectorCompat enters a ~300 ms "wait for second tap"
+                // window on every ACTION_DOWN.  During that window its gesture pipeline
+                // delays responding to movement even though our own touch listener already
+                // moves the camera.  Removing it eliminates the tap-disambiguation pause
+                // users feel at the very start of a drag.
+                isDoubleTapGesturesEnabled   = false
                 // Enable ease-out after multi-touch gestures (pinch-zoom deceleration,
                 // rotate deceleration).  Scroll velocity is handled by our own fling code.
                 setAllVelocityAnimationsEnabled(true)
@@ -1569,7 +1576,7 @@ class MapActivity : ComponentActivity() {
         val dcx    = puck.x - mapView.width  / 2f
         val dcy    = puck.y - mapView.height / 2f
         val distDp = sqrt(dcx * dcx + dcy * dcy) / d
-        crosshairView.alpha = ((distDp - 5f) / (20f - 5f)).coerceIn(0f, 1f)
+        crosshairView.alpha = ((distDp - 20f) / (100f - 20f)).coerceIn(0f, 1f)
     }
 
     /**
