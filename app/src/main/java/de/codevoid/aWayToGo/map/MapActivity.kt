@@ -1179,13 +1179,20 @@ class MapActivity : ComponentActivity() {
             m.setPrefetchZoomDelta(2)
             m.uiSettings.apply {
                 isRotateGesturesEnabled      = true
-                isTiltGesturesEnabled        = true
+                // Tilt disabled: two-finger vertical drag is mutually exclusive with
+                // two-finger pan — MapLibre must pick one on gesture start, which locks
+                // out pan when tilt fires first.  Removing tilt eliminates that conflict
+                // so pan + rotate + zoom can all run simultaneously.
+                isTiltGesturesEnabled        = false
                 isCompassEnabled             = true
-                // Disable MapLibre's built-in scroll gesture.  Single-finger panning is
-                // handled by our own touch listener (direct 1:1 camera movement with no
-                // touch-slop delay).  Multi-touch gestures (pinch-zoom, rotate, tilt) are
-                // still fully handled by MapLibre.
+                // Disable MapLibre's built-in scroll gesture for single-finger.
+                // Single-finger panning is handled by our own touch listener (direct 1:1
+                // camera movement with no touch-slop delay).
                 isScrollGesturesEnabled      = false
+                // Allow pan to run simultaneously with rotate/zoom during two-finger
+                // gestures.  Without this MapLibre locks out scroll once rotate or zoom
+                // is the first gesture detected.
+                isScrollGesturesEnabledDuringRotateOrZoom = true
                 // Disable double-tap-to-zoom.  With double-tap detection active MapLibre's
                 // internal GestureDetectorCompat enters a ~300 ms "wait for second tap"
                 // window on every ACTION_DOWN.  During that window its gesture pipeline
