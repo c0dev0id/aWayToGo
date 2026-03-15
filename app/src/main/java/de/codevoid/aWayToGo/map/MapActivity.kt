@@ -170,6 +170,8 @@ private const val LAYER_TILE_GRID_LINE   = "tile-grid-line"
 
 
 private const val LOCATION_PERMISSION_REQUEST = 1
+private const val PREFS_NAME           = "aWayToGo"
+private const val PREF_TILE_SELECTION  = "tile_selection"
 
 // GPS follow: dead-reckoning look-ahead passed to animateCamera so MapLibre
 // interpolates between frames rather than snapping once per GPS fix.
@@ -1000,6 +1002,7 @@ class MapActivity : ComponentActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT,
         ))
+        restoreTileSelection()
 
         // Tile selection / progress card — bottom-right.
         tileSelectCard = TextView(this).apply {
@@ -3195,6 +3198,19 @@ class MapActivity : ComponentActivity() {
      * the version card during APK download).  Tile select mode is exited immediately
      * so the map chrome slides back in while the download continues in the background.
      */
+    private fun saveTileSelection() {
+        val value = tileGridOverlay.selectedTiles.joinToString(",")
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_TILE_SELECTION, value).apply()
+    }
+
+    private fun restoreTileSelection() {
+        val value = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_TILE_SELECTION, null)
+        if (!value.isNullOrEmpty()) {
+            tileGridOverlay.selectedTiles.clear()
+            value.split(",").forEach { it.toIntOrNull()?.let { k -> tileGridOverlay.selectedTiles.add(k) } }
+        }
+    }
+
     private fun startTileDownload() {
         if (tileGridOverlay.selectedTiles.isEmpty()) return
         val urls = buildTileUrlsForSelection()
@@ -3222,6 +3238,7 @@ class MapActivity : ComponentActivity() {
                 }
             }
             // Completion
+            if (isActive) saveTileSelection()
             val d = resources.displayMetrics.density
             tileSelectCard.text = if (isActive) "Done ($done tiles)" else "Cancelled"
             tileSelectCard.background = GradientDrawable().apply {
