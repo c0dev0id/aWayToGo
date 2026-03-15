@@ -117,8 +117,8 @@ fun buildMapLockMenuPanel(context: Context): MapLockMenuPanelResult {
         }
     }
 
-    // Icon-only button in the header zone, to the right of the ring hole.
-    val copyCoordinatesRow = FrameLayout(context).apply {
+    // Icon-only buttons in the header zone, to the right of the ring hole.
+    fun headerIconButton(iconRes: Int): FrameLayout = FrameLayout(context).apply {
         isClickable = true
         isFocusable = true
         background  = RippleDrawable(
@@ -131,31 +131,40 @@ fun buildMapLockMenuPanel(context: Context): MapLockMenuPanelResult {
         )
         addView(
             ImageView(context).apply {
-                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_lock_copy_coords))
+                setImageDrawable(ContextCompat.getDrawable(context, iconRes))
                 scaleType = ImageView.ScaleType.FIT_CENTER
             },
-            FrameLayout.LayoutParams(iconSz, iconSz, Gravity.CENTER),
+            FrameLayout.LayoutParams(iconSz, iconSz, Gravity.CENTER_VERTICAL or Gravity.START).apply {
+                leftMargin = hPad
+            },
         )
+    }
+
+    val copyCoordinatesRow = headerIconButton(R.drawable.ic_lock_copy_coords)
+    val quickSearchRow     = headerIconButton(R.drawable.ic_search)
+
+    val headerIcons = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        addView(copyCoordinatesRow, LinearLayout.LayoutParams(0, ringDiam, 1f))
+        addView(quickSearchRow,     LinearLayout.LayoutParams(0, ringDiam, 1f))
     }
 
     val placeDragLineRow = menuItem(R.drawable.ic_lock_drag_line, "Place Drag Line")
     val navigateRow      = menuItem(R.drawable.ic_lock_navigate,  "Navigate")
-    val quickSearchRow   = menuItem(R.drawable.ic_search,         "Quick Search")
 
     val contentList = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         addView(placeDragLineRow, LinearLayout.LayoutParams(panelW, itemH))
         addView(navigateRow,      LinearLayout.LayoutParams(panelW, itemH))
-        addView(quickSearchRow,   LinearLayout.LayoutParams(panelW, itemH))
     }
 
     val root = MapLockMenuFrame(context).apply {
         // Start fully transparent; runOpenMapLockMenuAnimation fades + scales it in.
         alpha      = 0f
         visibility = View.GONE
-        // Copy-coordinates icon in the header zone, right of the ring hole.
+        // Copy-coordinates and quick-search icons in the header zone, right of the ring hole.
         addView(
-            copyCoordinatesRow,
+            headerIcons,
             FrameLayout.LayoutParams(panelW - ringDiam, ringDiam).apply {
                 leftMargin = ringDiam
             },
