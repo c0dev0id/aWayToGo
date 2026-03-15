@@ -347,6 +347,9 @@ class MapActivity : ComponentActivity() {
     // nanoTime() when the anchor was most recently placed; drives the whip animation.
     private var anchorSetTimeNs: Long = 0L
     private val dragLineAnimator = DragLineAnimator()
+    // True once the whip animation has settled to a straight line; cleared on
+    // every new anchor placement so the animation runs fresh each time.
+    private var dragLineSettled = false
 
     // ── Anchor slide animation ────────────────────────────────────────────────
     // When the user places a new anchor while one already exists, the anchor
@@ -449,6 +452,15 @@ class MapActivity : ComponentActivity() {
         )
 
         updateCrosshairAlpha()
+
+        // ── Settled drag-line refresh ────────────────────────────────────────
+        // While the whip animation is running doFrame pushes geometry every vsync.
+        // Once settled, only GPS fixes move the puck end — update here at 5 Hz.
+        if (dragLineSettled) {
+            dragLineAnchor?.let { anchor ->
+                setDragLine(LatLng(followLastLat, followLastLon), anchor, 0.0)
+            }
+        }
     }
 
     // ── Compass sensor ────────────────────────────────────────────────────────
@@ -509,8 +521,11 @@ class MapActivity : ComponentActivity() {
             val m = map
             if (m != null && !followLastLat.isNaN()) {
                 dragLineAnchor?.let { anchor ->
+                    val isSliding       = anchorSlideFrom != null
                     val effectiveAnchor = slideAnchor() ?: anchor
-                    setDragLine(LatLng(followLastLat, followLastLon), effectiveAnchor, frameTimeNanos / 1_000_000_000.0)
+                    if (!dragLineSettled || isSliding) {
+                        setDragLine(LatLng(followLastLat, followLastLon), effectiveAnchor, frameTimeNanos / 1_000_000_000.0)
+                    }
                 }
             }
 
@@ -2447,8 +2462,9 @@ class MapActivity : ComponentActivity() {
         }
         // Always restart the wave so it animates during the slide and settles after.
         dragLineAnimator.reset()
-        anchorSetTimeNs = System.nanoTime()
-        dragLineAnchor = target
+        anchorSetTimeNs  = System.nanoTime()
+        dragLineSettled  = false
+        dragLineAnchor   = target
         m.locationComponent.lastKnownLocation?.let { loc ->
             setDragLine(LatLng(loc.latitude, loc.longitude), slideAnchor() ?: target, System.nanoTime() / 1_000_000_000.0)
         }
@@ -4260,6 +4276,7 @@ class MapActivity : ComponentActivity() {
 
         val linePoints: List<Point> = if (samples == null) {
             // Animation settled — use cheap 2-point straight line.
+            dragLineSettled = true
             listOf(
                 Point.fromLngLat(from.longitude, from.latitude),
                 Point.fromLngLat(to.longitude,   to.latitude),
