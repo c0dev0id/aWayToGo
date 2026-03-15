@@ -4530,6 +4530,25 @@ class MapActivity : ComponentActivity() {
         mapView.onStart()
     }
 
+    /**
+     * Handles the [PackageInstaller] status callback delivered via the PendingIntent
+     * passed to [Session.commit].
+     *
+     * When the system is ready to show the install confirmation it sends
+     * [PackageInstaller.STATUS_PENDING_USER_ACTION] back to this Activity with the
+     * real installer intent in [Intent.EXTRA_INTENT].  We must call [startActivity]
+     * on that intent to make the system confirmation dialog appear.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, -1)
+                == android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            @Suppress("DEPRECATION")
+            val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+            if (confirmIntent != null) startActivity(confirmIntent)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         mapView.onResume()
