@@ -85,6 +85,7 @@ import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
 import de.codevoid.aWayToGo.map.DownloadState
+import de.codevoid.aWayToGo.tiles.OfflineTileRepository
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
 import kotlinx.coroutines.CompletableDeferred
@@ -238,6 +239,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var topRightContainer: android.widget.LinearLayout
     private lateinit var tileGridOverlay: TileGridOverlay
     private lateinit var tileSelectCard: TextView
+    private val offlineTileRepo = OfflineTileRepository()
     private var tileDownloadJob:   Job? = null
     @Volatile private var tileDownloadDone  = 0
     private var tileDownloadTotal = 0
@@ -1198,8 +1200,8 @@ class MapActivity : ComponentActivity() {
                 when {
                     s.isInTileSelectMode -> {
                         val z = tileGridOverlay.gridZoom
-                        val x = lonToTile(latLng.longitude, z)
-                        val y = latToTile(latLng.latitude,  z)
+                        val x = offlineTileRepo.lonToTile(latLng.longitude, z)
+                        val y = offlineTileRepo.latToTile(latLng.latitude,  z)
                         tileGridOverlay.toggleTile(x, y)
                         tileGridOverlay.invalidate()
                         updateTileSelectCard()
@@ -3741,13 +3743,22 @@ class MapActivity : ComponentActivity() {
      * The apply is persisted via [PREF_APPLY_PENDING] so it resumes automatically
      * if the app is killed mid-download.
      */
+    /**
+     * Apply the current tile selection: evict cached tiles outside the selection,
+     * then download any missing tiles inside the selection.
+     *
+     * Domain work (eviction + HTTP fetch loop) is delegated to [OfflineTileRepository].
+     * Progress is driven by the Choreographer frame callback which reads the
+     * volatile [tileDownloadDone] / [tileDownloadBytes] fields every vsync.
+     *
+     * The apply is persisted via [PREF_APPLY_PENDING] so it resumes automatically
+     * if the app is killed mid-download.
+     */
     private fun applyTileSelection() {
-        // Cancel any in-flight job; restart includes the updated selection.
         tileDownloadJob?.cancel()
 
         val keys  = tileGridOverlay.selectedTiles.toSet()   // snapshot
-        val total = keys.size * 5461                        // exact, no set needed
-        tileDownloadTotal = total
+        tileDownloadTotal = keys.size * 5461
         tileDownloadDone  = 0
         tileDownloadBytes = 0L
         tileDownloadStartNs = System.nanoTime()
@@ -3767,16 +3778,7 @@ class MapActivity : ComponentActivity() {
         }
 
         tileDownloadJob = lifecycleScope.launch {
-            // Phase 1 — evict tiles outside the selection.
-            withContext(kotlinx.coroutines.Dispatchers.IO) {
-                TileCache.evictTilesNotIn(keys)
-            }
-
-            // Phase 2 — download missing tiles inside the selection.
-            if (keys.isEmpty()) {
-                finishApply("Done")
-                return@launch
-            }
+            if (keys.isEmpty()) { finishApply("Done"); return@launch }
 
             // Set up the progress bar drawable; the Choreographer loop updates
             // the clip level and text every frame from volatile fields.
@@ -3787,36 +3789,17 @@ class MapActivity : ComponentActivity() {
             tileSelectCard.background = LayerDrawable(arrayOf(base, clip))
             tileDownloadClip = clip
 
-            var done = 0
-            withContext(kotlinx.coroutines.Dispatchers.IO) {
-                for (url in tileUrlSequence(keys)) {
-                    if (!isActive) break
-                    try {
-                        val cacheResp = TileCache.httpClient.newCall(
-                            Request.Builder().url(url).cacheControl(CacheControl.FORCE_CACHE).build()
-                        ).execute()
-                        val cached = cacheResp.isSuccessful
-                        cacheResp.close()
-                        if (!cached) {
-                            val resp = TileCache.httpClient.newCall(
-                                Request.Builder().url(url).build()
-                            ).execute()
-                            val len = resp.header("Content-Length")?.toLongOrNull() ?: 0L
-                            resp.close()
-                            tileDownloadBytes += len
-                        }
-                    } catch (_: Exception) { /* skip unreachable tile */ }
-                    tileDownloadDone = ++done
-                    // In offline mode, periodically nudge the camera so MapLibre
-                    // re-requests tiles that are now available in cache.
-                    if (TileCache.isOfflineMode && done % 100 == 0) {
-                        withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
-                        }
+            offlineTileRepo.apply(keys) { p ->
+                tileDownloadDone  = p.done
+                tileDownloadBytes = p.bytes
+                // MapLibre nudge: must stay here — requires a live map reference.
+                if (TileCache.isOfflineMode && p.done % 100 == 0) {
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
                     }
                 }
             }
-            finishApply(if (isActive) "Done ($done tiles)" else "Cancelled")
+            finishApply(if (isActive) "Done ($tileDownloadDone tiles)" else "Cancelled")
         }
 
         viewModel.closeMenu()
@@ -3992,30 +3975,6 @@ class MapActivity : ComponentActivity() {
             ?.setProperties(PropertyFactory.visibility(vis))
         style?.getLayerAs<SymbolLayer>(LAYER_OFFLINE_LABEL)
             ?.setProperties(PropertyFactory.visibility(vis))
-    }
-
-    /** Lazy sequence of all z8–z14 tile URLs for the given z8 key set. No upfront allocation. */
-    private fun tileUrlSequence(keys: Set<Int>): Sequence<String> = sequence {
-        val apiKey = BuildConfig.MAPTILER_KEY
-        for (k in keys) {
-            val x8 = k / 256
-            val y8 = k % 256
-            for (dz in 0..6) {
-                val scale = 1 shl dz
-                for (dx in 0 until scale) for (dy in 0 until scale) {
-                    yield("https://api.maptiler.com/tiles/v3/${8 + dz}/${x8 * scale + dx}/${y8 * scale + dy}.pbf?key=$apiKey")
-                }
-            }
-        }
-    }
-
-    private fun lonToTile(lon: Double, zoom: Int): Int =
-        floor((lon + 180.0) / 360.0 * (1 shl zoom)).toInt().coerceIn(0, (1 shl zoom) - 1)
-
-    private fun latToTile(lat: Double, zoom: Int): Int {
-        val latRad = Math.toRadians(lat.coerceIn(-85.051129, 85.051129))
-        return floor((1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * (1 shl zoom))
-            .toInt().coerceIn(0, (1 shl zoom) - 1)
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────
