@@ -43,6 +43,7 @@ import de.codevoid.aWayToGo.R
  * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
  * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
  * [frequentUpdatesLabel] is the TextView for the Frequent Updates toggle row.
+ * [offlineModeLabel] is the TextView for the Offline Mode toggle row in the debug submenu.
  * [offlineMapsRowInList] is the "Offline Maps" item inside the main menu list.
  * [offlineMapsRowIcon] is the icon ImageView inside [offlineMapsRowInList].
  * [offlineMapsGhostHeader] is a full-width clone of the Offline Maps row placed at
@@ -64,6 +65,7 @@ data class MenuPanelResult(
     val debugContent: LinearLayout,
     val debugToggleLabel: TextView,
     val frequentUpdatesLabel: TextView,
+    val offlineModeLabel: TextView,
     val offlineMapsRowInList: View,
     val offlineMapsRowIcon: ImageView,
     val offlineMapsGhostHeader: View,
@@ -290,6 +292,40 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         )
     }
 
+    val offlineModeLabel = TextView(context).apply {
+        text = "Offline Mode: OFF"
+        setTextColor(Color.WHITE)
+        textSize = 20f
+        gravity = Gravity.CENTER_VERTICAL
+        maxLines = 1
+    }
+    val offlineModeItem = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        isClickable = true
+        isFocusable = true
+        background  = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+            null,
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.WHITE) },
+        )
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_offline_maps))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            offlineModeLabel,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+    }
+
+    val clearCacheItem = menuItem(R.drawable.ic_menu_offline_maps, "Clear Offline Data")
+
     val debugContent = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
@@ -297,6 +333,8 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         addView(debugToggleItem,       LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
         addView(runBenchmarkItem,      LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
         addView(frequentUpdatesItem,   LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+        addView(offlineModeItem,       LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
+        addView(clearCacheItem,        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
     }
 
     // ── Offline Maps submenu content ──────────────────────────────────────────
@@ -472,6 +510,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         debugContent             = debugContent,
         debugToggleLabel         = debugToggleLabel,
         frequentUpdatesLabel     = frequentUpdatesLabel,
+        offlineModeLabel         = offlineModeLabel,
         offlineMapsRowInList     = offlineMapsRowInList,
         offlineMapsRowIcon       = offlineMapsRowIcon,
         offlineMapsGhostHeader   = offlineMapsGhostHeader,

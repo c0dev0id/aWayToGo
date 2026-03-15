@@ -199,6 +199,11 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isFuelStationsEnabled = !it.isFuelStationsEnabled) }
     }
 
+    /** Toggle offline mode: forces all tile requests to use the disk cache only. */
+    fun toggleOfflineMode() {
+        _uiState.update { it.copy(isOfflineMode = !it.isOfflineMode) }
+    }
+
     /** Enter the tile-selection / offline-download overlay (closes the menu). */
     fun enterTileSelectMode() {
         _uiState.update { it.copy(

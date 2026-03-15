@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.map
 
 import android.content.Context
 import okhttp3.Cache
+import okhttp3.CacheControl
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import org.maplibre.android.module.http.HttpRequestUtil
@@ -66,6 +67,13 @@ object TileCache {
     /** Exposes the gate so [MapActivity] can pause/resume it on camera events. */
     val gate = TileGateInterceptor()
 
+    /**
+     * When true, all tile requests are served from the disk cache only — no network
+     * fetches are attempted.  Tiles not in cache return HTTP 504 and MapLibre renders
+     * blank for those areas.  Toggle via [MapViewModel.toggleOfflineMode].
+     */
+    @Volatile var isOfflineMode: Boolean = false
+
     private var initialised = false
     private var diskCache: Cache? = null
     private var _client: OkHttpClient? = null
@@ -97,6 +105,18 @@ object TileCache {
         val client = OkHttpClient.Builder()
             .cache(cache)
             .dispatcher(dispatcher)
+            // Application interceptor: runs BEFORE OkHttp's cache check, so it
+            // can force FORCE_CACHE on every request when offline mode is active.
+            .addInterceptor { chain ->
+                val req = if (isOfflineMode) {
+                    chain.request().newBuilder()
+                        .cacheControl(CacheControl.FORCE_CACHE)
+                        .build()
+                } else {
+                    chain.request()
+                }
+                chain.proceed(req)
+            }
             // Network interceptor: runs AFTER OkHttp's cache check, so
             // disk-cached tiles bypass the gate and return immediately.
             .addNetworkInterceptor(gate)

@@ -21,6 +21,7 @@ package de.codevoid.aWayToGo.map
  * | [isMapLockMenuOpen]         | Map-lock context menu open (long-press on crosshair).      |
  * | [isFuelStationsEnabled]     | Fuel station POI symbols visible on the map.               |
  * | [isInOfflineMapsMenu]       | Offline Maps submenu layer is open.                         |
+ * | [isOfflineMode]             | All tile requests served from cache only; no network.        |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -39,4 +40,5 @@ data class MapUiState(
     val isFuelStationsEnabled: Boolean = false,
     val isInOfflineMapsMenu: Boolean = false,
     val isInTileSelectMode: Boolean = false,
+    val isOfflineMode: Boolean = false,
 )

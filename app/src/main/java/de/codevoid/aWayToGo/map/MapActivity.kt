@@ -1087,6 +1087,12 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
             // Frequent Updates → 5-min update polling while screen is on.
             result.debugContent.getChildAt(2).setOnClickListener { viewModel.toggleFrequentUpdates() }
+            // Offline Mode → forces all tile requests to use disk cache only.
+            result.debugContent.getChildAt(3).setOnClickListener { viewModel.toggleOfflineMode() }
+            // Clear Offline Data → evicts all cached tiles.
+            result.debugContent.getChildAt(4).setOnClickListener {
+                lifecycleScope.launch(Dispatchers.IO) { TileCache.clearCache() }
+            }
             // Offline Maps row → opens the offline maps submenu and activates tile-select mode.
             result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
             // Download row inside offline maps submenu → starts the tile download.
@@ -1880,6 +1886,7 @@ class MapActivity : ComponentActivity() {
         val tileSelectModeChanged     = old?.isInTileSelectMode != new.isInTileSelectMode
         val debugModeChanged          = old?.isDebugMode != new.isDebugMode
         val frequentUpdatesChanged    = old?.isFrequentUpdatesEnabled != new.isFrequentUpdatesEnabled
+        val offlineModeChanged        = old?.isOfflineMode != new.isOfflineMode
         val mapLockMenuChanged        = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
 
         // ── Crosshair ──────────────────────────────────────────────────────────
@@ -2049,6 +2056,17 @@ class MapActivity : ComponentActivity() {
             if (frequentUpdatesChanged) prefs.edit().putBoolean("frequent_updates", new.isFrequentUpdatesEnabled).apply()
             if (new.isFrequentUpdatesEnabled) startFrequentUpdatePolling()
             else stopFrequentUpdatePolling()
+        }
+
+        // ── Offline mode ────────────────────────────────────────────────────────
+        if (offlineModeChanged || old == null) {
+            TileCache.isOfflineMode = new.isOfflineMode
+            menuPanelResult.offlineModeLabel.text =
+                "Offline Mode: ${if (new.isOfflineMode) "ON" else "OFF"}"
+            if (offlineModeChanged) {
+                // Force MapLibre to re-evaluate tiles with the new cache policy.
+                map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
+            }
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -3276,6 +3294,11 @@ class MapActivity : ComponentActivity() {
                         tileDownloadDone = done
                         withContext(kotlinx.coroutines.Dispatchers.Main) {
                             showTileDownloadProgress(done, total)
+                            // In offline mode, nudge the camera so MapLibre re-requests
+                            // tiles that are now available in cache.
+                            if (TileCache.isOfflineMode) {
+                                map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
+                            }
                         }
                     }
                 }
