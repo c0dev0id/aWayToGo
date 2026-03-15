@@ -226,6 +226,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var topRightContainer: android.widget.LinearLayout
     private lateinit var tileGridOverlay: TileGridOverlay
     private lateinit var tileDownloadButton: TextView
+    private lateinit var tileCancelButton: TextView
     private lateinit var tileSelectCard: TextView
     private var tileDownloadJob: Job? = null
     private var tileSelectDownloadTotal = 0
@@ -1023,6 +1024,32 @@ class MapActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
             ).apply { bottomMargin = (24 * density).toInt() },
+        )
+
+        // Cancel button — bottom-left, slides up alongside the Download button.
+        tileCancelButton = TextView(this).apply {
+            text = "Cancel"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            gravity  = Gravity.CENTER
+            setPadding((28 * density).toInt(), (14 * density).toInt(), (28 * density).toInt(), (14 * density).toInt())
+            background = GradientDrawable().apply {
+                shape        = GradientDrawable.RECTANGLE
+                cornerRadius = 32 * density
+                setColor(Color.argb(180, 40, 40, 40))   // dark pill
+            }
+            isClickable = true
+            isFocusable  = true
+            visibility   = View.GONE
+            setOnClickListener { viewModel.exitTileSelectMode() }
+        }
+        root.addView(
+            tileCancelButton,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START,
+            ).apply { setMargins((16 * density).toInt(), 0, 0, (24 * density).toInt()) },
         )
 
         // Tile selection / progress card — bottom-right.
@@ -3052,10 +3079,14 @@ class MapActivity : ComponentActivity() {
         tileGridOverlay.visibility = View.VISIBLE
         tileGridOverlay.animate().alpha(1f).setDuration(dur).start()
 
-        // ── Slide up Download button ──────────────────────────────────────────
+        // ── Slide up Download + Cancel buttons ────────────────────────────────
         tileDownloadButton.translationY = h
         tileDownloadButton.visibility = View.VISIBLE
         tileDownloadButton.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
+
+        tileCancelButton.translationY = h
+        tileCancelButton.visibility = View.VISIBLE
+        tileCancelButton.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
 
         // ── Slide in tile info card ────────────────────────────────────────────
         updateTileSelectCard()
@@ -3106,9 +3137,13 @@ class MapActivity : ComponentActivity() {
             .withEndAction { tileGridOverlay.visibility = View.GONE; tileGridOverlay.alpha = 1f }
             .start()
 
-        // ── Slide down Download button ─────────────────────────────────────────
+        // ── Slide down Download + Cancel buttons ───────────────────────────────
         tileDownloadButton.animate().translationY(h).setDuration(dur)
             .withEndAction { tileDownloadButton.visibility = View.GONE; tileDownloadButton.translationY = 0f }
+            .start()
+
+        tileCancelButton.animate().translationY(h).setDuration(dur)
+            .withEndAction { tileCancelButton.visibility = View.GONE; tileCancelButton.translationY = 0f }
             .start()
 
         // ── Hide tile info card — unless a download is running ─────────────────
