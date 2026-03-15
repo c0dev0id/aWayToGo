@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
 import android.view.View
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
@@ -20,9 +19,10 @@ import kotlin.math.tan
  * Transparent overlay that draws the MapTiler v3 tile grid at a fixed z8 zoom
  * over the map during offline-download mode.
  *
- * The map is locked to zoom ~5.8 while this overlay is active, so the grid
- * always shows z8 tiles at a constant size — no cross-fading or zoom-adaptive
- * rendering is needed.
+ * The map is locked to zoom ~5.8 and north-up (bearing 0) while this overlay is
+ * active, so longitude maps to a constant screen X and latitude maps to a constant
+ * screen Y. This lets onDraw compute (cols+1)+(rows+1) projection calls instead of
+ * 2×cols×rows, and draw straight grid lines instead of per-tile rectangles.
  *
  * - Selected tiles are highlighted with a 20 % blue accent.
  * - Touch events are NOT consumed here; tile selection is handled by the map's
@@ -70,27 +70,37 @@ class TileGridOverlay(context: Context) : View(context) {
         val yMin = latToTile(bounds.latitudeNorth,  gridZoom)
         val yMax = latToTile(bounds.latitudeSouth,  gridZoom)
 
+        // With north-up + fixed zoom, longitude → screen X and latitude → screen Y
+        // are independent axes. Pre-compute one array per axis.
+        val screenX = FloatArray(xMax - xMin + 2) { i ->
+            proj.toScreenLocation(LatLng(0.0, tileToLon(xMin + i, gridZoom))).x
+        }
+        val screenY = FloatArray(yMax - yMin + 2) { i ->
+            proj.toScreenLocation(LatLng(tileToLat(yMin + i, gridZoom), 0.0)).y
+        }
+
+        // Selected fills
         for (x in xMin..xMax) {
+            val sx0 = screenX[x - xMin]
+            val sx1 = screenX[x - xMin + 1]
             for (y in yMin..yMax) {
-                val nw = proj.toScreenLocation(LatLng(tileToLat(y,     gridZoom), tileToLon(x,     gridZoom)))
-                val se = proj.toScreenLocation(LatLng(tileToLat(y + 1, gridZoom), tileToLon(x + 1, gridZoom)))
-                val rect = RectF(nw.x, nw.y, se.x, se.y)
-                if (isTileSelected(gridZoom, x, y)) {
-                    canvas.drawRect(rect, selectedPaint)
+                if (isTileSelected(x, y)) {
+                    canvas.drawRect(sx0, screenY[y - yMin], sx1, screenY[y - yMin + 1], selectedPaint)
                 }
-                canvas.drawRect(rect, gridPaint)
             }
         }
+
+        // Grid lines — straight vertical and horizontal strokes
+        val top    = screenY.first()
+        val bottom = screenY.last()
+        val left   = screenX.first()
+        val right  = screenX.last()
+        for (sx in screenX) canvas.drawLine(sx, top,  sx, bottom, gridPaint)
+        for (sy in screenY) canvas.drawLine(left, sy, right, sy,  gridPaint)
     }
 
-    fun isTileSelected(z: Int, x: Int, y: Int): Boolean {
-        if (z >= 12) {
-            val x12 = x shr (z - 12)
-            val y12 = y shr (z - 12)
-            return selectedTiles.contains(x12.toLong() * 4096L + y12)
-        }
-        // z < 12: any z12 descendant selected?
-        val scale  = 1 shl (12 - z)
+    fun isTileSelected(x: Int, y: Int): Boolean {
+        val scale  = 1 shl (12 - gridZoom)
         val x12Min = x * scale
         val y12Min = y * scale
         for (dx in 0 until scale) {
@@ -101,23 +111,16 @@ class TileGridOverlay(context: Context) : View(context) {
         return false
     }
 
-    /** Toggle selection of the tile at display zoom (z, x, y). */
-    fun toggleTile(z: Int, x: Int, y: Int) {
-        if (z >= 12) {
-            val x12 = x shr (z - 12)
-            val y12 = y shr (z - 12)
-            val key = x12.toLong() * 4096L + y12
-            if (!selectedTiles.remove(key)) selectedTiles.add(key)
-        } else {
-            val scale   = 1 shl (12 - z)
-            val x12Min  = x * scale
-            val y12Min  = y * scale
-            val addMode = !isTileSelected(z, x, y)
-            for (dx in 0 until scale) {
-                for (dy in 0 until scale) {
-                    val key = (x12Min + dx).toLong() * 4096L + (y12Min + dy)
-                    if (addMode) selectedTiles.add(key) else selectedTiles.remove(key)
-                }
+    /** Toggle selection of the z8 tile at (x, y). */
+    fun toggleTile(x: Int, y: Int) {
+        val scale   = 1 shl (12 - gridZoom)
+        val x12Min  = x * scale
+        val y12Min  = y * scale
+        val addMode = !isTileSelected(x, y)
+        for (dx in 0 until scale) {
+            for (dy in 0 until scale) {
+                val key = (x12Min + dx).toLong() * 4096L + (y12Min + dy)
+                if (addMode) selectedTiles.add(key) else selectedTiles.remove(key)
             }
         }
     }

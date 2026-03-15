@@ -1145,7 +1145,7 @@ class MapActivity : ComponentActivity() {
                         val z = tileGridOverlay.gridZoom
                         val x = lonToTile(latLng.longitude, z)
                         val y = latToTile(latLng.latitude,  z)
-                        tileGridOverlay.toggleTile(z, x, y)
+                        tileGridOverlay.toggleTile(x, y)
                         tileGridOverlay.invalidate()
                         updateTileSelectCard()
                         true
