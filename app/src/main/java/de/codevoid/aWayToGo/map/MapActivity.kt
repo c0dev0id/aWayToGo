@@ -159,7 +159,8 @@ private const val ANCHOR_SLIDE_MS = 500.0
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
-private const val LAYER_FUEL = "fuel-stations"
+private const val LAYER_FUEL      = "fuel-stations"
+private const val FUEL_ICON_ID    = "fuel-station-icon"
 
 
 private const val LOCATION_PERMISSION_REQUEST = 1
@@ -218,6 +219,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: CrosshairView
     private lateinit var versionCardView: TextView
+    private lateinit var fuelTooltipCard: TextView
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
     // Three horizontal bar views that make up the hamburger icon.
@@ -951,6 +953,32 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
+        // Fuel station tooltip card — shown when the crosshair rests over a fuel station.
+        // Positioned above the crosshair (above screen centre), 50% opaque.
+        fuelTooltipCard = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            maxLines = 1
+            setPadding(
+                (12 * density).toInt(), (6 * density).toInt(),
+                (12 * density).toInt(), (6 * density).toInt(),
+            )
+            background = GradientDrawable().apply {
+                shape        = GradientDrawable.RECTANGLE
+                cornerRadius = 8 * density
+                setColor(Color.argb(128, 10, 10, 10))
+            }
+            visibility = View.GONE
+        }
+        root.addView(
+            fuelTooltipCard,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL,
+            ).apply { bottomMargin = (80 * density).toInt() },
+        )
+
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
         menuDismissOverlay = View(this).apply {
@@ -1084,6 +1112,7 @@ class MapActivity : ComponentActivity() {
                 if (!viewModel.uiState.value.isFollowModeActive) {
                     TileCache.gate.pause()
                 }
+                fuelTooltipCard.visibility = View.GONE
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                     // User started panning — cancel any in-progress lock-ring animation.
                     cancelLockRingAnimation()
@@ -1113,6 +1142,7 @@ class MapActivity : ComponentActivity() {
             // uploads do not drop visible frames.
             m.addOnCameraIdleListener {
                 TileCache.gate.resume()
+                queryFuelTooltip()
             }
             if (BuildConfig.DEBUG) {
                 var glFrameCount = 0
@@ -1686,19 +1716,64 @@ class MapActivity : ComponentActivity() {
             val sourceId = s.sources
                 .filterIsInstance<VectorSource>()
                 .firstOrNull()?.id ?: return
+            if (s.getImage(FUEL_ICON_ID) == null) {
+                s.addImage(FUEL_ICON_ID, makeFuelIcon())
+            }
             val layer = SymbolLayer(LAYER_FUEL, sourceId).apply {
                 sourceLayer = "poi"
                 setFilter(Expression.eq(Expression.get("class"), Expression.literal("fuel")))
                 setProperties(
-                    PropertyFactory.iconImage("fuel"),
+                    PropertyFactory.iconImage(FUEL_ICON_ID),
                     PropertyFactory.iconAllowOverlap(true),
                     PropertyFactory.iconIgnorePlacement(true),
-                    PropertyFactory.iconSize(1.2f),
+                    PropertyFactory.iconSize(1.0f),
+                    PropertyFactory.iconAnchor(Property.ICON_ANCHOR_CENTER),
                 )
             }
             s.addLayer(layer)
         } else {
             s.getLayerAs<SymbolLayer>(LAYER_FUEL)?.let { s.removeLayer(it) }
+            fuelTooltipCard.visibility = View.GONE
+        }
+    }
+
+    /** Blue circle icon for fuel station POIs. Registered into the map style sprite at runtime. */
+    private fun makeFuelIcon(): Bitmap {
+        val d    = resources.displayMetrics.density
+        val size = (18 * d).toInt().coerceAtLeast(18)
+        val bmp  = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val cv   = Canvas(bmp)
+        val r    = size / 2f
+        cv.drawCircle(r, r, r * 0.82f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#1565C0")
+            style = Paint.Style.FILL
+        })
+        cv.drawCircle(r, r, r * 0.82f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = r * 0.28f
+        })
+        return bmp
+    }
+
+    /** Query rendered fuel station features at the screen centre; update the tooltip card. */
+    private fun queryFuelTooltip() {
+        if (!viewModel.uiState.value.isFuelStationsEnabled) return
+        if (!viewModel.uiState.value.isInPanningMode) return
+        val m  = map ?: return
+        val cx = mapView.width  / 2f
+        val cy = mapView.height / 2f
+        val tol = 24f   // pixel tolerance — matches the icon radius at normal density
+        val features = m.queryRenderedFeatures(
+            android.graphics.RectF(cx - tol, cy - tol, cx + tol, cy + tol),
+            LAYER_FUEL,
+        )
+        if (features.isNotEmpty()) {
+            val name = features.first().getStringProperty("name") ?: "Fuel Station"
+            fuelTooltipCard.text = name
+            fuelTooltipCard.visibility = View.VISIBLE
+        } else {
+            fuelTooltipCard.visibility = View.GONE
         }
     }
 
@@ -1769,12 +1844,14 @@ class MapActivity : ComponentActivity() {
         // When panning exits and follow mode is NOT active, fly back to GPS once.
         // If follow mode IS active, the snap above (or the Choreographer loop)
         // already handles re-centering.
-        if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true
-            && !new.isFollowModeActive) {
-            val m   = map
-            val loc = m?.locationComponent?.lastKnownLocation
-            if (m != null && loc != null) {
-                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+        if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true) {
+            fuelTooltipCard.visibility = View.GONE
+            if (!new.isFollowModeActive) {
+                val m   = map
+                val loc = m?.locationComponent?.lastKnownLocation
+                if (m != null && loc != null) {
+                    flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+                }
             }
         }
 
