@@ -157,9 +157,13 @@ class AppUpdater(private val context: Context) {
                 out.close()
             }
             val intent = Intent(context, context.javaClass)
+            // FLAG_MUTABLE is required: PackageInstaller needs to add EXTRA_STATUS
+            // and EXTRA_INTENT to this intent when it calls back with the install
+            // confirmation.  FLAG_IMMUTABLE (API 31+) silently blocks those extras,
+            // so onNewIntent receives an empty intent and the installer never appears.
             val pi = PendingIntent.getActivity(
                 context, sessionId, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
             )
             session.commit(pi.intentSender)
         }
