@@ -65,29 +65,15 @@ class TileGridOverlay(context: Context) : View(context) {
     }
 
     /**
-     * Total tiles that would be downloaded for the current selection (z8–z14),
-     * with ancestor tiles deduplicated.
+     * Total tiles that would be downloaded for the current selection (z8–z14).
+     *
+     * Each z8 tile expands to exactly 1+4+16+64+256+1024+4096 = 5461 tiles across
+     * z8–z14, with zero overlap between different z8 tiles' descendant ranges.
+     * No set deduplication needed — just multiply.
      */
-    fun countDownloadTiles(): Int {
-        if (selectedTiles.isEmpty()) return 0
-        val packed = mutableSetOf<Long>()
-        for (key in selectedTiles) {
-            val x8 = key / 256
-            val y8 = key % 256
-            packed.add(packTile(8, x8, y8))
-            for (dz in 1..6) {
-                val s = 1 shl dz
-                for (dx in 0 until s) for (dy in 0 until s)
-                    packed.add(packTile(8 + dz, x8 * s + dx, y8 * s + dy))
-            }
-        }
-        return packed.size
-    }
+    fun countDownloadTiles(): Int = selectedTiles.size * 5461
 
     // ── Tile math ──────────────────────────────────────────────────────────────
-
-    private fun packTile(z: Int, x: Int, y: Int): Long =
-        z.toLong() * 100_000_000L + x.toLong() * 16_384L + y
 
     fun tileToLat(y: Int, z: Int): Double {
         val n = PI - 2.0 * PI * y / (1 shl z)
