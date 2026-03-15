@@ -780,7 +780,7 @@ class MapActivity : ComponentActivity() {
             setOnClickListener {
                 val m   = map ?: return@setOnClickListener
                 val loc = m.locationComponent?.lastKnownLocation ?: return@setOnClickListener
-                flyToLocation(m, LatLng(loc.latitude, loc.longitude), zoom = 16.0)
+                flyToLocation(m, LatLng(loc.latitude, loc.longitude), zoom = 16.0, bearing = 0.0)
             }
         }
         root.addView(
@@ -4209,6 +4209,7 @@ class MapActivity : ComponentActivity() {
         target: LatLng,
         zoom: Double = m.cameraPosition.zoom,
         tilt: Double = m.cameraPosition.tilt,
+        bearing: Double? = null,
         padding: DoubleArray? = null,
         onFinish: (() -> Unit)? = null,
     ) {
@@ -4217,7 +4218,7 @@ class MapActivity : ComponentActivity() {
             .target(target)
             .zoom(zoom)
             .tilt(tilt)
-            .bearing(m.cameraPosition.bearing)
+            .bearing(bearing ?: m.cameraPosition.bearing)
             .padding(resolvedPadding)
             .build()
         m.animateCamera(
