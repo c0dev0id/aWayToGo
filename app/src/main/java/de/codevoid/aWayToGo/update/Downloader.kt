@@ -1,8 +1,6 @@
 package de.codevoid.aWayToGo.update
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -50,8 +48,6 @@ class Downloader(private val context: Context) {
     companion object {
         /** Partial files older than this are considered stale and will be deleted. */
         const val STALE_PART_AGE_MS = 2 * 24 * 60 * 60 * 1_000L   // 2 days
-
-        private val mainHandler = Handler(Looper.getMainLooper())
     }
 
     // connectTimeout: guards the TCP handshake.
@@ -82,7 +78,8 @@ class Downloader(private val context: Context) {
      *   server stops sending bytes; the .part file is preserved for future resume.
      * - **HTTP errors**: on a non-2xx response the .part / .url sidecars are deleted
      *   (the URL is considered invalid or superseded — resume is pointless).
-     * - **Progress**: [onProgress] is invoked on Dispatchers.Main at most every 0.5 s.
+     * - **Progress**: [onProgress] is invoked on [Dispatchers.IO] at most every 0.5 s;
+     *   [kotlinx.coroutines.flow.MutableStateFlow.update] is thread-safe so no dispatch is needed.
      * - **Cancellation**: honoured per read chunk; .part + .url are preserved for resume.
      *
      * @throws NoConnectionException  no stable internet (pre-check failed)
@@ -160,7 +157,7 @@ class Downloader(private val context: Context) {
 
                                 if (total > 0) {
                                     val progress = DownloadProgress(downloaded, total, currentSpeed)
-                                    mainHandler.post { onProgress(progress) }
+                                    onProgress(progress)
                                 }
                             }
                         }

@@ -124,7 +124,8 @@ class AppUpdater(private val context: Context) {
      * Delegates entirely to [Downloader.download], which handles connectivity
      * pre-check, resume, atomic swap, and stall detection.
      *
-     * [onProgress] is invoked on [Dispatchers.Main] during the download.
+     * [onProgress] is invoked on [Dispatchers.IO] during the download;
+     * [kotlinx.coroutines.flow.MutableStateFlow.update] is thread-safe so no dispatch is needed.
      *
      * @throws NoConnectionException  if no stable internet connection is available
      * @throws CancellationException  on coroutine cancellation (partial preserved)

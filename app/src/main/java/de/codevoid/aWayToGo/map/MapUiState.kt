@@ -1,5 +1,17 @@
 package de.codevoid.aWayToGo.map
 
+import de.codevoid.aWayToGo.update.DownloadProgress
+
+sealed class DownloadState {
+    object Idle        : DownloadState()
+    object Checking    : DownloadState()
+    data class Downloading(val progress: DownloadProgress) : DownloadState()
+    object UpToDate    : DownloadState()
+    object Ready       : DownloadState()
+    object Error       : DownloadState()
+    object Installing  : DownloadState()
+}
+
 /**
  * Immutable snapshot of all UI state that drives the map screen.
  *
@@ -24,6 +36,7 @@ package de.codevoid.aWayToGo.map
  * | [isOfflineMode]             | All tile requests served from cache only; no network.        |
  * | [isInMapStyleMenu]          | Map Style submenu layer is open (preset list visible).      |
  * | [isInMapStyleMode]          | Map style mode active: panel expanded, chrome off screen.   |
+ * | [downloadState]             | Current APK self-update state (Idle/Checking/Downloading/…). |
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
@@ -45,4 +58,5 @@ data class MapUiState(
     val isOfflineMode: Boolean = false,
     val isInMapStyleMenu: Boolean = false,
     val isInMapStyleMode: Boolean = false,
+    val downloadState: DownloadState = DownloadState.Idle,
 )
