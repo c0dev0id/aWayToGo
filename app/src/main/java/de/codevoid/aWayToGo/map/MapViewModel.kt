@@ -113,7 +113,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun installApk(activityClass: Class<*>) {
+    fun installApk(activityClass: Class<out android.app.Activity>) {
         val apk = _downloadedApk ?: return
         if (downloadJob?.isActive == true) return
         downloadJob = viewModelScope.launch {

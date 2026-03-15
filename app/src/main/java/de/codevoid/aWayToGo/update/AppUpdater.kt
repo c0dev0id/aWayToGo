@@ -1,5 +1,6 @@
 package de.codevoid.aWayToGo.update
 
+import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -157,7 +158,7 @@ class AppUpdater(private val context: Context) {
      * not an Activity, so the confirmation intent was silently dropped and the dialog never
      * appeared.
      */
-    suspend fun installApk(file: File, activityClass: Class<*>) = withContext(Dispatchers.IO) {
+    suspend fun installApk(file: File, activityClass: Class<out Activity>) = withContext(Dispatchers.IO) {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(
             PackageInstaller.SessionParams.MODE_FULL_INSTALL
@@ -166,7 +167,7 @@ class AppUpdater(private val context: Context) {
         installer.openSession(sessionId).use { session ->
             file.inputStream().use { input ->
                 val out = session.openWrite("update.apk", 0, file.length())
-                input.copyTo(out)
+                input.copyTo(out, bufferSize = 1024 * 1024)
                 session.fsync(out)
                 out.close()
             }
