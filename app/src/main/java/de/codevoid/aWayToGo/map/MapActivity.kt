@@ -393,6 +393,13 @@ class MapActivity : ComponentActivity() {
         followLastLat = loc.latitude
         followLastLon = loc.longitude
 
+        // ── OSD cache invalidation ───────────────────────────────────────────
+        if (loc.accuracy != osdCachedAcc || !osdCachedHasFix) {
+            osdCachedAcc    = loc.accuracy
+            osdCachedHasFix = true
+            osdDirty        = true
+        }
+
         // ── Update puck ──────────────────────────────────────────────────────
         syntheticEngine.pushLocation(loc)
 
@@ -475,6 +482,13 @@ class MapActivity : ComponentActivity() {
     private var osdRxRate      = 0L  // bytes/s
     private var osdTxRate      = 0L  // bytes/s
 
+    // ── OSD value cache ───────────────────────────────────────────────────────
+    private var osdCachedZoom    = -1.0
+    private var osdCachedAcc     = -1f
+    private var osdCachedHasFix  = false
+    private var osdLastPanActive = false
+    private var osdDirty         = true
+
     // ── Choreographer loop ────────────────────────────────────────────────────
     //
     // A single callback drives both panning and OSD updates.
@@ -520,19 +534,22 @@ class MapActivity : ComponentActivity() {
                 }
                 osdRxLast = rx
                 osdTxLast = tx
+                osdDirty  = true   // fps and net-rate values just changed
             }
 
-            if (osdView.visibility == View.VISIBLE) {
-                val zoom   = map?.cameraPosition?.zoom ?: 0.0
-                val loc    = map?.locationComponent?.lastKnownLocation
-                val hasFix = loc != null
-                val acc    = loc?.accuracy ?: 0f
-                val panLine = if (panSpeed > 0f) "\npan  ${"%.0f".format(panSpeed)} px/s" else ""
+            val panActive = panSpeed > 0f
+            if (panActive != osdLastPanActive) { osdLastPanActive = panActive; osdDirty = true }
+            if (panActive) osdDirty = true   // pan speed value changes every frame while panning
+
+            if (osdView.visibility == View.VISIBLE && osdDirty) {
+                osdDirty = false
+                val zoom    = osdCachedZoom.takeIf { it >= 0 } ?: (map?.cameraPosition?.zoom ?: 0.0)
+                val panLine = if (osdLastPanActive) "\npan  ${"%.0f".format(panSpeed)} px/s" else ""
                 osdView.text = buildString {
                     append("fps  $osdLastFps  dt:${osdLastDtMs}ms\n")
                     append("zoom ${"%.1f".format(zoom)}  gl_fps ${"%.0f".format(osdGlFps)}\n")
                     append("net  rx:${osdRxRate / 1024}kB/s  tx:${osdTxRate / 1024}kB/s\n")
-                    append("gps  fix:${if (hasFix) "Y" else "N"}  acc:${"%.0f".format(acc)}m")
+                    append("gps  fix:${if (osdCachedHasFix) "Y" else "N"}  acc:${"%.0f".format(osdCachedAcc)}m")
                     if (panLine.isNotEmpty()) append(panLine)
                 }
             }
@@ -1229,7 +1246,12 @@ class MapActivity : ComponentActivity() {
 
             // Crosshair fade: recompute whenever the camera moves so the alpha
             // stays accurate without polling every vsync frame.
-            m.addOnCameraMoveListener { updateCrosshairAlpha() }
+            // Also track zoom changes for OSD dirty-flag caching.
+            m.addOnCameraMoveListener {
+                val z = m.cameraPosition.zoom
+                if (z != osdCachedZoom) { osdCachedZoom = z; osdDirty = true }
+                updateCrosshairAlpha()
+            }
 
             // ── Direct 1-finger pan ────────────────────────────────────────────
             // Returns false so MapLibre still sees every event (tap, long-press,
