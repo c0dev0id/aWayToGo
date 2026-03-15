@@ -552,6 +552,23 @@ class MapActivity : ComponentActivity() {
                             FOLLOW_LOOK_AHEAD_MS,
                         )
                     }
+
+                    // ── Crosshair proximity fade ─────────────────────────────
+                    // Fade the crosshair out as it approaches the GPS puck so
+                    // the two indicators don't clash when the camera is near
+                    // the user's position.
+                    // 20dp away → fully opaque; 5dp away → fully transparent.
+                    if (crosshairView.visibility == View.VISIBLE) {
+                        val d      = resources.displayMetrics.density
+                        val puck   = m.projection.toScreenLocation(LatLng(predLat, predLon))
+                        val dcx    = puck.x - mapView.width  / 2f
+                        val dcy    = puck.y - mapView.height / 2f
+                        val distDp = sqrt(dcx * dcx + dcy * dcy) / d
+                        crosshairView.alpha = ((distDp - 5f) / (20f - 5f)).coerceIn(0f, 1f)
+                    }
+                } else {
+                    // No valid GPS fix yet — crosshair always fully opaque.
+                    crosshairView.alpha = 1f
                 }
             }
 
