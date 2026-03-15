@@ -115,7 +115,6 @@ import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.CircleLayer
-import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -167,8 +166,6 @@ private const val LAYER_FUEL      = "fuel-stations"
 private const val FUEL_ICON_ID    = "fuel-station-icon"
 
 private const val SOURCE_TILE_GRID_LINES = "tile-grid-lines-src"
-private const val SOURCE_TILE_GRID_SEL   = "tile-grid-sel-src"
-private const val LAYER_TILE_GRID_FILL   = "tile-grid-fill"
 private const val LAYER_TILE_GRID_LINE   = "tile-grid-line"
 
 
@@ -230,7 +227,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var versionCardView: TextView
     private lateinit var fuelTooltipCard: TextView
     private lateinit var topRightContainer: android.widget.LinearLayout
-    private val tileGridOverlay = TileGridOverlay()
+    private lateinit var tileGridOverlay: TileGridOverlay
     private lateinit var tileSelectCard: TextView
     private var tileDownloadJob: Job? = null
     private var tileSelectDownloadTotal = 0
@@ -996,6 +993,14 @@ class MapActivity : ComponentActivity() {
         )
 
         // ── Tile select mode views ─────────────────────────────────────────────
+        // Selection fill overlay — MATCH_PARENT transparent Canvas View; draws blue
+        // fills for selected tiles via direct drawRect calls (instant, one frame).
+        tileGridOverlay = TileGridOverlay(this).apply { visibility = View.GONE }
+        root.addView(tileGridOverlay, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        ))
+
         // Tile selection / progress card — bottom-right.
         tileSelectCard = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -1143,7 +1148,7 @@ class MapActivity : ComponentActivity() {
                         val x = lonToTile(latLng.longitude, z)
                         val y = latToTile(latLng.latitude,  z)
                         tileGridOverlay.toggleTile(x, y)
-                        refreshTileSelection()
+                        tileGridOverlay.invalidate()
                         updateTileSelectCard()
                         true
                     }
@@ -1152,7 +1157,13 @@ class MapActivity : ComponentActivity() {
                 }
             }
             m.addOnCameraIdleListener {
-                if (viewModel.uiState.value.isInTileSelectMode) refreshTileGrid()
+                if (viewModel.uiState.value.isInTileSelectMode) {
+                    refreshTileGrid()
+                    tileGridOverlay.invalidate()
+                }
+            }
+            m.addOnCameraMoveListener {
+                if (viewModel.uiState.value.isInTileSelectMode) tileGridOverlay.invalidate()
             }
 
             m.addOnCameraMoveStartedListener { reason ->
@@ -1212,8 +1223,9 @@ class MapActivity : ComponentActivity() {
                 }
             }
             m.setStyle(styleUrl) { s ->
-                map               = m
-                style             = s
+                map                 = m
+                style               = s
+                tileGridOverlay.map = m
                 enableLocationIfReady()
             }
         }
@@ -3105,77 +3117,47 @@ class MapActivity : ComponentActivity() {
         val features = mutableListOf<Feature>()
         for (x in xMin..xMax) {
             for (y in yMin..yMax) {
-                features.add(tilePolygon(x, y, z))
+                val west  = tileGridOverlay.tileToLon(x,     z)
+                val east  = tileGridOverlay.tileToLon(x + 1, z)
+                val north = tileGridOverlay.tileToLat(y,     z)
+                val south = tileGridOverlay.tileToLat(y + 1, z)
+                features.add(Feature.fromGeometry(Polygon.fromLngLats(listOf(listOf(
+                    Point.fromLngLat(west, north), Point.fromLngLat(east, north),
+                    Point.fromLngLat(east, south), Point.fromLngLat(west, south),
+                    Point.fromLngLat(west, north),
+                )))))
             }
         }
         return FeatureCollection.fromFeatures(features)
     }
 
-    /** Build polygon features for ONLY the currently selected z8 tiles (fill source). */
-    private fun buildSelectionFeatures(): FeatureCollection {
-        val z = tileGridOverlay.gridZoom
-        val features = tileGridOverlay.selectedTiles.map { key ->
-            tilePolygon(key / 256, key % 256, z)
-        }
-        return FeatureCollection.fromFeatures(features)
-    }
-
-    private fun tilePolygon(x: Int, y: Int, z: Int): Feature {
-        val west  = tileGridOverlay.tileToLon(x,     z)
-        val east  = tileGridOverlay.tileToLon(x + 1, z)
-        val north = tileGridOverlay.tileToLat(y,     z)
-        val south = tileGridOverlay.tileToLat(y + 1, z)
-        return Feature.fromGeometry(Polygon.fromLngLats(listOf(listOf(
-            Point.fromLngLat(west,  north),
-            Point.fromLngLat(east,  north),
-            Point.fromLngLat(east,  south),
-            Point.fromLngLat(west,  south),
-            Point.fromLngLat(west,  north),
-        ))))
-    }
-
-    /** Add the tile grid sources + fill + line layers to the current style. */
+    /** Add the tile grid MapLibre line layer + selection fill View. */
     private fun addTileGridLayers() {
         val s = style ?: return
-        // Lines source: all visible tiles — only rebuilt on camera idle.
         s.addSource(GeoJsonSource(SOURCE_TILE_GRID_LINES, buildGridLineFeatures()))
-        // Selection source: only selected tiles — rebuilt on every tap (usually tiny).
-        s.addSource(GeoJsonSource(SOURCE_TILE_GRID_SEL, buildSelectionFeatures()))
-        val fillLayer = FillLayer(LAYER_TILE_GRID_FILL, SOURCE_TILE_GRID_SEL).withProperties(
-            PropertyFactory.fillColor(android.graphics.Color.argb(51, 33, 150, 243)),
-        )
         val lineLayer = LineLayer(LAYER_TILE_GRID_LINE, SOURCE_TILE_GRID_LINES).withProperties(
             PropertyFactory.lineColor(android.graphics.Color.argb(77, 0, 0, 0)),
             PropertyFactory.lineWidth(1f),
         )
         val firstSymbol = s.layers.firstOrNull { it is SymbolLayer }
-        if (firstSymbol != null) {
-            s.addLayerBelow(fillLayer, firstSymbol.id)
-            s.addLayerBelow(lineLayer, firstSymbol.id)
-        } else {
-            s.addLayer(fillLayer)
-            s.addLayer(lineLayer)
-        }
+        if (firstSymbol != null) s.addLayerBelow(lineLayer, firstSymbol.id)
+        else s.addLayer(lineLayer)
+
+        tileGridOverlay.visibility = View.VISIBLE
+        tileGridOverlay.invalidate()
     }
 
-    /** Remove the tile grid layers and sources from the current style. */
+    /** Remove the tile grid line layer + hide selection fill View. */
     private fun removeTileGridLayers() {
-        style?.removeLayer(LAYER_TILE_GRID_FILL)
         style?.removeLayer(LAYER_TILE_GRID_LINE)
         style?.removeSource(SOURCE_TILE_GRID_LINES)
-        style?.removeSource(SOURCE_TILE_GRID_SEL)
+        tileGridOverlay.visibility = View.GONE
     }
 
-    /** On camera idle: refresh the grid lines for newly visible tiles. */
+    /** On camera idle: refresh grid lines for newly visible tiles; redraw fills. */
     private fun refreshTileGrid() {
         style?.getSourceAs<GeoJsonSource>(SOURCE_TILE_GRID_LINES)
             ?.setGeoJson(buildGridLineFeatures())
-    }
-
-    /** On tile tap: update only the small selection source. */
-    private fun refreshTileSelection() {
-        style?.getSourceAs<GeoJsonSource>(SOURCE_TILE_GRID_SEL)
-            ?.setGeoJson(buildSelectionFeatures())
     }
 
     // ───────────────────────────────────────────────────────────────────────────

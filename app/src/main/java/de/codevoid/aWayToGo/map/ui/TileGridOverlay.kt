@@ -1,5 +1,12 @@
 package de.codevoid.aWayToGo.map.ui
 
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.view.View
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.MapLibreMap
 import kotlin.math.PI
 import kotlin.math.atan
 import kotlin.math.cos
@@ -9,22 +16,45 @@ import kotlin.math.sinh
 import kotlin.math.tan
 
 /**
- * Holds tile-selection state for offline-download mode and provides tile math
- * helpers used by MapActivity to build the MapLibre GeoJSON grid layers.
+ * Transparent overlay that draws blue selection fills for chosen z8 tiles.
  *
- * Rendering is handled entirely by MapLibre (a GeoJSON source + FillLayer +
- * LineLayer), so this class carries no View or Canvas dependencies.
+ * Grid lines are rendered by a MapLibre LineLayer (smooth panning). Only the
+ * interactive selection highlights live here — Canvas drawRect calls are
+ * effectively instant (one frame) vs MapLibre's GeoJSON pipeline which has
+ * hundreds of milliseconds of fixed latency regardless of data size.
  *
- * Selections are stored at z8 directly (key = x * 256 + y) for O(1) lookup.
- * The z12 expansion (1 z8 tile → 256 z12 tiles) only happens at download time.
+ * Call [invalidate] after any selection change or camera move to redraw.
  */
-class TileGridOverlay {
+class TileGridOverlay(context: Context) : View(context) {
 
-    /** z8 selected tiles. Key = x8 * 256 + y8. */
+    var map: MapLibreMap? = null
+
+    /** z8 selected tiles. Key = x * 256 + y. */
     val selectedTiles: MutableSet<Int> = mutableSetOf()
 
     /** Tile zoom level used for both grid rendering and selection. */
     val gridZoom = 8
+
+    private val fillPaint = Paint().apply {
+        style = Paint.Style.FILL
+        color = Color.argb(51, 33, 150, 243)   // blue 20 %
+    }
+
+    init {
+        isClickable = false
+        isFocusable = false
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val proj = map?.projection ?: return
+        for (key in selectedTiles) {
+            val x  = key / 256
+            val y  = key % 256
+            val nw = proj.toScreenLocation(LatLng(tileToLat(y,     gridZoom), tileToLon(x,     gridZoom)))
+            val se = proj.toScreenLocation(LatLng(tileToLat(y + 1, gridZoom), tileToLon(x + 1, gridZoom)))
+            canvas.drawRect(nw.x, nw.y, se.x, se.y, fillPaint)
+        }
+    }
 
     fun isTileSelected(x: Int, y: Int): Boolean = selectedTiles.contains(x * 256 + y)
 
@@ -44,9 +74,7 @@ class TileGridOverlay {
         for (key in selectedTiles) {
             val x8 = key / 256
             val y8 = key % 256
-            // z8 itself
             packed.add(packTile(8, x8, y8))
-            // z9–z14 descendants
             for (dz in 1..6) {
                 val s = 1 shl dz
                 for (dx in 0 until s) for (dy in 0 until s)
@@ -56,7 +84,7 @@ class TileGridOverlay {
         return packed.size
     }
 
-    // ── Tile math (used by MapActivity for grid GeoJSON + URL building) ────────
+    // ── Tile math ──────────────────────────────────────────────────────────────
 
     private fun packTile(z: Int, x: Int, y: Int): Long =
         z.toLong() * 100_000_000L + x.toLong() * 16_384L + y
