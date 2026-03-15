@@ -1306,7 +1306,13 @@ class MapActivity : ComponentActivity() {
                             panTouchLastX = event.x
                             panTouchLastY = event.y
                             if (dx != 0f || dy != 0f) {
-                                map?.moveCamera(CameraUpdateFactory.scrollBy(dx, dy))
+                                map?.let { m ->
+                                    val cx = mapView.width  / 2f + dx
+                                    val cy = mapView.height / 2f + dy
+                                    m.moveCamera(CameraUpdateFactory.newLatLng(
+                                        m.projection.fromScreenLocation(PointF(cx, cy))
+                                    ))
+                                }
                                 if (!panModeTriggered && !viewModel.uiState.value.isInTileSelectMode) {
                                     panModeTriggered = true
                                     cancelLockRingAnimation()
@@ -1359,10 +1365,15 @@ class MapActivity : ComponentActivity() {
                                         val t  = va.animatedValue as Float
                                         val dt = t - lastT; lastT = t
                                         // Total fling distance = v * t / 2 (constant-decel integral).
-                                        map?.moveCamera(CameraUpdateFactory.scrollBy(
-                                            -vx * durMs / 2000f * dt,
-                                            -vy * durMs / 2000f * dt,
-                                        ))
+                                        val fdx = -vx * durMs / 2000f * dt
+                                        val fdy = -vy * durMs / 2000f * dt
+                                        map?.let { m ->
+                                            val cx = mapView.width  / 2f + fdx
+                                            val cy = mapView.height / 2f + fdy
+                                            m.moveCamera(CameraUpdateFactory.newLatLng(
+                                                m.projection.fromScreenLocation(PointF(cx, cy))
+                                            ))
+                                        }
                                     }
                                     start()
                                 })
