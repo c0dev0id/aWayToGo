@@ -2998,6 +2998,7 @@ class MapActivity : ComponentActivity() {
             tileSelectSavedCamera = m.cameraPosition
             m.uiSettings.isZoomGesturesEnabled      = false
             m.uiSettings.isDoubleTapGesturesEnabled = false
+            m.uiSettings.isRotateGesturesEnabled    = false
             m.animateCamera(
                 CameraUpdateFactory.newCameraPosition(
                     CameraPosition.Builder()
@@ -3057,6 +3058,7 @@ class MapActivity : ComponentActivity() {
         map?.let { m ->
             m.uiSettings.isZoomGesturesEnabled      = true
             m.uiSettings.isDoubleTapGesturesEnabled = true
+            m.uiSettings.isRotateGesturesEnabled    = true
             tileSelectSavedCamera?.let { saved ->
                 m.animateCamera(CameraUpdateFactory.newCameraPosition(saved), 600)
             }
