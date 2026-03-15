@@ -112,7 +112,7 @@ class MapViewModel : ViewModel() {
 
     /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false, isInTileSelectMode = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -215,14 +215,16 @@ class MapViewModel : ViewModel() {
         _uiState.update { it.copy(isInTileSelectMode = false) }
     }
 
-    /** Enter the Offline Maps submenu layer (menu must already be open). */
+    /** Enter the Offline Maps submenu layer (menu must already be open).
+     *  Also activates tile-selection mode so the grid appears on the map. */
     fun enterOfflineMapsMenu() {
-        _uiState.update { it.copy(isInOfflineMapsMenu = true) }
+        _uiState.update { it.copy(isInOfflineMapsMenu = true, isInTileSelectMode = true) }
     }
 
-    /** Return from the Offline Maps submenu to the main menu layer. */
+    /** Return from the Offline Maps submenu to the main menu layer.
+     *  Also deactivates tile-selection mode. */
     fun exitOfflineMapsMenu() {
-        _uiState.update { it.copy(isInOfflineMapsMenu = false) }
+        _uiState.update { it.copy(isInOfflineMapsMenu = false, isInTileSelectMode = false) }
     }
 
 }

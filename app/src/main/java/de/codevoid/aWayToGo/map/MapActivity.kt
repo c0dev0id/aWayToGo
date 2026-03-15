@@ -225,8 +225,6 @@ class MapActivity : ComponentActivity() {
     private lateinit var fuelTooltipCard: TextView
     private lateinit var topRightContainer: android.widget.LinearLayout
     private lateinit var tileGridOverlay: TileGridOverlay
-    private lateinit var tileDownloadButton: TextView
-    private lateinit var tileCancelButton: TextView
     private lateinit var tileSelectCard: TextView
     private var tileDownloadJob: Job? = null
     private var tileSelectDownloadTotal = 0
@@ -1000,58 +998,6 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
-        // Download button — slides up from bottom centre when entering tile select mode.
-        tileDownloadButton = TextView(this).apply {
-            text = "Download"
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            gravity  = Gravity.CENTER
-            setPadding((28 * density).toInt(), (14 * density).toInt(), (28 * density).toInt(), (14 * density).toInt())
-            background = GradientDrawable().apply {
-                shape        = GradientDrawable.RECTANGLE
-                cornerRadius = 32 * density
-                setColor(Color.argb(230, 21, 101, 192))   // blue pill
-            }
-            isClickable = true
-            isFocusable  = true
-            visibility   = View.GONE
-            setOnClickListener { startTileDownload() }
-        }
-        root.addView(
-            tileDownloadButton,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
-            ).apply { bottomMargin = (24 * density).toInt() },
-        )
-
-        // Cancel button — bottom-left, slides up alongside the Download button.
-        tileCancelButton = TextView(this).apply {
-            text = "Cancel"
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            gravity  = Gravity.CENTER
-            setPadding((28 * density).toInt(), (14 * density).toInt(), (28 * density).toInt(), (14 * density).toInt())
-            background = GradientDrawable().apply {
-                shape        = GradientDrawable.RECTANGLE
-                cornerRadius = 32 * density
-                setColor(Color.argb(180, 40, 40, 40))   // dark pill
-            }
-            isClickable = true
-            isFocusable  = true
-            visibility   = View.GONE
-            setOnClickListener { viewModel.exitTileSelectMode() }
-        }
-        root.addView(
-            tileCancelButton,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.START,
-            ).apply { setMargins((16 * density).toInt(), 0, 0, (24 * density).toInt()) },
-        )
-
         // Tile selection / progress card — bottom-right.
         tileSelectCard = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -1113,7 +1059,6 @@ class MapActivity : ComponentActivity() {
             onToggleMenu = {
                 val s = viewModel.uiState.value
                 when {
-                    s.isInTileSelectMode  -> viewModel.exitTileSelectMode()
                     s.isInDebugMenu       -> viewModel.exitDebugMenu()
                     s.isInSettingsMenu    -> viewModel.exitSettingsMenu()
                     s.isInOfflineMapsMenu -> viewModel.exitOfflineMapsMenu()
@@ -1134,10 +1079,10 @@ class MapActivity : ComponentActivity() {
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
             // Frequent Updates → 5-min update polling while screen is on.
             result.debugContent.getChildAt(2).setOnClickListener { viewModel.toggleFrequentUpdates() }
-            // Offline Maps row → enters full-screen tile-selection mode.
-            result.offlineMapsRowInList.setOnClickListener { viewModel.enterTileSelectMode() }
-            // Download / cancel row inside offline maps content.
-            result.offlineMapsContent.getChildAt(0).setOnClickListener { onOfflineDownloadTapped() }
+            // Offline Maps row → opens the offline maps submenu and activates tile-select mode.
+            result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
+            // Download row inside offline maps submenu → starts the tile download.
+            result.offlineMapsContent.getChildAt(0).setOnClickListener { startTileDownload() }
         }
         root.addView(
             menuPanel,
@@ -1986,6 +1931,9 @@ class MapActivity : ComponentActivity() {
         if (old != null && menuChanged) {
             if (new.isMenuOpen) {
                 runOpenMenuAnimation()
+                // In tile select mode the menu stays open alongside the tile grid;
+                // map taps must reach the MapView (tile selection / panning), not close the menu.
+                if (new.isInTileSelectMode) menuDismissOverlay.visibility = View.GONE
             } else {
                 // Closing: reset debug layer views first (outermost), then settings layer.
                 if (old.isInDebugMenu) {
@@ -2019,13 +1967,7 @@ class MapActivity : ComponentActivity() {
                 }
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
-                // Skip animation entirely when tile-select mode is taking over —
-                // runEnterTileSelectMode() slides the panel out as part of its own sequence.
-                if (!new.isInTileSelectMode) {
-                    runCloseMenuAnimation(instant = modeChanged)
-                } else {
-                    menuDismissOverlay.visibility = View.GONE
-                }
+                runCloseMenuAnimation(instant = modeChanged)
             }
         }
 
@@ -2055,8 +1997,15 @@ class MapActivity : ComponentActivity() {
 
         // ── Tile select mode transition ────────────────────────────────────────
         if (old != null && tileSelectModeChanged) {
-            if (new.isInTileSelectMode) runEnterTileSelectMode()
-            else runExitTileSelectMode()
+            if (new.isInTileSelectMode) {
+                // Menu is already open; map taps must not close it while the grid is active.
+                menuDismissOverlay.visibility = View.GONE
+                runEnterTileSelectMode()
+            } else {
+                // Restore the dismiss overlay when the menu stays open without tile select.
+                if (new.isMenuOpen) menuDismissOverlay.visibility = View.VISIBLE
+                runExitTileSelectMode()
+            }
         }
 
         // ── Debug overlay ──────────────────────────────────────────────────────
@@ -3031,36 +2980,19 @@ class MapActivity : ComponentActivity() {
     // ── Tile select mode ──────────────────────────────────────────────────────
 
     /**
-     * Slide all Explore-mode chrome to the screen edges and reveal the tile grid.
+     * Slide non-menu Explore chrome to the screen edges and reveal the tile grid.
      *
      * Called when [MapUiState.isInTileSelectMode] transitions to true.
-     * The menu panel is already at button size (close animation was skipped);
-     * it slides left along with my-location and the bottom bar.
+     * The menu panel is NOT moved — it stays open and acts as the control surface
+     * for the offline maps submenu (Download button lives there).
      */
     private fun runEnterTileSelectMode() {
-        val d     = resources.displayMetrics.density
-        val w     = resources.displayMetrics.widthPixels.toFloat()
-        val h     = resources.displayMetrics.heightPixels.toFloat()
-        val dur   = 300L
-        val intr  = DecelerateInterpolator()
+        val w    = resources.displayMetrics.widthPixels.toFloat()
+        val h    = resources.displayMetrics.heightPixels.toFloat()
+        val dur  = 300L
+        val intr = DecelerateInterpolator()
 
-        // Cancel any in-progress menu resize (panel is already at button size).
-        menuAnimator?.cancel()
-
-        // Reset menu panel to button size so the slide starts from the correct position.
-        val btnSz = (64 * d).toInt()
-        (menuPanel.layoutParams as FrameLayout.LayoutParams).also { lp ->
-            lp.width = btnSz; lp.height = btnSz; menuPanel.layoutParams = lp
-        }
-        hamburgerBars.forEach { it.rotation = 0f; it.scaleX = 1f; it.translationX = 0f; it.translationY = 0f }
-
-        // ── Slide Explore chrome off screen ───────────────────────────────────
-        menuPanel.visibility = View.VISIBLE
-        menuPanel.translationX = 0f
-        menuPanel.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
-            .withEndAction { menuPanel.visibility = View.GONE; menuPanel.translationX = 0f }
-            .start()
-
+        // ── Slide Explore chrome off screen (menu panel stays put) ────────────
         myLocationButton.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
             .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
             .start()
@@ -3082,15 +3014,6 @@ class MapActivity : ComponentActivity() {
         tileGridOverlay.visibility = View.VISIBLE
         tileGridOverlay.animate().alpha(1f).setDuration(dur).start()
 
-        // ── Slide up Download + Cancel buttons ────────────────────────────────
-        tileDownloadButton.translationY = h
-        tileDownloadButton.visibility = View.VISIBLE
-        tileDownloadButton.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
-
-        tileCancelButton.translationY = h
-        tileCancelButton.visibility = View.VISIBLE
-        tileCancelButton.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
-
         // ── Slide in tile info card ────────────────────────────────────────────
         updateTileSelectCard()
         tileSelectCard.translationX = w
@@ -3100,13 +3023,12 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Slide all Explore-mode chrome back on screen and hide the tile grid.
+     * Slide Explore chrome back on screen and hide the tile grid.
      *
      * Called when [MapUiState.isInTileSelectMode] transitions to false.
      * If a download is running the tile card remains visible as a progress indicator.
      */
     private fun runExitTileSelectMode() {
-        val d    = resources.displayMetrics.density
         val w    = resources.displayMetrics.widthPixels.toFloat()
         val h    = resources.displayMetrics.heightPixels.toFloat()
         val dur  = 300L
@@ -3114,10 +3036,6 @@ class MapActivity : ComponentActivity() {
 
         // ── Slide Explore chrome back in (only from EXPLORE mode) ─────────────
         if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
-            menuPanel.translationX = -w
-            menuPanel.visibility = View.VISIBLE
-            menuPanel.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
-
             myLocationButton.translationX = -w
             myLocationButton.visibility = View.VISIBLE
             myLocationButton.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
@@ -3140,15 +3058,6 @@ class MapActivity : ComponentActivity() {
             .withEndAction { tileGridOverlay.visibility = View.GONE; tileGridOverlay.alpha = 1f }
             .start()
 
-        // ── Slide down Download + Cancel buttons ───────────────────────────────
-        tileDownloadButton.animate().translationY(h).setDuration(dur)
-            .withEndAction { tileDownloadButton.visibility = View.GONE; tileDownloadButton.translationY = 0f }
-            .start()
-
-        tileCancelButton.animate().translationY(h).setDuration(dur)
-            .withEndAction { tileCancelButton.visibility = View.GONE; tileCancelButton.translationY = 0f }
-            .start()
-
         // ── Hide tile info card — unless a download is running ─────────────────
         if (tileDownloadJob?.isActive != true) {
             tileSelectCard.animate().translationX(w).setDuration(dur)
@@ -3157,7 +3066,7 @@ class MapActivity : ComponentActivity() {
         }
     }
 
-    /** Update the tile selection info card with the current tile count and size estimate. */
+    /** Update the tile selection info card and the submenu Download label. */
     private fun updateTileSelectCard() {
         val count = tileGridOverlay.countDownloadTiles()
         val d = resources.displayMetrics.density
@@ -3165,11 +3074,19 @@ class MapActivity : ComponentActivity() {
             setColor(Color.argb(200, 0, 0, 0))
             cornerRadius = 16 * d
         }
-        tileSelectCard.text = if (count == 0) {
+        val cardText = if (count == 0) {
             "No tiles selected"
         } else {
             val mb = count * 20.0 / 1024.0   // ~20 KB per vector tile
             "%d tiles · ~%.1f MB".format(count, mb)
+        }
+        tileSelectCard.text = cardText
+        // Mirror the count in the submenu Download label so the user can read it
+        // without looking away from the bottom-right card.
+        menuPanelResult.offlineDownloadLabel.text = if (count == 0) {
+            "Download current area"
+        } else {
+            "Download ($count tiles)"
         }
     }
 
@@ -3220,9 +3137,9 @@ class MapActivity : ComponentActivity() {
                 .start()
         }
 
-        // Exit tile select mode — UI slides back in; renderUiState sees
+        // Close the menu (and tile select mode) — UI slides back in; renderUiState sees
         // tileDownloadJob.isActive == true and keeps the progress card visible.
-        viewModel.exitTileSelectMode()
+        viewModel.closeMenu()
     }
 
     /** Update the tile download card's ClipDrawable progress fill. */
