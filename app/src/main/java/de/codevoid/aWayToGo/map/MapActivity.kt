@@ -173,6 +173,7 @@ private const val LAYER_TILE_GRID_LINE   = "tile-grid-line"
 private const val LOCATION_PERMISSION_REQUEST = 1
 private const val PREFS_NAME           = "aWayToGo"
 private const val PREF_TILE_SELECTION  = "tile_selection"
+private const val PREF_APPLY_PENDING   = "apply_pending"
 
 // GPS follow: dead-reckoning look-ahead passed to animateCamera so MapLibre
 // interpolates between frames rather than snapping once per GPS fix.
@@ -233,9 +234,11 @@ class MapActivity : ComponentActivity() {
     private lateinit var tileGridOverlay: TileGridOverlay
     private lateinit var tileSelectCard: TextView
     private var tileDownloadJob:   Job? = null
-    private var tileDownloadDone  = 0
+    @Volatile private var tileDownloadDone  = 0
     private var tileDownloadTotal = 0
-    private var tileSelectDownloadTotal = 0
+    @Volatile private var tileDownloadBytes = 0L
+    private var tileDownloadStartNs = 0L
+    private var tileDownloadClip: ClipDrawable? = null
     /** Camera position saved when entering tile-select mode; restored on exit. */
     private var tileSelectSavedCamera: CameraPosition? = null
 
@@ -565,6 +568,19 @@ class MapActivity : ComponentActivity() {
                     append("gps  fix:${if (hasFix) "Y" else "N"}  acc:${"%.0f".format(acc)}m")
                     if (panLine.isNotEmpty()) append(panLine)
                 }
+            }
+
+            // ── Tile download progress (vsync-driven) ───────────────────────────
+            val dlTotal = tileDownloadTotal
+            if (tileDownloadJob?.isActive == true && dlTotal > 0) {
+                val done  = tileDownloadDone
+                val bytes = tileDownloadBytes
+                val pct   = (done * 100 / dlTotal).coerceIn(0, 100)
+                tileDownloadClip?.level = pct * 100
+                val elapsedS = (frameTimeNanos - tileDownloadStartNs) / 1_000_000_000.0
+                val rate     = if (elapsedS > 0.5) bytes / elapsedS else 0.0
+                val rateText = if (rate > 0) " (%.1fMB/s)".format(rate / (1024.0 * 1024.0)) else ""
+                tileSelectCard.text = "$done/$dlTotal$rateText"
             }
 
             Choreographer.getInstance().postFrameCallback(this)
@@ -1027,6 +1043,11 @@ class MapActivity : ComponentActivity() {
             ).apply { setMargins(0, 0, (16 * density).toInt(), (72 * density).toInt()) },
         )
 
+        // Resume interrupted apply if the app was killed mid-download.
+        if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean(PREF_APPLY_PENDING, false)) {
+            applyTileSelection()
+        }
+
         // Dismiss overlay — full-screen transparent tap target that closes the menu.
         // Added last so it sits above all other views when visible.
         menuDismissOverlay = View(this).apply {
@@ -1102,6 +1123,10 @@ class MapActivity : ComponentActivity() {
                     tileDownloadJob   = null
                     tileDownloadDone  = 0
                     tileDownloadTotal = 0
+                    tileDownloadBytes = 0L
+                    tileDownloadClip  = null
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putBoolean(PREF_APPLY_PENDING, false).apply()
                     updateTileSelectCard()
                 } else {
                     applyTileSelection()
@@ -3251,12 +3276,11 @@ class MapActivity : ComponentActivity() {
      * Apply the current tile selection: evict cached tiles outside the selection,
      * then download any missing tiles inside the selection.
      *
-     * If a job is already running, it is cancelled and restarted with the
-     * updated selection — cache-first means already-fetched tiles are skipped
-     * instantly, so restarting is cheap.
+     * Progress is driven by the Choreographer frame callback which reads the
+     * volatile [tileDownloadDone] / [tileDownloadBytes] fields every vsync.
      *
-     * All network and cache I/O runs on [Dispatchers.IO]. URLs are generated
-     * lazily so nothing is pre-allocated on the main thread.
+     * The apply is persisted via [PREF_APPLY_PENDING] so it resumes automatically
+     * if the app is killed mid-download.
      */
     private fun applyTileSelection() {
         // Cancel any in-flight job; restart includes the updated selection.
@@ -3266,8 +3290,14 @@ class MapActivity : ComponentActivity() {
         val total = keys.size * 5461                        // exact, no set needed
         tileDownloadTotal = total
         tileDownloadDone  = 0
+        tileDownloadBytes = 0L
+        tileDownloadStartNs = System.nanoTime()
 
-        // Show progress immediately so it persists through the menu close.
+        // Mark as pending so we resume on app restart.
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREF_APPLY_PENDING, true).apply()
+
+        // Show progress card immediately.
         tileSelectCard.visibility = View.VISIBLE
         tileSelectCard.text = "Cleaning…"
         val d = resources.displayMetrics.density
@@ -3284,82 +3314,74 @@ class MapActivity : ComponentActivity() {
 
             // Phase 2 — download missing tiles inside the selection.
             if (keys.isEmpty()) {
-                // Nothing to download — just save and finish.
-                saveTileSelection()
-                tileSelectCard.text = "Done"
-                tileDownloadJob   = null
-                tileDownloadDone  = 0
-                tileDownloadTotal = 0
-                delay(3_000)
-                tileSelectCard.animate().alpha(0f).setDuration(300)
-                    .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
-                    .start()
+                finishApply("Done")
                 return@launch
             }
 
-            showTileDownloadProgress(0, total)
+            // Set up the progress bar drawable; the Choreographer loop updates
+            // the clip level and text every frame from volatile fields.
+            val r      = 16f * d
+            val base   = GradientDrawable().apply { setColor(Color.argb(200, 0, 0, 0)); cornerRadius = r }
+            val accent = GradientDrawable().apply { setColor(Color.argb(220, 0, 80, 160)); cornerRadius = r }
+            val clip   = ClipDrawable(accent, Gravity.START, ClipDrawable.HORIZONTAL)
+            tileSelectCard.background = LayerDrawable(arrayOf(base, clip))
+            tileDownloadClip = clip
+
             var done = 0
             withContext(kotlinx.coroutines.Dispatchers.IO) {
                 for (url in tileUrlSequence(keys)) {
                     if (!isActive) break
                     try {
-                        // Cache-first: skip tiles already in the OkHttp disk cache.
                         val cacheResp = TileCache.httpClient.newCall(
                             Request.Builder().url(url).cacheControl(CacheControl.FORCE_CACHE).build()
                         ).execute()
                         val cached = cacheResp.isSuccessful
                         cacheResp.close()
                         if (!cached) {
-                            TileCache.httpClient.newCall(
+                            val resp = TileCache.httpClient.newCall(
                                 Request.Builder().url(url).build()
-                            ).execute().close()
+                            ).execute()
+                            val len = resp.header("Content-Length")?.toLongOrNull() ?: 0L
+                            resp.close()
+                            tileDownloadBytes += len
                         }
                     } catch (_: Exception) { /* skip unreachable tile */ }
-                    done++
-                    if (done % 50 == 0 || done == total) {
-                        tileDownloadDone = done
+                    tileDownloadDone = ++done
+                    // In offline mode, periodically nudge the camera so MapLibre
+                    // re-requests tiles that are now available in cache.
+                    if (TileCache.isOfflineMode && done % 100 == 0) {
                         withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            showTileDownloadProgress(done, total)
-                            // In offline mode, nudge the camera so MapLibre re-requests
-                            // tiles that are now available in cache.
-                            if (TileCache.isOfflineMode) {
-                                map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
-                            }
+                            map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
                         }
                     }
                 }
             }
-            // Completion — runs on Main (launch default).
-            if (isActive) saveTileSelection()
-            tileSelectCard.text = if (isActive) "Done ($done tiles)" else "Cancelled"
-            tileSelectCard.background = GradientDrawable().apply {
-                setColor(Color.argb(200, 0, 0, 0))
-                cornerRadius = 16 * d
-            }
-            tileDownloadJob   = null
-            tileDownloadDone  = 0
-            tileDownloadTotal = 0
-            delay(3_000)
-            tileSelectCard.animate().alpha(0f).setDuration(300)
-                .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
-                .start()
+            finishApply(if (isActive) "Done ($done tiles)" else "Cancelled")
         }
 
         viewModel.closeMenu()
     }
 
-    /** Render the ClipDrawable progress fill and text on [tileSelectCard]. */
-    private fun showTileDownloadProgress(done: Int, total: Int) {
-        val pct  = if (total > 0) (done * 100 / total).coerceIn(0, 100) else 0
-        val d    = resources.displayMetrics.density
-        val r    = 16f * d
-        val base   = GradientDrawable().apply { setColor(Color.argb(200, 0, 0, 0)); cornerRadius = r }
-        val accent = GradientDrawable().apply { setColor(Color.argb(220, 0, 80, 160)); cornerRadius = r }
-        val clip   = ClipDrawable(accent, Gravity.START, ClipDrawable.HORIZONTAL)
-        tileSelectCard.background = LayerDrawable(arrayOf(base, clip))
-        clip.level = pct * 100   // ClipDrawable level is 0–10000
-        tileSelectCard.text = "$done / $total"
-        tileSelectCard.visibility = View.VISIBLE
+    /** Common completion for [applyTileSelection]: update card, clear pending flag. */
+    private suspend fun finishApply(message: String) {
+        saveTileSelection()
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(PREF_APPLY_PENDING, false).apply()
+        val d = resources.displayMetrics.density
+        tileSelectCard.text = message
+        tileSelectCard.background = GradientDrawable().apply {
+            setColor(Color.argb(200, 0, 0, 0))
+            cornerRadius = 16 * d
+        }
+        tileDownloadClip  = null
+        tileDownloadJob   = null
+        tileDownloadDone  = 0
+        tileDownloadTotal = 0
+        tileDownloadBytes = 0L
+        delay(3_000)
+        tileSelectCard.animate().alpha(0f).setDuration(300)
+            .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
+            .start()
     }
 
     /** Lazy sequence of all z8–z14 tile URLs for the given z8 key set. No upfront allocation. */
