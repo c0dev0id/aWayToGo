@@ -2238,7 +2238,7 @@ class MapActivity : ComponentActivity() {
         anchorSetTimeNs = System.nanoTime()
         dragLineAnchor = target
         m.locationComponent.lastKnownLocation?.let { loc ->
-            setDragLine(LatLng(loc.latitude, loc.longitude), target, System.nanoTime() / 1_000_000_000.0)
+            setDragLine(LatLng(loc.latitude, loc.longitude), slideAnchor() ?: target, System.nanoTime() / 1_000_000_000.0)
         }
     }
 
