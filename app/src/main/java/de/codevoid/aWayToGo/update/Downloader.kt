@@ -153,11 +153,10 @@ class Downloader(private val context: Context) {
                                 currentSpeed = speedBytes * 1_000_000_000L / elapsed
                                 speedBytes = 0L
                                 speedStamp = now
-                            }
 
-                            if (total > 0) {
-                                withContext(Dispatchers.Main) {
-                                    onProgress(DownloadProgress(downloaded, total, currentSpeed))
+                                if (total > 0) {
+                                    val progress = DownloadProgress(downloaded, total, currentSpeed)
+                                    withContext(Dispatchers.Main) { onProgress(progress) }
                                 }
                             }
                         }
