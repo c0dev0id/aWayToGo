@@ -1454,6 +1454,7 @@ class MapActivity : ComponentActivity() {
             )
             lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { rawGpsLocation = it }
         } catch (_: SecurityException) { }
+          catch (_: IllegalArgumentException) { } // GPS_PROVIDER absent on devices without GPS hardware
 
         rawGpsLocation?.let { loc ->
             m.animateCamera(
@@ -4866,6 +4867,7 @@ class MapActivity : ComponentActivity() {
                     LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
                 )
             } catch (_: SecurityException) { }
+              catch (_: IllegalArgumentException) { } // GPS_PROVIDER absent on devices without GPS hardware
         }
         // Re-register compass sensor for Course Up bearing fallback.
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
