@@ -6,7 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import de.codevoid.aWayToGo.update.AppUpdater
 import de.codevoid.aWayToGo.update.ConnectivityChecker
-import de.codevoid.aWayToGo.update.TileCache
+import de.codevoid.aWayToGo.map.TileCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

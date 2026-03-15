@@ -1,7 +1,7 @@
 package de.codevoid.aWayToGo.tiles
 
 import de.codevoid.aWayToGo.BuildConfig
-import de.codevoid.aWayToGo.update.TileCache
+import de.codevoid.aWayToGo.map.TileCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
