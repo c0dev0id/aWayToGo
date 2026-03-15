@@ -1189,10 +1189,6 @@ class MapActivity : ComponentActivity() {
                 // Single-finger panning is handled by our own touch listener (direct 1:1
                 // camera movement with no touch-slop delay).
                 isScrollGesturesEnabled      = false
-                // Allow pan to run simultaneously with rotate/zoom during two-finger
-                // gestures.  Without this MapLibre locks out scroll once rotate or zoom
-                // is the first gesture detected.
-                isScrollGesturesEnabledDuringRotateOrZoom = true
                 // Disable double-tap-to-zoom.  With double-tap detection active MapLibre's
                 // internal GestureDetectorCompat enters a ~300 ms "wait for second tap"
                 // window on every ACTION_DOWN.  During that window its gesture pipeline
