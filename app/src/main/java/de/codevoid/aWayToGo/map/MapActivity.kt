@@ -33,6 +33,8 @@ import android.location.Location
 import android.os.Bundle
 import android.view.Choreographer
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -326,6 +328,17 @@ class MapActivity : ComponentActivity() {
 
     // Owns all D-pad / joystick / zoom-key state and drives per-frame camera updates.
     private val panController = PanController(onEnterPanningMode = { enterPanningMode() })
+
+    // ── Direct 1-finger touch pan ──────────────────────────────────────────────
+    // MapLibre's scroll gesture is disabled; we drive the camera directly on every
+    // ACTION_MOVE pixel so there is no touch-slop delay before the map starts moving.
+    private var panFlingAnimator:    ValueAnimator?  = null
+    private var panVelocityTracker:  VelocityTracker? = null
+    private var panTouchActive       = false
+    private var panTouchLastX        = 0f
+    private var panTouchLastY        = 0f
+    /** True once panning mode / follow-disable has been triggered for this gesture. */
+    private var panModeTriggered     = false
 
     // ── Drag line anchor ──────────────────────────────────────────────────────
     // When set, the Choreographer loop continuously updates the drag line so it
@@ -1183,19 +1196,17 @@ class MapActivity : ComponentActivity() {
             // tile requests competing with the current viewport, improving gl_fps during pan.
             m.setPrefetchZoomDelta(2)
             m.uiSettings.apply {
-                isRotateGesturesEnabled = true
-                isTiltGesturesEnabled   = true
-                isCompassEnabled        = true
-                // Enable ease-out after touch gestures (fling/pan inertia, pinch-zoom
-                // deceleration, rotate deceleration).  These are touch-only — programmatic
-                // animateCamera calls (remote control) are not affected.
+                isRotateGesturesEnabled  = true
+                isTiltGesturesEnabled    = true
+                isCompassEnabled         = true
+                // Disable MapLibre's built-in scroll gesture.  Single-finger panning is
+                // handled by our own touch listener (direct 1:1 camera movement with no
+                // touch-slop delay).  Multi-touch gestures (pinch-zoom, rotate, tilt) are
+                // still fully handled by MapLibre.
+                isScrollGesturesEnabled  = false
+                // Enable ease-out after multi-touch gestures (pinch-zoom deceleration,
+                // rotate deceleration).  Scroll velocity is handled by our own fling code.
                 setAllVelocityAnimationsEnabled(true)
-                // Default fling duration is 150ms (ANIMATION_DURATION_FLING_BASE) — too abrupt.
-                // 500ms gives a natural coast-to-stop for pan, zoom, and rotate.
-                flingAnimationBaseTime = 500L
-                // Default velocity threshold is 1000 (px/s) — too high, so only fast swipes
-                // trigger the ease-out.  300 lets moderate-speed swipes also coast to a stop.
-                flingThreshold = 300
             }
             // Close the tile gate on ANY camera movement — touch, D-pad, or
             // programmatic (flyToLocation).  New network tile fetches are
@@ -1269,6 +1280,104 @@ class MapActivity : ComponentActivity() {
             m.addOnCameraIdleListener {
                 TileCache.gate.resume()
                 queryFuelTooltip()
+            }
+
+            // ── Direct 1-finger pan ────────────────────────────────────────────
+            // Returns false so MapLibre still sees every event (tap, long-press,
+            // pinch-zoom, rotate, tilt all continue to work normally).  With
+            // isScrollGesturesEnabled = false, MapLibre will not double-scroll.
+            mapView.setOnTouchListener { _, event ->
+                panVelocityTracker?.addMovement(event)
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        panFlingAnimator?.cancel()
+                        panTouchLastX    = event.x
+                        panTouchLastY    = event.y
+                        panTouchActive   = true
+                        panModeTriggered = false
+                        panVelocityTracker?.recycle()
+                        panVelocityTracker = VelocityTracker.obtain()
+                        panVelocityTracker?.addMovement(event)
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (panTouchActive && event.pointerCount == 1) {
+                            val dx = panTouchLastX - event.x
+                            val dy = panTouchLastY - event.y
+                            panTouchLastX = event.x
+                            panTouchLastY = event.y
+                            if (dx != 0f || dy != 0f) {
+                                map?.moveCamera(CameraUpdateFactory.scrollBy(dx, dy))
+                                if (!panModeTriggered && !viewModel.uiState.value.isInTileSelectMode) {
+                                    panModeTriggered = true
+                                    cancelLockRingAnimation()
+                                    if (viewModel.uiState.value.isFollowModeActive) {
+                                        viewModel.disableFollowMode()
+                                    } else {
+                                        enterPanningMode()
+                                    }
+                                }
+                            }
+                        } else if (event.pointerCount > 1) {
+                            // Multi-finger: suspend our handling; keep last position
+                            // so we can resume cleanly if a finger is lifted.
+                            panTouchActive = false
+                            panTouchLastX  = event.getX(0)
+                            panTouchLastY  = event.getY(0)
+                        }
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        panTouchActive = false
+                    }
+                    MotionEvent.ACTION_POINTER_UP -> {
+                        // Returning from 2 → 1 finger: resume single-finger panning
+                        // from the remaining pointer's current position.
+                        if (event.pointerCount == 2) {
+                            val rem    = if (event.actionIndex == 0) 1 else 0
+                            panTouchLastX  = event.getX(rem)
+                            panTouchLastY  = event.getY(rem)
+                            panTouchActive = true
+                            panModeTriggered = true  // mode already triggered earlier
+                        }
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        panTouchActive = false
+                        val vt = panVelocityTracker
+                        if (vt != null && panModeTriggered) {
+                            vt.computeCurrentVelocity(1000)  // pixels/second
+                            val vx = vt.xVelocity
+                            val vy = vt.yVelocity
+                            vt.recycle(); panVelocityTracker = null
+                            val speed = sqrt(vx * vx + vy * vy)
+                            if (speed > 500f) {
+                                // Duration scales with speed: faster fling → longer coast.
+                                val durMs = (speed / 5000f * 800f).toLong().coerceIn(200L, 800L)
+                                var lastT = 0f
+                                panFlingAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+                                    duration     = durMs
+                                    interpolator = DecelerateInterpolator(2f)
+                                    addUpdateListener { va ->
+                                        val t  = va.animatedValue as Float
+                                        val dt = t - lastT; lastT = t
+                                        // Total fling distance = v * t / 2 (constant-decel integral).
+                                        map?.moveCamera(CameraUpdateFactory.scrollBy(
+                                            -vx * durMs / 2000f * dt,
+                                            -vy * durMs / 2000f * dt,
+                                        ))
+                                    }
+                                    start()
+                                })
+                            }
+                        } else {
+                            panVelocityTracker?.recycle(); panVelocityTracker = null
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        panTouchActive = false
+                        panFlingAnimator?.cancel()
+                        panVelocityTracker?.recycle(); panVelocityTracker = null
+                    }
+                }
+                false  // always let MapLibre also process the event
             }
             if (BuildConfig.DEBUG) {
                 var glFrameCount = 0
