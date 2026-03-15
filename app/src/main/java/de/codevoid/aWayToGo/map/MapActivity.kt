@@ -3512,8 +3512,7 @@ class MapActivity : ComponentActivity() {
         val borderLayer = LineLayer(LAYER_OFFLINE_BORDER, SOURCE_OFFLINE_BORDER).withProperties(
             PropertyFactory.lineColor(android.graphics.Color.argb(220, 255, 160, 0)),
             PropertyFactory.lineWidth(2.5f),
-            PropertyFactory.lineVisibility(
-                if (visible) Property.VISIBLE else Property.NONE),
+            PropertyFactory.visibility(if (visible) Property.VISIBLE else Property.NONE),
         )
         val labelLayer = SymbolLayer(LAYER_OFFLINE_LABEL, SOURCE_OFFLINE_LABEL).withProperties(
             PropertyFactory.textField("{label}"),
@@ -3522,8 +3521,7 @@ class MapActivity : ComponentActivity() {
             PropertyFactory.textHaloColor(android.graphics.Color.argb(200, 0, 0, 0)),
             PropertyFactory.textHaloWidth(1.5f),
             PropertyFactory.textFont(arrayOf("Open Sans Semibold", "Arial Unicode MS Bold")),
-            PropertyFactory.textVisibility(
-                if (visible) Property.VISIBLE else Property.NONE),
+            PropertyFactory.visibility(if (visible) Property.VISIBLE else Property.NONE),
         )
 
         // Insert below the first symbol layer so labels don't cover road names.
@@ -3549,9 +3547,9 @@ class MapActivity : ComponentActivity() {
     private fun setOfflineBorderVisible(visible: Boolean) {
         val vis = if (visible) Property.VISIBLE else Property.NONE
         style?.getLayerAs<LineLayer>(LAYER_OFFLINE_BORDER)
-            ?.setProperties(PropertyFactory.lineVisibility(vis))
+            ?.setProperties(PropertyFactory.visibility(vis))
         style?.getLayerAs<SymbolLayer>(LAYER_OFFLINE_LABEL)
-            ?.setProperties(PropertyFactory.textVisibility(vis))
+            ?.setProperties(PropertyFactory.visibility(vis))
     }
 
     /** Lazy sequence of all z8–z14 tile URLs for the given z8 key set. No upfront allocation. */
