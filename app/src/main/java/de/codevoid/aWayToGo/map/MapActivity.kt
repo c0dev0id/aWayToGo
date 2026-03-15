@@ -368,6 +368,10 @@ class MapActivity : ComponentActivity() {
     private val syntheticEngine = SyntheticLocationEngine()
     private var rawGpsLocation: Location? = null
     private var locationManager: LocationManager? = null
+    // Monotonic timestamp (elapsedRealtimeNanos) of the last accepted fix.
+    // Used to compute actual elapsed time for the outlier-rejection threshold,
+    // which must scale with interval — GPS fires at ~200 ms, network at ~5 s+.
+    private var rawGpsLastFixNs: Long = 0L
     private val rawLocationListener = LocationListener { loc ->
         rawGpsLocation = loc
 
@@ -380,11 +384,15 @@ class MapActivity : ComponentActivity() {
                 (dLat  * 111_000.0).let { it * it } +
                 (dLon  * 111_000.0 * cos(Math.toRadians(loc.latitude))).let { it * it }
             )
-            // 200 ms interval → 300 km/h = 16.67 m per fix max
-            if (dMeters > FOLLOW_MAX_SPEED_MS * 0.2) return@LocationListener
+            // Scale the max-distance threshold by actual elapsed time so the same
+            // speed limit applies for both GPS (~200 ms) and network (~5 s+) fixes.
+            val elapsedS = if (rawGpsLastFixNs == 0L) 0.2
+                           else (loc.elapsedRealtimeNanos - rawGpsLastFixNs) / 1_000_000_000.0
+            if (dMeters > FOLLOW_MAX_SPEED_MS * elapsedS) return@LocationListener
         }
 
         // ── Accept fix ───────────────────────────────────────────────────────
+        rawGpsLastFixNs = loc.elapsedRealtimeNanos
         followLastLat = loc.latitude
         followLastLon = loc.longitude
 
@@ -1454,7 +1462,16 @@ class MapActivity : ComponentActivity() {
             )
             lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { rawGpsLocation = it }
         } catch (_: SecurityException) { }
-          catch (_: IllegalArgumentException) { } // GPS_PROVIDER absent on devices without GPS hardware
+          catch (_: IllegalArgumentException) {
+            // No GPS hardware — fall back to network-based location (Wi-Fi / cell / BT).
+            try {
+                lm.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, 5_000L, 0f, rawLocationListener, mainLooper,
+                )
+                lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { rawGpsLocation = it }
+            } catch (_: SecurityException) { }
+              catch (_: IllegalArgumentException) { }
+        }
 
         rawGpsLocation?.let { loc ->
             m.animateCamera(
@@ -4867,7 +4884,15 @@ class MapActivity : ComponentActivity() {
                     LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
                 )
             } catch (_: SecurityException) { }
-              catch (_: IllegalArgumentException) { } // GPS_PROVIDER absent on devices without GPS hardware
+              catch (_: IllegalArgumentException) {
+                // No GPS hardware — fall back to network-based location (Wi-Fi / cell / BT).
+                try {
+                    lm.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER, 5_000L, 0f, rawLocationListener, mainLooper,
+                    )
+                } catch (_: SecurityException) { }
+                  catch (_: IllegalArgumentException) { }
+            }
         }
         // Re-register compass sensor for Course Up bearing fallback.
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
