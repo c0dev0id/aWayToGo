@@ -1894,7 +1894,7 @@ class MapActivity : ComponentActivity() {
 
         val d       = resources.displayMetrics.density
         val panelW  = (280 * d).toInt()
-        val panelH  = (80 * d).toInt() + 4 * (64 * d).toInt()  // ring zone + 4 items × 64 dp
+        val panelH  = (80 * d).toInt() + 3 * (64 * d).toInt()  // ring zone + 3 items × 64 dp
         val ringRad = (80 * d).toInt() / 2
         val lp      = mapLockPanel.layoutParams as FrameLayout.LayoutParams
         val parent  = mapLockPanel.parent as View
