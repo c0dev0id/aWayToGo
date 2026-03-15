@@ -2326,7 +2326,7 @@ class MapActivity : ComponentActivity() {
         lockRingAnimator?.cancel()
         lockRingAnimator = animBag.add(ValueAnimator.ofFloat(0f, 360f).apply {
             duration   = 450
-            startDelay = 50
+            startDelay = 150
             addUpdateListener { va ->
                 crosshairView.lockRingSweep = va.animatedValue as Float
             }
