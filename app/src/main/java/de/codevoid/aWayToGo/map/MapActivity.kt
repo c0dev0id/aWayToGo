@@ -3131,7 +3131,7 @@ class MapActivity : ComponentActivity() {
     private fun addTileGridLayers() {
         val s = style ?: return
         val fc = buildTileGridFeatures()
-        s.addSource(GeoJsonSource(SOURCE_TILE_GRID, fc, GeoJsonOptions().withSynchronousUpdate(true)))
+        s.addSource(GeoJsonSource(SOURCE_TILE_GRID, fc))
         // Fill layer: only renders tiles whose "selected" property is true.
         val fillLayer = FillLayer(LAYER_TILE_GRID_FILL, SOURCE_TILE_GRID).withProperties(
             PropertyFactory.fillColor(android.graphics.Color.argb(51, 33, 150, 243)),
@@ -3272,17 +3272,15 @@ class MapActivity : ComponentActivity() {
             z.toLong() * 100_000_000L + x.toLong() * 16_384L + y
 
         for (k in tileGridOverlay.selectedTiles) {
-            val x12 = (k / 4096L).toInt()
-            val y12 = (k % 4096L).toInt()
-            // z12 + z13/z14 descendants
-            tileSet.add(pack(12, x12, y12))
-            for (dz in 1..2) {
+            val x8 = k / 256
+            val y8 = k % 256
+            // z8 itself + z9–z14 descendants
+            tileSet.add(pack(8, x8, y8))
+            for (dz in 1..6) {
                 val s = 1 shl dz
                 for (dx in 0 until s) for (dy in 0 until s)
-                    tileSet.add(pack(12 + dz, x12 * s + dx, y12 * s + dy))
+                    tileSet.add(pack(8 + dz, x8 * s + dx, y8 * s + dy))
             }
-            // z8–z11 ancestors (deduplicated via set)
-            for (dz in 1..4) tileSet.add(pack(12 - dz, x12 shr dz, y12 shr dz))
         }
 
         return tileSet.map { packed ->

@@ -15,61 +15,43 @@ import kotlin.math.tan
  * Rendering is handled entirely by MapLibre (a GeoJSON source + FillLayer +
  * LineLayer), so this class carries no View or Canvas dependencies.
  *
- * Selections are stored at the z12 canonical zoom:
- * each key = `x12 * 4096L + y12`.  z8 tiles map to their z12 descendants when
- * downloading (1 z8 tile → 16 z12 tiles).
+ * Selections are stored at z8 directly (key = x * 256 + y) for O(1) lookup.
+ * The z12 expansion (1 z8 tile → 256 z12 tiles) only happens at download time.
  */
 class TileGridOverlay {
 
-    /** z12-canonical selected tiles. Key = x12 * 4096L + y12. */
-    val selectedTiles: MutableSet<Long> = mutableSetOf()
+    /** z8 selected tiles. Key = x8 * 256 + y8. */
+    val selectedTiles: MutableSet<Int> = mutableSetOf()
 
     /** Tile zoom level used for both grid rendering and selection. */
     val gridZoom = 8
 
-    fun isTileSelected(x: Int, y: Int): Boolean {
-        val scale  = 1 shl (12 - gridZoom)
-        val x12Min = x * scale
-        val y12Min = y * scale
-        for (dx in 0 until scale) {
-            for (dy in 0 until scale) {
-                if (selectedTiles.contains((x12Min + dx).toLong() * 4096L + (y12Min + dy))) return true
-            }
-        }
-        return false
-    }
+    fun isTileSelected(x: Int, y: Int): Boolean = selectedTiles.contains(x * 256 + y)
 
     /** Toggle selection of the z8 tile at (x, y). */
     fun toggleTile(x: Int, y: Int) {
-        val scale   = 1 shl (12 - gridZoom)
-        val x12Min  = x * scale
-        val y12Min  = y * scale
-        val addMode = !isTileSelected(x, y)
-        for (dx in 0 until scale) {
-            for (dy in 0 until scale) {
-                val key = (x12Min + dx).toLong() * 4096L + (y12Min + dy)
-                if (addMode) selectedTiles.add(key) else selectedTiles.remove(key)
-            }
-        }
+        val key = x * 256 + y
+        if (!selectedTiles.remove(key)) selectedTiles.add(key)
     }
 
     /**
      * Total tiles that would be downloaded for the current selection (z8–z14),
-     * with ancestor tiles deduplicated (many z12 tiles share the same z8 ancestor).
+     * with ancestor tiles deduplicated.
      */
     fun countDownloadTiles(): Int {
         if (selectedTiles.isEmpty()) return 0
         val packed = mutableSetOf<Long>()
         for (key in selectedTiles) {
-            val x12 = (key / 4096L).toInt()
-            val y12 = (key % 4096L).toInt()
-            packed.add(packTile(12, x12, y12))
-            for (dz in 1..2) {
+            val x8 = key / 256
+            val y8 = key % 256
+            // z8 itself
+            packed.add(packTile(8, x8, y8))
+            // z9–z14 descendants
+            for (dz in 1..6) {
                 val s = 1 shl dz
                 for (dx in 0 until s) for (dy in 0 until s)
-                    packed.add(packTile(12 + dz, x12 * s + dx, y12 * s + dy))
+                    packed.add(packTile(8 + dz, x8 * s + dx, y8 * s + dy))
             }
-            for (dz in 1..4) packed.add(packTile(12 - dz, x12 shr dz, y12 shr dz))
         }
         return packed.size
     }
