@@ -113,11 +113,15 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun installApk() {
+    fun installApk(activityClass: Class<*>) {
         val apk = _downloadedApk ?: return
-        setDownloadState(DownloadState.Installing)
-        try { appUpdater.installApk(apk) }
-        catch (_: Exception) { setDownloadState(DownloadState.Error) }
+        if (downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch {
+            setDownloadState(DownloadState.Installing)
+            try { appUpdater.installApk(apk, activityClass) }
+            catch (_: CancellationException) { setDownloadState(DownloadState.Ready) }
+            catch (_: Exception) { setDownloadState(DownloadState.Error) }
+        }
     }
 
     fun startFrequentUpdatePolling() {

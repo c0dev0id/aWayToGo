@@ -3999,7 +3999,7 @@ class MapActivity : ComponentActivity() {
                     )
                     return
                 }
-                viewModel.installApk()
+                viewModel.installApk(this@MapActivity.javaClass)
             }
             is DownloadState.Idle -> viewModel.checkOnDemand()
             else -> { /* in progress — ignore tap */ }

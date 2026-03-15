@@ -144,7 +144,20 @@ class AppUpdater(private val context: Context) {
      *
      * Requires `REQUEST_INSTALL_PACKAGES` permission.
      */
-    fun installApk(file: File) {
+    /**
+     * Writes [file] into a PackageInstaller session and commits it.
+     *
+     * The file copy runs on [Dispatchers.IO] so it never blocks the main thread.
+     *
+     * [activityClass] is the Activity that will receive [PackageInstaller.STATUS_PENDING_USER_ACTION]
+     * via [android.app.Activity.onNewIntent] when the system is ready to show the install
+     * confirmation dialog.  Must be an Activity declared in the manifest.
+     *
+     * The previous implementation used `context.javaClass` (the Application class) which is
+     * not an Activity, so the confirmation intent was silently dropped and the dialog never
+     * appeared.
+     */
+    suspend fun installApk(file: File, activityClass: Class<*>) = withContext(Dispatchers.IO) {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(
             PackageInstaller.SessionParams.MODE_FULL_INSTALL
@@ -157,7 +170,7 @@ class AppUpdater(private val context: Context) {
                 session.fsync(out)
                 out.close()
             }
-            val intent = Intent(context, context.javaClass)
+            val intent = Intent(context, activityClass)
             // FLAG_MUTABLE is required: PackageInstaller needs to add EXTRA_STATUS
             // and EXTRA_INTENT to this intent when it calls back with the install
             // confirmation.  FLAG_IMMUTABLE (API 31+) silently blocks those extras,
