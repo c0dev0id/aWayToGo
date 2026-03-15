@@ -228,6 +228,8 @@ class MapActivity : ComponentActivity() {
     private lateinit var tileSelectCard: TextView
     private var tileDownloadJob: Job? = null
     private var tileSelectDownloadTotal = 0
+    /** Camera position saved when entering tile-select mode; restored on exit. */
+    private var tileSelectSavedCamera: CameraPosition? = null
 
     // ── Mode UI views ─────────────────────────────────────────────────────────
     // Three horizontal bar views that make up the hamburger icon.
@@ -2992,6 +2994,24 @@ class MapActivity : ComponentActivity() {
         val dur  = 300L
         val intr = DecelerateInterpolator()
 
+        // ── Camera: save current position, fly to overview zoom, lock zoom ─────
+        map?.let { m ->
+            tileSelectSavedCamera = m.cameraPosition
+            m.uiSettings.isZoomGesturesEnabled      = false
+            m.uiSettings.isDoubleTapGesturesEnabled = false
+            m.animateCamera(
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder()
+                        .target(m.cameraPosition.target)
+                        .zoom(5.8)
+                        .tilt(0.0)
+                        .bearing(0.0)
+                        .build()
+                ),
+                800,
+            )
+        }
+
         // ── Slide Explore chrome off screen (menu panel stays put) ────────────
         myLocationButton.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
             .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
@@ -3033,6 +3053,16 @@ class MapActivity : ComponentActivity() {
         val h    = resources.displayMetrics.heightPixels.toFloat()
         val dur  = 300L
         val intr = DecelerateInterpolator()
+
+        // ── Camera: unlock zoom and restore saved position ─────────────────────
+        map?.let { m ->
+            m.uiSettings.isZoomGesturesEnabled      = true
+            m.uiSettings.isDoubleTapGesturesEnabled = true
+            tileSelectSavedCamera?.let { saved ->
+                m.animateCamera(CameraUpdateFactory.newCameraPosition(saved), 600)
+            }
+            tileSelectSavedCamera = null
+        }
 
         // ── Slide Explore chrome back in (only from EXPLORE mode) ─────────────
         if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
