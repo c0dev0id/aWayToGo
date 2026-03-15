@@ -1,11 +1,12 @@
 package de.codevoid.aWayToGo.map
 
 import android.app.Application
-import android.content.SharedPreferences
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import de.codevoid.aWayToGo.update.AppUpdater
 import de.codevoid.aWayToGo.update.ConnectivityChecker
+import de.codevoid.aWayToGo.update.TileCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -42,7 +43,19 @@ import java.io.File
  */
 class MapViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val prefs = getApplication<Application>()
+        .getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+
     private val _uiState = MutableStateFlow(MapUiState())
+
+    init {
+        // Restore settings persisted from the previous session.
+        // Direct _uiState.update avoids writing the pref back during init.
+        if (prefs.getBoolean("debug_mode", false))
+            _uiState.update { it.copy(isDebugMode = true) }
+        if (prefs.getBoolean("frequent_updates", false))
+            _uiState.update { it.copy(isFrequentUpdatesEnabled = true) }
+    }
 
     private val appUpdater       = AppUpdater(getApplication())
     private var _downloadedApk: File? = null
@@ -70,7 +83,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun checkUpdateIfDue(prefs: SharedPreferences) {
+    fun checkUpdateIfDue() {
         if (_downloadedApk != null) { setDownloadState(DownloadState.Ready); return }
         if (downloadJob?.isActive == true) return
         val lastCheck = prefs.getLong("last_update_check_ms", 0L)
@@ -252,9 +265,10 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isInDebugMenu = false) }
     }
 
-    /** Toggle the debug OSD overlay on/off. */
+    /** Toggle the debug OSD overlay on/off. Persists the choice across sessions. */
     fun toggleDebugMode() {
         _uiState.update { it.copy(isDebugMode = !it.isDebugMode) }
+        prefs.edit().putBoolean("debug_mode", _uiState.value.isDebugMode).apply()
     }
 
     /**
@@ -271,9 +285,10 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isCourseUpEnabled = !it.isCourseUpEnabled) }
     }
 
-    /** Toggles the debug frequent-update polling (every 5 min while screen is on). */
+    /** Toggles the debug frequent-update polling (every 5 min while screen is on). Persists across sessions. */
     fun toggleFrequentUpdates() {
         _uiState.update { it.copy(isFrequentUpdatesEnabled = !it.isFrequentUpdatesEnabled) }
+        prefs.edit().putBoolean("frequent_updates", _uiState.value.isFrequentUpdatesEnabled).apply()
     }
 
     /** Open the map-lock context menu (triggered by long-press on the crosshair). */
@@ -294,6 +309,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
     /** Toggle offline mode: forces all tile requests to use the disk cache only. */
     fun toggleOfflineMode() {
         _uiState.update { it.copy(isOfflineMode = !it.isOfflineMode) }
+        TileCache.isOfflineMode = _uiState.value.isOfflineMode
     }
 
     /** Enter the tile-selection / offline-download overlay (closes the menu). */
