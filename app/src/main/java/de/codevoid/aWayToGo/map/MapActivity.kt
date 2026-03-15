@@ -84,14 +84,12 @@ import de.codevoid.aWayToGo.search.SearchResult
 import de.codevoid.aWayToGo.remote.RemoteControlManager
 import de.codevoid.aWayToGo.remote.RemoteEvent
 import de.codevoid.aWayToGo.remote.RemoteKey
-import de.codevoid.aWayToGo.update.AppUpdater
-import de.codevoid.aWayToGo.update.ConnectivityChecker
+import de.codevoid.aWayToGo.map.DownloadState
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.LayerDrawable
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -296,20 +294,12 @@ class MapActivity : ComponentActivity() {
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
     private var renderedState: MapUiState? = null
 
-    // Progress overlay shown during APK download (null when not downloading).
-    private var downloadJob: Job? = null
-    // non-null once the APK has been fully downloaded and is ready to install.
-    private var downloadedApk: File? = null
-    // drives 5-min polling when Frequent Updates is enabled.
-    private var frequentUpdateJob: Job? = null
-
     // ── Benchmark ─────────────────────────────────────────────────────────────
     private var benchmarkJob: Job? = null
     private var benchmarkOverlay: View? = null
     private var benchmarkStatusLabel: TextView? = null
     @Volatile private var benchmarkGlFrameNanos: MutableList<Long>? = null
 
-    private val appUpdater by lazy { AppUpdater(this) }
     private val prefs by lazy { getSharedPreferences("app_prefs", MODE_PRIVATE) }
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -2064,6 +2054,7 @@ class MapActivity : ComponentActivity() {
         val frequentUpdatesChanged    = old?.isFrequentUpdatesEnabled != new.isFrequentUpdatesEnabled
         val offlineModeChanged        = old?.isOfflineMode != new.isOfflineMode
         val mapLockMenuChanged        = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
+        val downloadStateChanged      = old?.downloadState != new.downloadState
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -2261,8 +2252,26 @@ class MapActivity : ComponentActivity() {
             menuPanelResult.frequentUpdatesLabel.text =
                 "Frequent Updates: ${if (new.isFrequentUpdatesEnabled) "ON" else "OFF"}"
             if (frequentUpdatesChanged) prefs.edit().putBoolean("frequent_updates", new.isFrequentUpdatesEnabled).apply()
-            if (new.isFrequentUpdatesEnabled) startFrequentUpdatePolling()
-            else stopFrequentUpdatePolling()
+            if (new.isFrequentUpdatesEnabled) viewModel.startFrequentUpdatePolling()
+            else viewModel.stopFrequentUpdatePolling()
+        }
+
+        // ── Download state ────────────────────────────────────────────
+        if (downloadStateChanged || old == null) {
+            when (val ds = new.downloadState) {
+                is DownloadState.Idle        -> resetVersionCard()
+                is DownloadState.Checking    -> { versionCardView.text = "checking…" }
+                is DownloadState.Downloading -> {
+                    val p = ds.progress
+                    val pct = if (p.totalBytes > 0) (p.bytesDownloaded * 100 / p.totalBytes).toInt() else 0
+                    versionCardView.text = "${formatMb(p.bytesDownloaded)}/${formatMb(p.totalBytes)} MB"
+                    updateVersionCardProgress(pct)
+                }
+                is DownloadState.UpToDate    -> { versionCardView.text = "up to date" }
+                is DownloadState.Ready       -> setCardReady()
+                is DownloadState.Error       -> { versionCardView.text = "error" }
+                is DownloadState.Installing  -> { versionCardView.text = "installing…" }
+            }
         }
 
         // ── Offline mode ────────────────────────────────────────────────────────
@@ -4017,101 +4026,33 @@ class MapActivity : ComponentActivity() {
 
     // ── Self-update ───────────────────────────────────────────────────────────
 
-    /**
-     * Silently checks for an update at most once every 24 hours on resume.
-     * If an update is found, begins downloading it immediately.
-     * If the APK is already downloaded, restores the green "update" card.
-     */
-    private fun checkUpdateIfDue() {
-        downloadedApk?.let { setCardReady(); return }
-        if (downloadJob?.isActive == true) return
-        val lastCheck = prefs.getLong("last_update_check_ms", 0L)
-        if (System.currentTimeMillis() - lastCheck < 24 * 60 * 60 * 1_000L) return
-        if (!ConnectivityChecker.isStableOnline(this)) return
-        lifecycleScope.launch {
-            prefs.edit().putLong("last_update_check_ms", System.currentTimeMillis()).apply()
-            val url = appUpdater.checkForUpdate() ?: return@launch
-            appUpdater.cleanupStaleFiles(url)
-            startDownload(url)
-        }
-    }
 
     /**
      * Tap handler for the version card.
      *
      * - Green card (download ready): opens the package installer.
      * - Download in progress: no-op (card already shows progress).
-     * - Otherwise: checks GitHub and starts a download if a new version is found.
+     * - Otherwise: triggers [MapViewModel.checkOnDemand].
      */
     private fun onVersionCardTapped() {
-        downloadedApk?.let { apk ->
-            // On Android 8+, "Install unknown apps" must be enabled for this app
-            // in Settings before the package installer will accept the intent.
-            // If the permission is missing, open the settings page and let the
-            // user enable it; they can tap the card again once they return.
-            if (!packageManager.canRequestPackageInstalls()) {
-                versionCardView.text = "allow in settings"
-                versionCardView.isClickable = false
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:$packageName"),
+        when (viewModel.uiState.value.downloadState) {
+            is DownloadState.Ready -> {
+                if (!packageManager.canRequestPackageInstalls()) {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:$packageName"),
+                        )
                     )
-                )
-                return
+                    return
+                }
+                viewModel.installApk()
             }
-            versionCardView.text = "installing…"
-            versionCardView.isClickable = false
-            try {
-                appUpdater.installApk(apk)
-            } catch (_: Exception) {
-                versionCardView.isClickable = true
-                versionCardView.text = "error"
-            }
-            return
-        }
-        if (downloadJob?.isActive == true) return
-        if (versionCardView.text.toString() != BuildConfig.GIT_COMMIT) return
-        versionCardView.text = "checking…"
-        lifecycleScope.launch {
-            val url = appUpdater.checkForUpdate()
-            if (url == null) {
-                versionCardView.text = "up to date"
-                delay(2_000)
-                resetVersionCard()
-                return@launch
-            }
-            appUpdater.cleanupStaleFiles(url)
-            startDownload(url)
+            is DownloadState.Idle -> viewModel.checkOnDemand()
+            else -> { /* in progress — ignore tap */ }
         }
     }
 
-    /**
-     * Downloads the APK at [url], showing progress on the version card.
-     * On success the card turns green and shows "update".
-     * On error the card shows "error" for 2 s then resets.
-     */
-    private fun startDownload(url: String) {
-        if (downloadJob?.isActive == true) return
-        downloadJob = lifecycleScope.launch {
-            try {
-                val apk = appUpdater.downloadApk(url) { p ->
-                    val sizeText = "${formatMb(p.bytesDownloaded)}/${formatMb(p.totalBytes)} MB"
-                    val pct = if (p.totalBytes > 0) (p.bytesDownloaded * 100 / p.totalBytes).toInt() else 0
-                    versionCardView.text = sizeText
-                    updateVersionCardProgress(pct)
-                }
-                downloadedApk = apk
-                setCardReady()
-            } catch (_: CancellationException) {
-                resetVersionCard()
-            } catch (_: Exception) {
-                versionCardView.text = "error"
-                delay(2_000)
-                resetVersionCard()
-            }
-        }
-    }
 
     /** Sets the version card to the green "ready to install" state. */
     private fun setCardReady() {
@@ -4155,29 +4096,6 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun formatMb(bytes: Long): String = "%.1f".format(bytes / 1_048_576.0)
-
-    /** Starts a coroutine that checks for updates every 5 minutes while the screen is on. */
-    private fun startFrequentUpdatePolling() {
-        stopFrequentUpdatePolling()
-        frequentUpdateJob = lifecycleScope.launch {
-            while (isActive) {
-                if (downloadedApk == null && downloadJob?.isActive != true &&
-                    ConnectivityChecker.isStableOnline(this@MapActivity)) {
-                    val url = appUpdater.checkForUpdate()
-                    if (url != null) {
-                        appUpdater.cleanupStaleFiles(url)
-                        startDownload(url)
-                    }
-                }
-                delay(5 * 60 * 1_000L)
-            }
-        }
-    }
-
-    private fun stopFrequentUpdatePolling() {
-        frequentUpdateJob?.cancel()
-        frequentUpdateJob = null
-    }
 
     /**
      * Animate the camera to [target].
@@ -5012,8 +4930,8 @@ class MapActivity : ComponentActivity() {
         sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { s ->
             sm.registerListener(compassListener, s, SensorManager.SENSOR_DELAY_GAME)
         }
-        checkUpdateIfDue()
-        if (viewModel.uiState.value.isFrequentUpdatesEnabled) startFrequentUpdatePolling()
+        viewModel.checkUpdateIfDue(prefs)
+        if (viewModel.uiState.value.isFrequentUpdatesEnabled) viewModel.startFrequentUpdatePolling()
     }
 
     override fun onPause() {
@@ -5023,7 +4941,7 @@ class MapActivity : ComponentActivity() {
         sensorManager?.unregisterListener(compassListener)
         sensorManager = null
         mapView.onPause()
-        stopFrequentUpdatePolling()
+        viewModel.stopFrequentUpdatePolling()
         super.onPause()
     }
 
@@ -5034,8 +4952,6 @@ class MapActivity : ComponentActivity() {
 
     override fun onDestroy() {
         animBag.cancelAll()
-        downloadJob?.cancel()
-        frequentUpdateJob?.cancel()
         benchmarkJob?.cancel()
         super.onDestroy()
         mapView.onDestroy()
