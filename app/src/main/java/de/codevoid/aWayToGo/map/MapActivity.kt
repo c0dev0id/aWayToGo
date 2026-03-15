@@ -4398,7 +4398,7 @@ class MapActivity : ComponentActivity() {
                     PropertyFactory.lineColor("#1A1A1A"),
                     PropertyFactory.lineWidth(13f),
                     PropertyFactory.lineOpacity(0.9f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
             }
@@ -4410,7 +4410,7 @@ class MapActivity : ComponentActivity() {
                 setProperties(
                     PropertyFactory.linePattern(IMAGE_TAPE_PATTERN),
                     PropertyFactory.lineWidth(10f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
                 )
             }
