@@ -9,29 +9,29 @@ import android.view.View
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
-import kotlin.math.roundToInt
 import kotlin.math.sinh
 import kotlin.math.tan
 
 /**
- * Transparent overlay that draws the MapTiler v3 tile grid (z8–z14) over the map.
+ * Transparent overlay that draws the MapTiler v3 tile grid at a fixed z8 zoom
+ * over the map during offline-download mode.
+ *
+ * The map is locked to zoom ~5.8 while this overlay is active, so the grid
+ * always shows z8 tiles at a constant size — no cross-fading or zoom-adaptive
+ * rendering is needed.
  *
  * - Selected tiles are highlighted with a 20 % blue accent.
- * - Grid alpha fades naturally when the fractional zoom is between two integers
- *   (tiles appear to cross-fade as the user zooms in or out).
  * - Touch events are NOT consumed here; tile selection is handled by the map's
  *   OnMapClickListener in MapActivity, which converts LatLng → tile coordinates
  *   and calls [toggleTile].
  *
  * Selections are stored at the z12 canonical zoom to allow zoom-invariant lookup:
- * each key = `x12 * 4096L + y12`.  Higher-zoom tiles (z13, z14) map to their
- * z12 ancestor; lower-zoom tiles (z8–z11) are "selected" if any of their z12
- * descendants are in the set.
+ * each key = `x12 * 4096L + y12`.  z8 tiles map to their z12 descendants when
+ * downloading (1 z8 tile → 16 z12 tiles).
  */
 class TileGridOverlay(context: Context) : View(context) {
 
@@ -40,16 +40,19 @@ class TileGridOverlay(context: Context) : View(context) {
     /** z12-canonical selected tiles. Key = x12 * 4096L + y12. */
     val selectedTiles: MutableSet<Long> = mutableSetOf()
 
+    /** Tile zoom level used for both rendering and selection. */
+    val gridZoom = 8
+
     private val d = context.resources.displayMetrics.density
 
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style       = Paint.Style.STROKE
         strokeWidth = 1f * d
-        color       = Color.argb(140, 255, 255, 255)
+        color       = Color.argb(77, 0, 0, 0)   // black 30 %
     }
     private val selectedPaint = Paint().apply {
         style = Paint.Style.FILL
-        color = Color.argb(51, 33, 150, 243)   // 20 % opacity #2196F3
+        color = Color.argb(51, 33, 150, 243)     // blue 20 %
     }
 
     init {
@@ -61,27 +64,18 @@ class TileGridOverlay(context: Context) : View(context) {
         val m    = map ?: return
         val proj = m.projection
 
-        // Clamp display zoom to the range we download (z8–z14).
-        val fracZoom  = m.cameraPosition.zoom.coerceIn(8.0, 14.0)
-        val roundZoom = fracZoom.roundToInt()
-
-        // Grid fades toward transparency mid-zoom so the cross-zoom switch looks smooth.
-        val gridAlpha     = (1f - abs(fracZoom - roundZoom).toFloat() * 2.5f).coerceIn(0.2f, 1f)
-        gridPaint.alpha     = (gridAlpha * 140).toInt()
-        selectedPaint.alpha = (gridAlpha * 51).toInt()
-
         val bounds = proj.visibleRegion.latLngBounds
-        val xMin = lonToTile(bounds.longitudeWest,  roundZoom)
-        val xMax = lonToTile(bounds.longitudeEast,  roundZoom)
-        val yMin = latToTile(bounds.latitudeNorth,  roundZoom)
-        val yMax = latToTile(bounds.latitudeSouth,  roundZoom)
+        val xMin = lonToTile(bounds.longitudeWest,  gridZoom)
+        val xMax = lonToTile(bounds.longitudeEast,  gridZoom)
+        val yMin = latToTile(bounds.latitudeNorth,  gridZoom)
+        val yMax = latToTile(bounds.latitudeSouth,  gridZoom)
 
         for (x in xMin..xMax) {
             for (y in yMin..yMax) {
-                val nw = proj.toScreenLocation(LatLng(tileToLat(y,     roundZoom), tileToLon(x,     roundZoom)))
-                val se = proj.toScreenLocation(LatLng(tileToLat(y + 1, roundZoom), tileToLon(x + 1, roundZoom)))
+                val nw = proj.toScreenLocation(LatLng(tileToLat(y,     gridZoom), tileToLon(x,     gridZoom)))
+                val se = proj.toScreenLocation(LatLng(tileToLat(y + 1, gridZoom), tileToLon(x + 1, gridZoom)))
                 val rect = RectF(nw.x, nw.y, se.x, se.y)
-                if (isTileSelected(roundZoom, x, y)) {
+                if (isTileSelected(gridZoom, x, y)) {
                     canvas.drawRect(rect, selectedPaint)
                 }
                 canvas.drawRect(rect, gridPaint)

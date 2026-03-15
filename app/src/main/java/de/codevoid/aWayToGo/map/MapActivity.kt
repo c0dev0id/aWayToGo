@@ -6,7 +6,6 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.PI
-import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -1143,7 +1142,7 @@ class MapActivity : ComponentActivity() {
                 val s = viewModel.uiState.value
                 when {
                     s.isInTileSelectMode -> {
-                        val z = m.cameraPosition.zoom.roundToInt().coerceIn(8, 14)
+                        val z = tileGridOverlay.gridZoom
                         val x = lonToTile(latLng.longitude, z)
                         val y = latToTile(latLng.latitude,  z)
                         tileGridOverlay.toggleTile(z, x, y)
