@@ -2014,7 +2014,7 @@ class MapActivity : ComponentActivity() {
         // ── Offline Maps submenu transition ────────────────────────────────────
         if (old != null && offlineMapsMenuChanged && new.isMenuOpen) {
             if (new.isInOfflineMapsMenu) {
-                syncOfflineDownloadLabel()
+                updateTileSelectCard()
                 runEnterOfflineMapsAnimation()
             } else {
                 runExitOfflineMapsAnimation()
