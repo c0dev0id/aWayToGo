@@ -3238,13 +3238,23 @@ class MapActivity : ComponentActivity() {
             setColor(Color.argb(200, 0, 0, 0))
             cornerRadius = 16 * d
         }
+        val mb = count * 20.0 / 1024.0
         tileSelectCard.text = if (count == 0) {
             "No tiles selected"
         } else {
-            val mb = count * 20.0 / 1024.0
             "%d tiles · ~%.1f MB".format(count, mb)
         }
-        val newLabel = if (count == 0) "Apply" else "Apply ($count tiles)"
+        // Delta: compare current selection against the saved (already-cached) selection.
+        val savedRaw = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getString(PREF_TILE_SELECTION, null)
+        val savedCount = if (savedRaw.isNullOrEmpty()) 0
+            else savedRaw.split(",").count { it.toIntOrNull() != null } * 5461
+        val deltaMb = (count - savedCount) * 20.0 / 1024.0
+        val newLabel = if (count == 0 && savedCount == 0) {
+            "Apply"
+        } else {
+            "Apply (%+.1fMB)".format(deltaMb)
+        }
         if (menuPanelResult.offlineDownloadLabel.text != newLabel) {
             menuPanelResult.offlineDownloadLabel.text = newLabel
             offlineMapsMenuWidth  = -1
