@@ -126,6 +126,44 @@ object TileCache {
         HttpRequestUtil.setOkHttpClient(client)
     }
 
+    /**
+     * Evicts cached vector tiles whose z8 ancestor is NOT in [keepZ8Keys].
+     *
+     * Iterates every URL in the OkHttp disk cache, parses the z/x/y from
+     * MapTiler vector tile URLs, maps each tile back to its z8 ancestor,
+     * and removes it if the ancestor is not in the keep set.
+     *
+     * Non-tile URLs (style JSON, glyphs, sprites, etc.) are left untouched.
+     *
+     * Call on an IO thread (performs disk I/O).
+     *
+     * @return the number of tile URLs evicted.
+     */
+    fun evictTilesNotIn(keepZ8Keys: Set<Int>): Int {
+        val cache = diskCache ?: return 0
+        val pattern = Regex("""/tiles/v3/(\d+)/(\d+)/(\d+)\.pbf""")
+        var evicted = 0
+        try {
+            val iter = cache.urls()
+            while (iter.hasNext()) {
+                val url = iter.next()
+                val m = pattern.find(url) ?: continue
+                val z = m.groupValues[1].toIntOrNull() ?: continue
+                if (z < 8 || z > 14) continue
+                val x = m.groupValues[2].toIntOrNull() ?: continue
+                val y = m.groupValues[3].toIntOrNull() ?: continue
+                val x8 = x shr (z - 8)
+                val y8 = y shr (z - 8)
+                val key = x8 * 256 + y8
+                if (key !in keepZ8Keys) {
+                    iter.remove()
+                    evicted++
+                }
+            }
+        } catch (_: Exception) { }
+        return evicted
+    }
+
     /** Evicts all cached tiles. Call on an IO thread (performs disk I/O). */
     fun clearCache() {
         try { diskCache?.evictAll() } catch (_: Exception) { }

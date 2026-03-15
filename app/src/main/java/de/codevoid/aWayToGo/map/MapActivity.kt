@@ -1095,7 +1095,7 @@ class MapActivity : ComponentActivity() {
             }
             // Offline Maps row → opens the offline maps submenu and activates tile-select mode.
             result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
-            // Download row inside offline maps submenu → starts the tile download.
+            // Apply row inside offline maps submenu → syncs cache to selection.
             result.offlineMapsContent.getChildAt(0).setOnClickListener {
                 if (tileDownloadJob?.isActive == true) {
                     tileDownloadJob?.cancel()
@@ -1104,7 +1104,7 @@ class MapActivity : ComponentActivity() {
                     tileDownloadTotal = 0
                     updateTileSelectCard()
                 } else {
-                    startTileDownload()
+                    applyTileSelection()
                 }
             }
         }
@@ -3198,8 +3198,8 @@ class MapActivity : ComponentActivity() {
     /** Update the tile selection info card and the submenu Download label. */
     private fun updateTileSelectCard() {
         if (tileDownloadJob?.isActive == true) {
-            // Download running — card is already showing progress; just sync the label.
-            val newLabel = "Cancel download"
+            // Apply running — card is already showing progress; just sync the label.
+            val newLabel = "Cancel"
             if (menuPanelResult.offlineDownloadLabel.text != newLabel) {
                 menuPanelResult.offlineDownloadLabel.text = newLabel
                 offlineMapsMenuWidth  = -1
@@ -3219,7 +3219,7 @@ class MapActivity : ComponentActivity() {
             val mb = count * 20.0 / 1024.0
             "%d tiles · ~%.1f MB".format(count, mb)
         }
-        val newLabel = if (count == 0) "Download current area" else "Download ($count tiles)"
+        val newLabel = if (count == 0) "Apply" else "Apply ($count tiles)"
         if (menuPanelResult.offlineDownloadLabel.text != newLabel) {
             menuPanelResult.offlineDownloadLabel.text = newLabel
             offlineMapsMenuWidth  = -1
@@ -3248,19 +3248,18 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Start (or restart) the background tile download for the current selection.
+     * Apply the current tile selection: evict cached tiles outside the selection,
+     * then download any missing tiles inside the selection.
      *
-     * If a download is already running, it is cancelled and restarted with the
+     * If a job is already running, it is cancelled and restarted with the
      * updated selection — cache-first means already-fetched tiles are skipped
      * instantly, so restarting is cheap.
      *
-     * All network work runs on [Dispatchers.IO]. URLs are generated lazily so
-     * nothing is pre-allocated on the main thread.
+     * All network and cache I/O runs on [Dispatchers.IO]. URLs are generated
+     * lazily so nothing is pre-allocated on the main thread.
      */
-    private fun startTileDownload() {
-        if (tileGridOverlay.selectedTiles.isEmpty()) return
-
-        // Cancel any in-flight job; restart includes newly selected tiles.
+    private fun applyTileSelection() {
+        // Cancel any in-flight job; restart includes the updated selection.
         tileDownloadJob?.cancel()
 
         val keys  = tileGridOverlay.selectedTiles.toSet()   // snapshot
@@ -3268,10 +3267,37 @@ class MapActivity : ComponentActivity() {
         tileDownloadTotal = total
         tileDownloadDone  = 0
 
-        // Show the progress card immediately so it persists through the menu close.
-        showTileDownloadProgress(0, total)
+        // Show progress immediately so it persists through the menu close.
+        tileSelectCard.visibility = View.VISIBLE
+        tileSelectCard.text = "Cleaning…"
+        val d = resources.displayMetrics.density
+        tileSelectCard.background = GradientDrawable().apply {
+            setColor(Color.argb(200, 0, 0, 0))
+            cornerRadius = 16 * d
+        }
 
         tileDownloadJob = lifecycleScope.launch {
+            // Phase 1 — evict tiles outside the selection.
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                TileCache.evictTilesNotIn(keys)
+            }
+
+            // Phase 2 — download missing tiles inside the selection.
+            if (keys.isEmpty()) {
+                // Nothing to download — just save and finish.
+                saveTileSelection()
+                tileSelectCard.text = "Done"
+                tileDownloadJob   = null
+                tileDownloadDone  = 0
+                tileDownloadTotal = 0
+                delay(3_000)
+                tileSelectCard.animate().alpha(0f).setDuration(300)
+                    .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
+                    .start()
+                return@launch
+            }
+
+            showTileDownloadProgress(0, total)
             var done = 0
             withContext(kotlinx.coroutines.Dispatchers.IO) {
                 for (url in tileUrlSequence(keys)) {
@@ -3305,7 +3331,6 @@ class MapActivity : ComponentActivity() {
             }
             // Completion — runs on Main (launch default).
             if (isActive) saveTileSelection()
-            val d = resources.displayMetrics.density
             tileSelectCard.text = if (isActive) "Done ($done tiles)" else "Cancelled"
             tileSelectCard.background = GradientDrawable().apply {
                 setColor(Color.argb(200, 0, 0, 0))

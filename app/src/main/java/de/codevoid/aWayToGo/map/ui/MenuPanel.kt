@@ -50,7 +50,7 @@ import de.codevoid.aWayToGo.R
  * the panel's top (y=0), initially GONE.
  * [offlineMapsContent] is the LinearLayout that holds the download action row,
  * initially GONE.
- * [offlineDownloadLabel] is the TextView for the download/cancel action.
+ * [offlineDownloadLabel] is the TextView for the apply/cancel action.
  */
 data class MenuPanelResult(
     val root: View,
@@ -339,7 +339,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
 
     // ── Offline Maps submenu content ──────────────────────────────────────────
     val offlineDownloadLabel = TextView(context).apply {
-        text = "Download current area"
+        text = "Apply"
         setTextColor(Color.WHITE)
         textSize = 20f
         gravity  = Gravity.CENTER_VERTICAL
