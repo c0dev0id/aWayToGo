@@ -95,6 +95,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.CacheControl
 import okhttp3.Request
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
@@ -231,7 +232,9 @@ class MapActivity : ComponentActivity() {
     private lateinit var topRightContainer: android.widget.LinearLayout
     private lateinit var tileGridOverlay: TileGridOverlay
     private lateinit var tileSelectCard: TextView
-    private var tileDownloadJob: Job? = null
+    private var tileDownloadJob:   Job? = null
+    private var tileDownloadDone  = 0
+    private var tileDownloadTotal = 0
     private var tileSelectDownloadTotal = 0
     /** Camera position saved when entering tile-select mode; restored on exit. */
     private var tileSelectSavedCamera: CameraPosition? = null
@@ -255,7 +258,6 @@ class MapActivity : ComponentActivity() {
     private var offlineMapsMenuAnimator: ValueAnimator? = null
     private var offlineMapsMenuWidth  = -1
     private var offlineMapsMenuHeight = -1
-    private var offlineDownloadJob: Job? = null
     private var satelliteAnimator: ValueAnimator? = null
     // Tracks all ValueAnimators so they can be cancelled together in onDestroy().
     private val animBag = AnimatorBag()
@@ -1088,7 +1090,17 @@ class MapActivity : ComponentActivity() {
             // Offline Maps row → opens the offline maps submenu and activates tile-select mode.
             result.offlineMapsRowInList.setOnClickListener { viewModel.enterOfflineMapsMenu() }
             // Download row inside offline maps submenu → starts the tile download.
-            result.offlineMapsContent.getChildAt(0).setOnClickListener { startTileDownload() }
+            result.offlineMapsContent.getChildAt(0).setOnClickListener {
+                if (tileDownloadJob?.isActive == true) {
+                    tileDownloadJob?.cancel()
+                    tileDownloadJob   = null
+                    tileDownloadDone  = 0
+                    tileDownloadTotal = 0
+                    updateTileSelectCard()
+                } else {
+                    startTileDownload()
+                }
+            }
         }
         root.addView(
             menuPanel,
@@ -3167,25 +3179,31 @@ class MapActivity : ComponentActivity() {
 
     /** Update the tile selection info card and the submenu Download label. */
     private fun updateTileSelectCard() {
+        if (tileDownloadJob?.isActive == true) {
+            // Download running — card is already showing progress; just sync the label.
+            val newLabel = "Cancel download"
+            if (menuPanelResult.offlineDownloadLabel.text != newLabel) {
+                menuPanelResult.offlineDownloadLabel.text = newLabel
+                offlineMapsMenuWidth  = -1
+                offlineMapsMenuHeight = -1
+            }
+            return
+        }
         val count = tileGridOverlay.countDownloadTiles()
         val d = resources.displayMetrics.density
         tileSelectCard.background = GradientDrawable().apply {
             setColor(Color.argb(200, 0, 0, 0))
             cornerRadius = 16 * d
         }
-        val cardText = if (count == 0) {
+        tileSelectCard.text = if (count == 0) {
             "No tiles selected"
         } else {
-            val mb = count * 20.0 / 1024.0   // ~20 KB per vector tile
+            val mb = count * 20.0 / 1024.0
             "%d tiles · ~%.1f MB".format(count, mb)
         }
-        tileSelectCard.text = cardText
-        // Mirror the count in the submenu Download label so the user can read it
-        // without looking away from the bottom-right card.
         val newLabel = if (count == 0) "Download current area" else "Download ($count tiles)"
         if (menuPanelResult.offlineDownloadLabel.text != newLabel) {
             menuPanelResult.offlineDownloadLabel.text = newLabel
-            // Label width changed — force re-measure on next submenu open.
             offlineMapsMenuWidth  = -1
             offlineMapsMenuHeight = -1
         }
@@ -3211,33 +3229,58 @@ class MapActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Start (or restart) the background tile download for the current selection.
+     *
+     * If a download is already running, it is cancelled and restarted with the
+     * updated selection — cache-first means already-fetched tiles are skipped
+     * instantly, so restarting is cheap.
+     *
+     * All network work runs on [Dispatchers.IO]. URLs are generated lazily so
+     * nothing is pre-allocated on the main thread.
+     */
     private fun startTileDownload() {
         if (tileGridOverlay.selectedTiles.isEmpty()) return
-        val urls = buildTileUrlsForSelection()
-        if (urls.isEmpty()) return
-        val total = urls.size
 
-        // Set up the card as a progress bar synchronously, before the state-flow
-        // dispatch runs runExitTileSelectMode().  Since tileDownloadJob will be
-        // non-null and active at that point, the card won't be hidden.
-        updateTileDownloadProgress(0, total)
-        tileSelectCard.text = "0 / $total"
+        // Cancel any in-flight job; restart includes newly selected tiles.
+        tileDownloadJob?.cancel()
+
+        val keys  = tileGridOverlay.selectedTiles.toSet()   // snapshot
+        val total = keys.size * 5461                        // exact, no set needed
+        tileDownloadTotal = total
+        tileDownloadDone  = 0
+
+        // Show the progress card immediately so it persists through the menu close.
+        showTileDownloadProgress(0, total)
 
         tileDownloadJob = lifecycleScope.launch {
             var done = 0
-            for (url in urls) {
-                if (!isActive) break
-                try {
-                    TileCache.httpClient.newCall(Request.Builder().url(url).build()).execute().close()
-                } catch (_: Exception) { /* skip unreachable tile */ }
-                done++
-                if (done % 20 == 0 || done == total) {
-                    val pct = (done * 100 / total).coerceIn(0, 100)
-                    tileSelectCard.text = "$done / $total"
-                    updateTileDownloadProgress(pct, total)
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                for (url in tileUrlSequence(keys)) {
+                    if (!isActive) break
+                    try {
+                        // Cache-first: skip tiles already in the OkHttp disk cache.
+                        val cacheResp = TileCache.httpClient.newCall(
+                            Request.Builder().url(url).cacheControl(CacheControl.FORCE_CACHE).build()
+                        ).execute()
+                        val cached = cacheResp.isSuccessful
+                        cacheResp.close()
+                        if (!cached) {
+                            TileCache.httpClient.newCall(
+                                Request.Builder().url(url).build()
+                            ).execute().close()
+                        }
+                    } catch (_: Exception) { /* skip unreachable tile */ }
+                    done++
+                    if (done % 50 == 0 || done == total) {
+                        tileDownloadDone = done
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            showTileDownloadProgress(done, total)
+                        }
+                    }
                 }
             }
-            // Completion
+            // Completion — runs on Main (launch default).
             if (isActive) saveTileSelection()
             val d = resources.displayMetrics.density
             tileSelectCard.text = if (isActive) "Done ($done tiles)" else "Cancelled"
@@ -3245,124 +3288,45 @@ class MapActivity : ComponentActivity() {
                 setColor(Color.argb(200, 0, 0, 0))
                 cornerRadius = 16 * d
             }
-            tileDownloadJob = null
+            tileDownloadJob   = null
+            tileDownloadDone  = 0
+            tileDownloadTotal = 0
             delay(3_000)
             tileSelectCard.animate().alpha(0f).setDuration(300)
                 .withEndAction { tileSelectCard.visibility = View.GONE; tileSelectCard.alpha = 1f }
                 .start()
         }
 
-        // Close the menu (and tile select mode) — UI slides back in; renderUiState sees
-        // tileDownloadJob.isActive == true and keeps the progress card visible.
         viewModel.closeMenu()
     }
 
-    /** Update the tile download card's ClipDrawable progress fill. */
-    private fun updateTileDownloadProgress(pct: Int, @Suppress("UNUSED_PARAMETER") total: Int) {
-        val d = resources.displayMetrics.density
-        val r = 16f * d
+    /** Render the ClipDrawable progress fill and text on [tileSelectCard]. */
+    private fun showTileDownloadProgress(done: Int, total: Int) {
+        val pct  = if (total > 0) (done * 100 / total).coerceIn(0, 100) else 0
+        val d    = resources.displayMetrics.density
+        val r    = 16f * d
         val base   = GradientDrawable().apply { setColor(Color.argb(200, 0, 0, 0)); cornerRadius = r }
         val accent = GradientDrawable().apply { setColor(Color.argb(220, 0, 80, 160)); cornerRadius = r }
         val clip   = ClipDrawable(accent, Gravity.START, ClipDrawable.HORIZONTAL)
         tileSelectCard.background = LayerDrawable(arrayOf(base, clip))
         clip.level = pct * 100   // ClipDrawable level is 0–10000
+        tileSelectCard.text = "$done / $total"
+        tileSelectCard.visibility = View.VISIBLE
     }
 
-    /**
-     * Build a deduplicated list of tile URLs for all z8–z14 tiles covered by
-     * the current z12-canonical selection.
-     */
-    private fun buildTileUrlsForSelection(): List<String> {
-        val apiKey  = BuildConfig.MAPTILER_KEY
-        val tileSet = mutableSetOf<Long>()
-
-        fun pack(z: Int, x: Int, y: Int): Long =
-            z.toLong() * 100_000_000L + x.toLong() * 16_384L + y
-
-        for (k in tileGridOverlay.selectedTiles) {
+    /** Lazy sequence of all z8–z14 tile URLs for the given z8 key set. No upfront allocation. */
+    private fun tileUrlSequence(keys: Set<Int>): Sequence<String> = sequence {
+        val apiKey = BuildConfig.MAPTILER_KEY
+        for (k in keys) {
             val x8 = k / 256
             val y8 = k % 256
-            // z8 itself + z9–z14 descendants
-            tileSet.add(pack(8, x8, y8))
-            for (dz in 1..6) {
-                val s = 1 shl dz
-                for (dx in 0 until s) for (dy in 0 until s)
-                    tileSet.add(pack(8 + dz, x8 * s + dx, y8 * s + dy))
-            }
-        }
-
-        return tileSet.map { packed ->
-            val z   = (packed / 100_000_000L).toInt()
-            val rem = packed % 100_000_000L
-            val x   = (rem / 16_384L).toInt()
-            val y   = (rem % 16_384L).toInt()
-            TILES_V3_TEMPLATE
-                .replace("{z}", "$z")
-                .replace("{x}", "$x")
-                .replace("{y}", "$y") + apiKey
-        }
-    }
-
-    private fun onOfflineDownloadTapped() {
-        if (offlineDownloadJob?.isActive == true) {
-            offlineDownloadJob?.cancel()
-            offlineDownloadJob = null
-            syncOfflineDownloadLabel()
-            return
-        }
-        val m = map ?: return
-        val bounds = m.projection.visibleRegion.latLngBounds
-        offlineDownloadJob = lifecycleScope.launch {
-            val urls  = buildOfflineTileUrls(bounds, minZoom = 8, maxZoom = 14, maxTiles = 3_000)
-            val total = urls.size
-            var done  = 0
-            menuPanelResult.offlineDownloadLabel.text = "Starting… (0 / $total)"
-            for (url in urls) {
-                if (!isActive) break
-                try {
-                    val req = Request.Builder().url(url).build()
-                    TileCache.httpClient.newCall(req).execute().close()
-                } catch (_: Exception) { /* skip unreachable tiles */ }
-                done++
-                if (done % 20 == 0 || done == total) {
-                    menuPanelResult.offlineDownloadLabel.text = "Downloading… $done / $total"
+            for (dz in 0..6) {
+                val scale = 1 shl dz
+                for (dx in 0 until scale) for (dy in 0 until scale) {
+                    yield("https://api.maptiler.com/tiles/v3/${8 + dz}/${x8 * scale + dx}/${y8 * scale + dy}.pbf?key=$apiKey")
                 }
             }
-            val label = if (isActive) "Done ($done tiles)" else "Cancelled"
-            menuPanelResult.offlineDownloadLabel.text = label
-            offlineDownloadJob = null
         }
-    }
-
-    private fun syncOfflineDownloadLabel() {
-        menuPanelResult.offlineDownloadLabel.text = when {
-            offlineDownloadJob?.isActive == true -> "Cancel download"
-            else -> "Download current area"
-        }
-    }
-
-    private fun buildOfflineTileUrls(
-        bounds: LatLngBounds,
-        minZoom: Int,
-        maxZoom: Int,
-        maxTiles: Int,
-    ): List<String> {
-        val key  = BuildConfig.MAPTILER_KEY
-        val urls = mutableListOf<String>()
-        for (z in minZoom..maxZoom) {
-            val xMin = lonToTile(bounds.longitudeWest,  z)
-            val xMax = lonToTile(bounds.longitudeEast,  z)
-            val yMin = latToTile(bounds.latitudeNorth,  z)
-            val yMax = latToTile(bounds.latitudeSouth,  z)
-            for (x in xMin..xMax) for (y in yMin..yMax) {
-                urls += TILES_V3_TEMPLATE
-                    .replace("{z}", "$z")
-                    .replace("{x}", "$x")
-                    .replace("{y}", "$y") + key
-                if (urls.size >= maxTiles) return urls
-            }
-        }
-        return urls
     }
 
     private fun lonToTile(lon: Double, zoom: Int): Int =
