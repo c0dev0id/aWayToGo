@@ -2070,8 +2070,6 @@ class MapActivity : ComponentActivity() {
                 runOpenMapLockMenuAnimation()
             } else {
                 runCloseMapLockMenuAnimation()
-                // Ring has served its purpose — reset for the next long-press.
-                crosshairView.lockRingSweep = 0f
             }
         }
 
@@ -2399,6 +2397,7 @@ class MapActivity : ComponentActivity() {
      */
     private fun runCloseMapLockMenuAnimation() {
         mapLockMenuAnimator?.cancel()
+        lockRingAnimator?.cancel()
         mapLockDismissOverlay.visibility = View.GONE
 
         val d          = resources.displayMetrics.density
@@ -2406,6 +2405,14 @@ class MapActivity : ComponentActivity() {
         val lp         = mapLockPanel.layoutParams as FrameLayout.LayoutParams
         val startW     = lp.width
         val startH     = lp.height
+
+        // Animate the ring arc backwards (360° → 0°) in parallel with the panel shrink.
+        lockRingAnimator = animBag.add(ValueAnimator.ofFloat(360f, 0f).apply {
+            duration     = 180
+            interpolator = AccelerateInterpolator()
+            addUpdateListener { va -> crosshairView.lockRingSweep = va.animatedValue as Float }
+            start()
+        })
 
         mapLockMenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 180
@@ -2427,6 +2434,7 @@ class MapActivity : ComponentActivity() {
                     lp.topMargin  = parent.height / 2 - ringDiamPx / 2
                     lp.leftMargin = parent.width  / 2 - ringDiamPx / 2
                     mapLockPanel.layoutParams = lp
+                    lockRingAnimator = null
                 }
             })
             start()
