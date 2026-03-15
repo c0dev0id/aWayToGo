@@ -1,8 +1,9 @@
 package de.codevoid.aWayToGo.update
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -48,6 +49,8 @@ class Downloader(private val context: Context) {
     companion object {
         /** Partial files older than this are considered stale and will be deleted. */
         const val STALE_PART_AGE_MS = 2 * 24 * 60 * 60 * 1_000L   // 2 days
+
+        private val mainHandler = Handler(Looper.getMainLooper())
     }
 
     // connectTimeout: guards the TCP handshake.
@@ -156,7 +159,7 @@ class Downloader(private val context: Context) {
 
                                 if (total > 0) {
                                     val progress = DownloadProgress(downloaded, total, currentSpeed)
-                                    withContext(Dispatchers.Main) { onProgress(progress) }
+                                    mainHandler.post { onProgress(progress) }
                                 }
                             }
                         }
