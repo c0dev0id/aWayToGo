@@ -1892,10 +1892,18 @@ class MapActivity : ComponentActivity() {
         mapLockDismissOverlay.visibility = View.VISIBLE
         mapLockPanel.visibility          = View.VISIBLE
 
-        val d      = resources.displayMetrics.density
-        val panelW = (280 * d).toInt()
-        val panelH = (80 * d).toInt() + 4 * (64 * d).toInt()  // ring zone + 4 items × 64 dp
-        val lp     = mapLockPanel.layoutParams as FrameLayout.LayoutParams
+        val d       = resources.displayMetrics.density
+        val panelW  = (280 * d).toInt()
+        val panelH  = (80 * d).toInt() + 4 * (64 * d).toInt()  // ring zone + 4 items × 64 dp
+        val ringRad = (80 * d).toInt() / 2
+        val lp      = mapLockPanel.layoutParams as FrameLayout.LayoutParams
+        val parent  = mapLockPanel.parent as View
+
+        // Snap to actual view centre before becoming visible (displayMetrics may include nav bar).
+        lp.topMargin  = parent.height / 2 - ringRad
+        lp.leftMargin = parent.width  / 2 - ringRad
+        mapLockPanel.layoutParams = lp
+
         val startW = lp.width
         val startH = lp.height
 
@@ -1940,8 +1948,11 @@ class MapActivity : ComponentActivity() {
                 override fun onAnimationEnd(animation: Animator) {
                     mapLockPanel.visibility = View.GONE
                     // Reset to ring-diameter so next open starts from the same size.
-                    lp.width  = ringDiamPx
-                    lp.height = ringDiamPx
+                    val parent = mapLockPanel.parent as View
+                    lp.width      = ringDiamPx
+                    lp.height     = ringDiamPx
+                    lp.topMargin  = parent.height / 2 - ringDiamPx / 2
+                    lp.leftMargin = parent.width  / 2 - ringDiamPx / 2
                     mapLockPanel.layoutParams = lp
                 }
             })
@@ -3664,13 +3675,13 @@ class MapActivity : ComponentActivity() {
         debugMenuHeight = -1;    debugMenuWidth = -1
 
         // Recalculate map lock panel margins so it stays centred after rotation.
-        run {
-            val d = resources.displayMetrics.density
-            val ringDiamPx   = (80 * d).toInt()
-            val ringRadiusPx = ringDiamPx / 2
-            val lp = mapLockPanel.layoutParams as FrameLayout.LayoutParams
-            lp.leftMargin = resources.displayMetrics.widthPixels  / 2 - ringRadiusPx
-            lp.topMargin  = resources.displayMetrics.heightPixels / 2 - ringRadiusPx
+        (mapLockPanel.parent as View).post {
+            val d       = resources.displayMetrics.density
+            val ringRad = (80 * d).toInt() / 2
+            val parent  = mapLockPanel.parent as View
+            val lp      = mapLockPanel.layoutParams as FrameLayout.LayoutParams
+            lp.leftMargin = parent.width  / 2 - ringRad
+            lp.topMargin  = parent.height / 2 - ringRad
             mapLockPanel.layoutParams = lp
         }
 
