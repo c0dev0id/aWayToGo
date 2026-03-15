@@ -1,10 +1,21 @@
 package de.codevoid.aWayToGo.map
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.SharedPreferences
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import de.codevoid.aWayToGo.update.AppUpdater
+import de.codevoid.aWayToGo.update.ConnectivityChecker
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Owns the UI state for the map screen ([MapUiState]).
@@ -29,9 +40,88 @@ import kotlinx.coroutines.flow.update
  * are idempotent by construction — repeated calls while already in panning mode
  * produce no extra emissions.
  */
-class MapViewModel : ViewModel() {
+class MapViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(MapUiState())
+
+    private val appUpdater       = AppUpdater(getApplication())
+    private var _downloadedApk: File? = null
+    private var downloadJob:     Job? = null
+    private var frequentUpdateJob: Job? = null
+
+    private fun setDownloadState(s: DownloadState) = _uiState.update { it.copy(downloadState = s) }
+
+    fun startDownload(url: String) {
+        if (downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch {
+            try {
+                val apk = appUpdater.downloadApk(url) { p ->
+                    setDownloadState(DownloadState.Downloading(p))
+                }
+                _downloadedApk = apk
+                setDownloadState(DownloadState.Ready)
+            } catch (_: CancellationException) {
+                setDownloadState(DownloadState.Idle)
+            } catch (_: Exception) {
+                setDownloadState(DownloadState.Error)
+                delay(2_000)
+                setDownloadState(DownloadState.Idle)
+            }
+        }
+    }
+
+    fun checkUpdateIfDue(prefs: SharedPreferences) {
+        if (_downloadedApk != null) { setDownloadState(DownloadState.Ready); return }
+        if (downloadJob?.isActive == true) return
+        val lastCheck = prefs.getLong("last_update_check_ms", 0L)
+        if (System.currentTimeMillis() - lastCheck < 24 * 60 * 60_000L) return
+        if (!ConnectivityChecker.isStableOnline(getApplication())) return
+        viewModelScope.launch {
+            prefs.edit().putLong("last_update_check_ms", System.currentTimeMillis()).apply()
+            val url = appUpdater.checkForUpdate() ?: return@launch
+            appUpdater.cleanupStaleFiles(url)
+            startDownload(url)
+        }
+    }
+
+    fun checkOnDemand() {
+        if (downloadJob?.isActive == true) return
+        viewModelScope.launch {
+            setDownloadState(DownloadState.Checking)
+            val url = appUpdater.checkForUpdate()
+            if (url == null) {
+                setDownloadState(DownloadState.UpToDate)
+                delay(2_000)
+                setDownloadState(DownloadState.Idle)
+                return@launch
+            }
+            appUpdater.cleanupStaleFiles(url)
+            startDownload(url)
+        }
+    }
+
+    fun installApk() {
+        val apk = _downloadedApk ?: return
+        setDownloadState(DownloadState.Installing)
+        try { appUpdater.installApk(apk) }
+        catch (_: Exception) { setDownloadState(DownloadState.Error) }
+    }
+
+    fun startFrequentUpdatePolling() {
+        stopFrequentUpdatePolling()
+        frequentUpdateJob = viewModelScope.launch {
+            while (isActive) {
+                if (_uiState.value.downloadState == DownloadState.Idle &&
+                    ConnectivityChecker.isStableOnline(getApplication())) {
+                    val url = appUpdater.checkForUpdate()
+                    if (url != null) { appUpdater.cleanupStaleFiles(url); startDownload(url) }
+                }
+                delay(5 * 60_000L)
+            }
+        }
+    }
+
+    fun stopFrequentUpdatePolling() { frequentUpdateJob?.cancel(); frequentUpdateJob = null }
 
     /** Read-only view of the current UI state. */
     val uiState: StateFlow<MapUiState> = _uiState.asStateFlow()
@@ -240,6 +330,12 @@ class MapViewModel : ViewModel() {
     /** Exit map style mode: panel collapses back to submenu size, chrome returns. */
     fun exitMapStyleMode() {
         _uiState.update { it.copy(isInMapStyleMode = false) }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        downloadJob?.cancel()
+        frequentUpdateJob?.cancel()
     }
 
     /** Enter the Offline Maps submenu layer (menu must already be open).
