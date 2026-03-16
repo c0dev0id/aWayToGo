@@ -81,4 +81,8 @@ dependencies {
     // explicitly because we configure the client directly via
     // HttpRequestUtil.setOkHttpClient() for disk caching and the tile gate.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Google Play Services Location — FusedLocationProviderClient for
+    // battery-efficient, sensor-fused positioning.
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }
