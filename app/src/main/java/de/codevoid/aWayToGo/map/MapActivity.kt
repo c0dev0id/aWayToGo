@@ -171,8 +171,9 @@ private const val ANCHOR_SLIDE_MS = 500.0
 private const val SOURCE_SEARCH_PIN = "search-pin-src"
 private const val LAYER_SEARCH_PIN  = "search-pin-circle"
 
-private const val LAYER_FUEL      = "fuel-stations"
-private const val FUEL_ICON_ID    = "fuel-station-icon"
+private const val SOURCE_FUEL_TILES = "fuel-poi-tiles"
+private const val LAYER_FUEL        = "fuel-stations"
+private const val FUEL_ICON_ID      = "fuel-station-icon"
 
 private const val SOURCE_TILE_GRID_LINES = "tile-grid-lines-src"
 private const val LAYER_TILE_GRID_LINE   = "tile-grid-line"
@@ -2005,13 +2006,17 @@ class MapActivity : ComponentActivity() {
         val s = style ?: return
         if (enabled) {
             if (s.getLayerAs<SymbolLayer>(LAYER_FUEL) != null) return
-            val sourceId = s.sources
-                .filterIsInstance<VectorSource>()
-                .firstOrNull()?.id ?: return
+            // Add a dedicated vector source for POI data so this layer is
+            // self-contained and independent of whatever sources the loaded
+            // style happens to expose (mirrors how applySatelliteLayer works).
+            if (s.getSourceAs<VectorSource>(SOURCE_FUEL_TILES) == null) {
+                val tileSet = TileSet("2.1.0", "$TILES_V3_TEMPLATE${BuildConfig.MAPTILER_KEY}")
+                s.addSource(VectorSource(SOURCE_FUEL_TILES, tileSet))
+            }
             if (s.getImage(FUEL_ICON_ID) == null) {
                 s.addImage(FUEL_ICON_ID, makeFuelIcon())
             }
-            val layer = SymbolLayer(LAYER_FUEL, sourceId).apply {
+            val layer = SymbolLayer(LAYER_FUEL, SOURCE_FUEL_TILES).apply {
                 sourceLayer = "poi"
                 setFilter(Expression.eq(Expression.get("class"), Expression.literal("fuel")))
                 setProperties(

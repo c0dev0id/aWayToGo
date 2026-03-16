@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Fuel station POIs not appearing on the map. `applyFuelStationsLayer` was trying to locate a `VectorSource` by scanning `style.sources`, which is fragile and silently exits if no match is found. Replaced with a dedicated `VectorSource` (`fuel-poi-tiles`) backed by `TILES_V3_TEMPLATE`, matching the pattern used by `applySatelliteLayer`. The layer now owns its data source and is independent of the style's internal source structure.
+
 ### Changed
 - When the search panel is reopened after a result has been selected, the map now pans so that the last result sits at 25 % from the top edge of the screen, keeping it clearly visible above the search panel.
 - Search result list height cap is now 50 % of the screen height in portrait mode (was a fixed 250 dp), giving more room for results without scrolling. The 250 dp cap is kept in landscape where vertical space is scarce.
