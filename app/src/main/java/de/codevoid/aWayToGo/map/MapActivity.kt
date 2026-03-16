@@ -432,7 +432,6 @@ class MapActivity : ComponentActivity() {
                     followSmoothedCos = (1.0 - alpha) * followSmoothedCos + alpha * cos(sourceRad)
                 }
             }
-        }
 
         // ── Camera follow ──────────────────────────────────────────────────
         if (!uiState.isFollowModeActive) {
@@ -459,7 +458,7 @@ class MapActivity : ComponentActivity() {
             animMs,
         )
 
-        updateCrosshairAlpha()
+            updateCrosshairAlpha()
 
         // ── Settled drag-line refresh ──────────────────────────────────────
         // While the whip animation is running doFrame pushes geometry every vsync.
