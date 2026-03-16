@@ -107,10 +107,6 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.LocationListener
-import android.location.LocationManager
-import com.google.android.gms.common.ConnectionResult
-import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -375,10 +371,7 @@ class MapActivity : ComponentActivity() {
     // loop: locationComponent → rawGpsLocation → prediction.
     private val syntheticEngine = SyntheticLocationEngine()
     private var rawGpsLocation: Location? = null
-    // FusedLocationProviderClient is preferred (sensor-fused, battery-efficient).
-    // Falls back to raw LocationManager on devices without Google Play Services.
     private var fusedLocationClient: FusedLocationProviderClient? = null
-    private var locationManager: LocationManager? = null
     private val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 200L)
         .setMinUpdateIntervalMillis(200L)
         .build()
@@ -483,7 +476,6 @@ class MapActivity : ComponentActivity() {
             result.lastLocation?.let(::onLocationFix)
         }
     }
-    private val rawLocationListener = LocationListener { loc -> onLocationFix(loc) }
 
     // ── Compass sensor ────────────────────────────────────────────────────────
     // TYPE_ROTATION_VECTOR fuses accelerometer + magnetometer + gyroscope (OS-side).
@@ -1473,59 +1465,26 @@ class MapActivity : ComponentActivity() {
             isLocationComponentEnabled = true
         }
 
-        // Subscribe to location updates for raw fixes.
+        // Subscribe to fused location for raw fixes.
         // onLocationFix drives the puck, bearing EMA, and camera follow
         // directly at ~5 Hz; it also runs outlier rejection before accepting a fix.
-        // Prefer FusedLocationProviderClient (sensor-fused, battery-efficient);
-        // fall back to raw LocationManager on devices without Google Play Services.
-        val hasGms = GoogleApiAvailability.getInstance()
-            .isGooglePlayServicesAvailable(this) == ConnectionResult.SUCCESS
-        if (hasGms) {
-            val flc = LocationServices.getFusedLocationProviderClient(this)
-            fusedLocationClient = flc
-            try {
-                flc.requestLocationUpdates(locationRequest, locationCallback, mainLooper)
-                flc.lastLocation.addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        rawGpsLocation = loc
-                        m.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(
-                                LatLng(loc.latitude, loc.longitude),
-                                14.0,
-                            ),
-                            600,
-                        )
-                    }
-                }
-            } catch (_: SecurityException) { }
-        } else {
-            val lm = getSystemService(LOCATION_SERVICE) as LocationManager
-            locationManager = lm
-            try {
-                lm.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
-                )
-                lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { rawGpsLocation = it }
-            } catch (_: SecurityException) { }
-              catch (_: IllegalArgumentException) {
-                try {
-                    lm.requestLocationUpdates(
-                        LocationManager.NETWORK_PROVIDER, 5_000L, 0f, rawLocationListener, mainLooper,
+        val flc = LocationServices.getFusedLocationProviderClient(this)
+        fusedLocationClient = flc
+        try {
+            flc.requestLocationUpdates(locationRequest, locationCallback, mainLooper)
+            flc.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    rawGpsLocation = loc
+                    m.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(
+                            LatLng(loc.latitude, loc.longitude),
+                            14.0,
+                        ),
+                        600,
                     )
-                    lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { rawGpsLocation = it }
-                } catch (_: SecurityException) { }
-                  catch (_: IllegalArgumentException) { }
+                }
             }
-            rawGpsLocation?.let { loc ->
-                m.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(
-                        LatLng(loc.latitude, loc.longitude),
-                        14.0,
-                    ),
-                    600,
-                )
-            }
-        }
+        } catch (_: SecurityException) { }
     }
 
     private fun handleRemoteEvent(event: RemoteEvent) {
@@ -4922,25 +4881,10 @@ class MapActivity : ComponentActivity() {
         // callback only registers them once, so after the first pause/resume
         // cycle updates would stop.
         val flc = fusedLocationClient
-        val lm = locationManager
         if (flc != null) {
             try {
                 flc.requestLocationUpdates(locationRequest, locationCallback, mainLooper)
             } catch (_: SecurityException) { }
-        } else if (lm != null) {
-            try {
-                lm.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, 200L, 0f, rawLocationListener, mainLooper,
-                )
-            } catch (_: SecurityException) { }
-              catch (_: IllegalArgumentException) {
-                try {
-                    lm.requestLocationUpdates(
-                        LocationManager.NETWORK_PROVIDER, 5_000L, 0f, rawLocationListener, mainLooper,
-                    )
-                } catch (_: SecurityException) { }
-                  catch (_: IllegalArgumentException) { }
-            }
         }
         // Re-register compass sensor for Course Up bearing fallback.
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
@@ -4956,7 +4900,6 @@ class MapActivity : ComponentActivity() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         remoteControl.unregister()
         fusedLocationClient?.removeLocationUpdates(locationCallback)
-        locationManager?.removeUpdates(rawLocationListener)
         sensorManager?.unregisterListener(compassListener)
         sensorManager = null
         mapView.onPause()
