@@ -31,6 +31,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.location.Location
 import android.os.Bundle
+import android.os.PowerManager
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.MotionEvent
@@ -99,6 +100,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.CacheControl
 import okhttp3.Request
 import org.maplibre.android.MapLibre
+import org.maplibre.android.offline.OfflineManager
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -300,6 +302,29 @@ class MapActivity : ComponentActivity() {
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
     private var renderedState: MapUiState? = null
 
+    // ── Thermal / FPS cap ─────────────────────────────────────────────────────
+    // normalFps tracks the target FPS outside thermal throttling:
+    //   30 fps in NAVIGATE (following GPS, map mostly static)
+    //   60 fps in EXPLORE / EDIT / panning (interactive, needs headroom)
+    // thermalListener reduces FPS and tile prefetch when the device overheats.
+    private var normalFps = 60
+    private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
+        when {
+            status >= PowerManager.THERMAL_STATUS_SEVERE -> {
+                mapView.setMaximumFps(20)
+                map?.setPrefetchZoomDelta(0)
+            }
+            status >= PowerManager.THERMAL_STATUS_MODERATE -> {
+                mapView.setMaximumFps(30)
+                map?.setPrefetchZoomDelta(1)
+            }
+            else -> {
+                mapView.setMaximumFps(normalFps)
+                map?.setPrefetchZoomDelta(2)
+            }
+        }
+    }
+
     // ── Benchmark ─────────────────────────────────────────────────────────────
     private var benchmarkJob: Job? = null
     private var benchmarkOverlay: View? = null
@@ -418,7 +443,9 @@ class MapActivity : ComponentActivity() {
         val m       = map ?: return
         val uiState = viewModel.uiState.value
         if (uiState.isCourseUpEnabled) {
-            val gpsCourse = loc.takeIf { it.hasBearing() }
+            // Gate GPS bearing on speed: below ~7 km/h the Doppler signal is too weak
+            // and Location.getBearing() is unreliable; fall back to compass instead.
+            val gpsCourse = loc.takeIf { it.speed >= 2.0f && it.hasBearing() }
                 ?.bearing?.let { Math.toRadians(it.toDouble()) }
             val compass   = compassBearingRad.takeUnless { it.isNaN() }?.toDouble()
             val sourceRad = gpsCourse ?: compass
@@ -478,15 +505,16 @@ class MapActivity : ComponentActivity() {
     }
 
     // ── Compass sensor ────────────────────────────────────────────────────────
-    // TYPE_ROTATION_VECTOR fuses accelerometer + magnetometer + gyroscope (OS-side).
-    // Its azimuth is used as the Course Up bearing source when GPS hasBearing()
-    // returns false (stationary or no signal).
+    // TYPE_GAME_ROTATION_VECTOR: gyroscope-only fusion (no magnetometer).
+    // Crucial for motorcycles — engine and exhaust create strong local magnetic
+    // fields that corrupt TYPE_ROTATION_VECTOR's magnetometer readings.
+    // Short-term drift is corrected by GPS bearing in onLocationFix().
     private var sensorManager: SensorManager? = null
     private var compassBearingRad = Float.NaN   // azimuth in radians, -π..π
 
     private val compassListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
-            if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+            if (event.sensor.type != Sensor.TYPE_GAME_ROTATION_VECTOR) return
             val rot    = FloatArray(9)
             val orient = FloatArray(3)
             SensorManager.getRotationMatrixFromVector(rot, event.values)
@@ -641,6 +669,10 @@ class MapActivity : ComponentActivity() {
         // any style is loaded, so the custom OkHttp client is in place before the
         // first network request.  The getInstance() call itself makes no HTTP requests.
         MapLibre.getInstance(this)
+        // Cap MapLibre's internal SQLite ambient tile cache.
+        // Must be called after MapLibre.getInstance() and before any MapView or style load.
+        // This is separate from TileCache's OkHttp 200 MB disk cache — both run in parallel.
+        OfflineManager.getInstance(this).setMaximumAmbientCacheSize(50L * 1024 * 1024) {}
         TileCache.init(this)
         remoteControl = RemoteControlManager(this)
 
@@ -2290,6 +2322,16 @@ class MapActivity : ComponentActivity() {
                 // Force MapLibre to re-evaluate tiles with the new cache policy.
                 map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
             }
+        }
+
+        // ── Dynamic FPS cap ────────────────────────────────────────────────────
+        // NAVIGATE while not panning: GPS updates arrive at 5 Hz and MapLibre's
+        // WHEN_DIRTY mode only re-renders on camera events, so 60 fps is wasteful.
+        // Drop to 30 fps to cut GPU power; restore 60 fps for interactive modes.
+        // Thermal throttle (thermalListener) may override this to a lower value.
+        if (modeChanged || panningChanged) {
+            normalFps = if (new.mode == AppMode.NAVIGATE && !new.isInPanningMode) 30 else 60
+            mapView.setMaximumFps(normalFps)
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
@@ -4889,9 +4931,12 @@ class MapActivity : ComponentActivity() {
         // Re-register compass sensor for Course Up bearing fallback.
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
         sensorManager = sm
-        sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { s ->
+        sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)?.let { s ->
             sm.registerListener(compassListener, s, SensorManager.SENSOR_DELAY_GAME)
         }
+        // Monitor device temperature; reduce FPS and tile prefetch under thermal stress.
+        getSystemService(PowerManager::class.java)
+            .addThermalStatusListener(mainExecutor, thermalListener)
         viewModel.checkUpdateIfDue()
         if (viewModel.uiState.value.isFrequentUpdatesEnabled) viewModel.startFrequentUpdatePolling()
     }
@@ -4902,6 +4947,7 @@ class MapActivity : ComponentActivity() {
         fusedLocationClient?.removeLocationUpdates(locationCallback)
         sensorManager?.unregisterListener(compassListener)
         sensorManager = null
+        getSystemService(PowerManager::class.java).removeThermalStatusListener(thermalListener)
         mapView.onPause()
         viewModel.stopFrequentUpdatePolling()
         super.onPause()
