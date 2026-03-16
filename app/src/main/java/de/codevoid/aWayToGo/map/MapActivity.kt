@@ -379,97 +379,100 @@ class MapActivity : ComponentActivity() {
     // Used to compute actual elapsed time for the outlier-rejection threshold,
     // which must scale with interval — GPS fires at ~200 ms, network at ~5 s+.
     private var rawGpsLastFixNs: Long = 0L
-    private val locationCallback = object : LocationCallback() {
-        override fun onLocationResult(result: LocationResult) {
-            val loc = result.lastLocation ?: return
-            rawGpsLocation = loc
 
-            // ── Outlier rejection ──────────────────────────────────────────────
-            if (!followLastLat.isNaN()) {
-                if (loc.hasSpeed() && loc.speed >= FOLLOW_MAX_SPEED_MS) return
-                val dLat    = loc.latitude  - followLastLat
-                val dLon    = loc.longitude - followLastLon
-                val dMeters = sqrt(
-                    (dLat  * 111_000.0).let { it * it } +
-                    (dLon  * 111_000.0 * cos(Math.toRadians(loc.latitude))).let { it * it }
-                )
-                // Scale the max-distance threshold by actual elapsed time so the same
-                // speed limit applies for both GPS (~200 ms) and network (~5 s+) fixes.
-                val elapsedS = if (rawGpsLastFixNs == 0L) 0.2
-                               else (loc.elapsedRealtimeNanos - rawGpsLastFixNs) / 1_000_000_000.0
-                if (dMeters > FOLLOW_MAX_SPEED_MS * elapsedS) return
-            }
+    private fun onLocationFix(loc: Location) {
+        rawGpsLocation = loc
 
-            // ── Accept fix ─────────────────────────────────────────────────────
-            rawGpsLastFixNs = loc.elapsedRealtimeNanos
-            followLastLat = loc.latitude
-            followLastLon = loc.longitude
+        // ── Outlier rejection ──────────────────────────────────────────────
+        if (!followLastLat.isNaN()) {
+            if (loc.hasSpeed() && loc.speed >= FOLLOW_MAX_SPEED_MS) return
+            val dLat    = loc.latitude  - followLastLat
+            val dLon    = loc.longitude - followLastLon
+            val dMeters = sqrt(
+                (dLat  * 111_000.0).let { it * it } +
+                (dLon  * 111_000.0 * cos(Math.toRadians(loc.latitude))).let { it * it }
+            )
+            // Scale the max-distance threshold by actual elapsed time so the same
+            // speed limit applies for both GPS (~200 ms) and network (~5 s+) fixes.
+            val elapsedS = if (rawGpsLastFixNs == 0L) 0.2
+                           else (loc.elapsedRealtimeNanos - rawGpsLastFixNs) / 1_000_000_000.0
+            if (dMeters > FOLLOW_MAX_SPEED_MS * elapsedS) return
+        }
 
-            // ── OSD cache invalidation ─────────────────────────────────────────
-            if (loc.accuracy != osdCachedAcc || !osdCachedHasFix) {
-                osdCachedAcc    = loc.accuracy
-                osdCachedHasFix = true
-                osdDirty        = true
-            }
+        // ── Accept fix ─────────────────────────────────────────────────────
+        rawGpsLastFixNs = loc.elapsedRealtimeNanos
+        followLastLat = loc.latitude
+        followLastLon = loc.longitude
 
-            // ── Update puck ────────────────────────────────────────────────────
-            syntheticEngine.pushLocation(loc)
+        // ── OSD cache invalidation ─────────────────────────────────────────
+        if (loc.accuracy != osdCachedAcc || !osdCachedHasFix) {
+            osdCachedAcc    = loc.accuracy
+            osdCachedHasFix = true
+            osdDirty        = true
+        }
 
-            // ── Bearing EMA ────────────────────────────────────────────────────
-            val m       = map ?: return
-            val uiState = viewModel.uiState.value
-            if (uiState.isCourseUpEnabled) {
-                val gpsCourse = loc.takeIf { it.hasBearing() }
-                    ?.bearing?.let { Math.toRadians(it.toDouble()) }
-                val compass   = compassBearingRad.takeUnless { it.isNaN() }?.toDouble()
-                val sourceRad = gpsCourse ?: compass
-                val alpha     = if (gpsCourse != null) BEARING_SMOOTH_ALPHA else COMPASS_SMOOTH_ALPHA
-                if (sourceRad != null) {
-                    if (followSmoothedSin.isNaN()) {
-                        followSmoothedSin = sin(sourceRad)
-                        followSmoothedCos = cos(sourceRad)
-                    } else {
-                        followSmoothedSin = (1.0 - alpha) * followSmoothedSin + alpha * sin(sourceRad)
-                        followSmoothedCos = (1.0 - alpha) * followSmoothedCos + alpha * cos(sourceRad)
-                    }
+        // ── Update puck ────────────────────────────────────────────────────
+        syntheticEngine.pushLocation(loc)
+
+        // ── Bearing EMA ────────────────────────────────────────────────────
+        val m       = map ?: return
+        val uiState = viewModel.uiState.value
+        if (uiState.isCourseUpEnabled) {
+            val gpsCourse = loc.takeIf { it.hasBearing() }
+                ?.bearing?.let { Math.toRadians(it.toDouble()) }
+            val compass   = compassBearingRad.takeUnless { it.isNaN() }?.toDouble()
+            val sourceRad = gpsCourse ?: compass
+            val alpha     = if (gpsCourse != null) BEARING_SMOOTH_ALPHA else COMPASS_SMOOTH_ALPHA
+            if (sourceRad != null) {
+                if (followSmoothedSin.isNaN()) {
+                    followSmoothedSin = sin(sourceRad)
+                    followSmoothedCos = cos(sourceRad)
+                } else {
+                    followSmoothedSin = (1.0 - alpha) * followSmoothedSin + alpha * sin(sourceRad)
+                    followSmoothedCos = (1.0 - alpha) * followSmoothedCos + alpha * cos(sourceRad)
                 }
             }
 
-            // ── Camera follow ──────────────────────────────────────────────────
-            if (!uiState.isFollowModeActive) {
-                updateCrosshairAlpha()
-                return
-            }
-            val cur        = m.cameraPosition
-            val gpsBearing = if (uiState.isCourseUpEnabled && !followSmoothedSin.isNaN())
-                Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
-            else cur.bearing
-            val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
-            val isMoving   = loc.hasSpeed() && loc.speed >= LOW_SPEED_MS
-            val animMs     = if (isMoving) GPS_FOLLOW_ANIM_MS else 0
-            m.animateCamera(
-                CameraUpdateFactory.newCameraPosition(
-                    CameraPosition.Builder()
-                        .target(LatLng(loc.latitude, loc.longitude))
-                        .zoom(cur.zoom)
-                        .bearing(gpsBearing)
-                        .tilt(targetTilt)
-                        .padding(cur.padding)
-                        .build()
-                ),
-                animMs,
-            )
+        // ── Camera follow ──────────────────────────────────────────────────
+        if (!uiState.isFollowModeActive) {
+            updateCrosshairAlpha()
+            return
+        }
+        val cur        = m.cameraPosition
+        val gpsBearing = if (uiState.isCourseUpEnabled && !followSmoothedSin.isNaN())
+            Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
+        else cur.bearing
+        val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
+        val isMoving   = loc.hasSpeed() && loc.speed >= LOW_SPEED_MS
+        val animMs     = if (isMoving) GPS_FOLLOW_ANIM_MS else 0
+        m.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(LatLng(loc.latitude, loc.longitude))
+                    .zoom(cur.zoom)
+                    .bearing(gpsBearing)
+                    .tilt(targetTilt)
+                    .padding(cur.padding)
+                    .build()
+            ),
+            animMs,
+        )
 
             updateCrosshairAlpha()
 
-            // ── Settled drag-line refresh ──────────────────────────────────────
-            // While the whip animation is running doFrame pushes geometry every vsync.
-            // Once settled, only GPS fixes move the puck end — update here at 5 Hz.
-            if (dragLineSettled) {
-                dragLineAnchor?.let { anchor ->
-                    setDragLine(LatLng(followLastLat, followLastLon), anchor, 0.0)
-                }
+        // ── Settled drag-line refresh ──────────────────────────────────────
+        // While the whip animation is running doFrame pushes geometry every vsync.
+        // Once settled, only GPS fixes move the puck end — update here at 5 Hz.
+        if (dragLineSettled) {
+            dragLineAnchor?.let { anchor ->
+                setDragLine(LatLng(followLastLat, followLastLon), anchor, 0.0)
             }
+        }
+    }
+
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            result.lastLocation?.let(::onLocationFix)
         }
     }
 
@@ -1462,7 +1465,7 @@ class MapActivity : ComponentActivity() {
         }
 
         // Subscribe to fused location for raw fixes.
-        // locationCallback drives the puck, bearing EMA, and camera follow
+        // onLocationFix drives the puck, bearing EMA, and camera follow
         // directly at ~5 Hz; it also runs outlier rejection before accepting a fix.
         val flc = LocationServices.getFusedLocationProviderClient(this)
         fusedLocationClient = flc
