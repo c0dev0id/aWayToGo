@@ -672,7 +672,7 @@ class MapActivity : ComponentActivity() {
         // Cap MapLibre's internal SQLite ambient tile cache.
         // Must be called after MapLibre.getInstance() and before any MapView or style load.
         // This is separate from TileCache's OkHttp 200 MB disk cache — both run in parallel.
-        OfflineManager.getInstance(this).setMaximumAmbientCacheSize(50L * 1024 * 1024) {}
+        OfflineManager.getInstance(this).setMaximumAmbientCacheSize(50L * 1024 * 1024, null)
         TileCache.init(this)
         remoteControl = RemoteControlManager(this)
 
