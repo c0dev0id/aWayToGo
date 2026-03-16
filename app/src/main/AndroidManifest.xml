@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Required to open the package installer for self-update from GitHub releases. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Required on Android 14+ to maintain GPS access without throttling.
+         FOREGROUND_SERVICE_LOCATION gates the foregroundServiceType="location" attribute. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <application
         android:label="aWayToGo"
@@ -46,6 +50,13 @@
             android:name=".diagnostic.DiagnosticRotateActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
+
+        <!-- Foreground service that holds the FOREGROUND_SERVICE_LOCATION grant.
+             Keeps the OS from throttling GPS regardless of power-manager policy. -->
+        <service
+            android:name=".map.LocationForegroundService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
 
         <!-- FileProvider used to share the downloaded update APK with the
              package installer (required on API 24+ for ACTION_VIEW on files). -->

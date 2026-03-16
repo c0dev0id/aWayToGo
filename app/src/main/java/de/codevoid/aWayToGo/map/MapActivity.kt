@@ -4917,6 +4917,9 @@ class MapActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        // Hold the FOREGROUND_SERVICE_LOCATION grant so Android's power manager
+        // cannot throttle GPS updates regardless of future policy changes.
+        startForegroundService(Intent(this, LocationForegroundService::class.java))
         remoteControl.register()
         Choreographer.getInstance().postFrameCallback(frameCallback)
         // Re-register location updates removed in onPause(); the map-ready
@@ -4961,6 +4964,7 @@ class MapActivity : ComponentActivity() {
     override fun onDestroy() {
         animBag.cancelAll()
         benchmarkJob?.cancel()
+        stopService(Intent(this, LocationForegroundService::class.java))
         super.onDestroy()
         mapView.onDestroy()
     }
