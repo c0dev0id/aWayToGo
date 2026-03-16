@@ -432,6 +432,7 @@ class MapActivity : ComponentActivity() {
                     followSmoothedCos = (1.0 - alpha) * followSmoothedCos + alpha * cos(sourceRad)
                 }
             }
+        }
 
         // ── Camera follow ──────────────────────────────────────────────────
         if (!uiState.isFollowModeActive) {
