@@ -123,7 +123,6 @@ import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.CircleLayer
-import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -474,19 +473,20 @@ class MapActivity : ComponentActivity() {
         else cur.bearing
         val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
         val isMoving   = loc.hasSpeed() && loc.speed >= LOW_SPEED_MS
-        val animMs     = if (isMoving) GPS_FOLLOW_ANIM_MS else 0
-        m.animateCamera(
-            CameraUpdateFactory.newCameraPosition(
-                CameraPosition.Builder()
-                    .target(LatLng(loc.latitude, loc.longitude))
-                    .zoom(cur.zoom)
-                    .bearing(gpsBearing)
-                    .tilt(targetTilt)
-                    .padding(cur.padding)
-                    .build()
-            ),
-            animMs,
+        val cameraUpdate = CameraUpdateFactory.newCameraPosition(
+            CameraPosition.Builder()
+                .target(LatLng(loc.latitude, loc.longitude))
+                .zoom(cur.zoom)
+                .bearing(gpsBearing)
+                .tilt(targetTilt)
+                .padding(cur.padding)
+                .build()
         )
+        if (isMoving) {
+            m.animateCamera(cameraUpdate, GPS_FOLLOW_ANIM_MS)
+        } else {
+            m.moveCamera(cameraUpdate)
+        }
 
             updateCrosshairAlpha()
 
