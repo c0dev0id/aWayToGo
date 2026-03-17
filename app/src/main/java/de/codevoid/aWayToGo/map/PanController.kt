@@ -1,12 +1,10 @@
 package de.codevoid.aWayToGo.map
 
+import android.graphics.PointF
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
-import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import de.codevoid.aWayToGo.remote.RemoteKey
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.math.sqrt
 
 // Desired pan speed in screen pixels per second.
@@ -31,13 +29,6 @@ private const val ZOOM_SPEED_PER_SEC = 1.5f
 // to interpolate between main-thread updates — enough for smooth movement
 // without adding noticeable look-ahead lag.
 private const val PAN_LOOK_AHEAD_MS = 32
-
-// Web-Mercator tile-resolution constants used for bearing-aware pixel→LatLng.
-// MERCATOR_CIRCUMFERENCE: Earth equatorial circumference mapped to a 256-px
-//   tile at zoom 0 (standard Web-Mercator definition).
-// METERS_PER_DEGREE_LAT: approximate metres per degree of latitude (near equator).
-private const val MERCATOR_CIRCUMFERENCE = 156543.03392
-private const val METERS_PER_DEGREE_LAT = 111320.0
 
 /**
  * Linear start-ramp: 0 → 1 over [durationMs].
@@ -65,6 +56,11 @@ private fun startRamp(frameTimeNanos: Long, startNs: Long, durationMs: Long = 20
  * non-neutral joystick input should trigger panning mode, it calls the
  * [onEnterPanningMode] callback supplied at construction time.  The caller
  * (typically [MapActivity]) then delegates to the [MapViewModel].
+ *
+ * ### Coordinate conversion
+ * Pan deltas are computed in screen pixels, then converted to [LatLng] via
+ * [MapLibreMap.getProjection].  This correctly handles camera tilt, bearing,
+ * and padding without any manual rotation or metres-per-pixel approximation.
  *
  * ### Thread safety
  * All methods must be called on the main thread.  [panStartNs] is written
@@ -97,17 +93,6 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
     // movement in the same direction after the stick is released.
     private var joyLastDirX = 0f
     private var joyLastDirY = 0f
-
-    // ── Bearing / metersPerPx cache ───────────────────────────────────────────
-    // These values change only when bearing, latitude, or zoom change — not every
-    // frame while panning straight.  Cache them to skip redundant trig calls.
-    private var cachedBearing     = Double.NaN
-    private var cachedCosB        = 0.0
-    private var cachedSinB        = 0.0
-    private var cachedLat         = Double.NaN
-    private var cachedZoom        = Double.NaN
-    private var cachedCosLat      = 1.0
-    private var cachedMetersPerPx = 0.0
 
     /**
      * Call when a D-pad or zoom key is pressed ([RemoteEvent.KeyDown]).
@@ -171,9 +156,8 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
      * looks [PAN_LOOK_AHEAD_MS] ms ahead so the GL thread can interpolate
      * smoothly between main-thread updates.
      *
-     * Pan directions are bearing-aware: the screen-space delta is rotated by
-     * the current map bearing so pushing UP always scrolls map content down
-     * regardless of rotation.
+     * Pan deltas are in screen pixels and converted to [LatLng] via the map
+     * projection, which natively handles camera bearing, tilt, and padding.
      *
      * @param map            The [MapLibreMap] to animate.  Null-safe — returns 0
      *                       immediately if the map is not yet ready.
@@ -191,8 +175,8 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
             return panSpeed
         }
 
-        var totalDx   = 0f
-        var totalDy   = 0f
+        var totalDx   = 0f   // screen pixels, right = positive
+        var totalDy   = 0f   // screen pixels, down  = positive
         var totalZoom = 0f
 
         for ((key, startNs) in panStartNs) {
@@ -249,30 +233,14 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
             val pos    = map.cameraPosition
             val target = pos.target
 
-            // Bearing-aware pan: rotate screen-space vector by map bearing so
-            // pushing UP always scrolls map content down regardless of rotation.
+            // Convert screen-space pan delta to LatLng via the map projection.
+            // This handles bearing, tilt, and padding correctly without any
+            // manual rotation matrix or metres-per-pixel approximation.
             val newLatLng = if (target != null && (totalDx != 0f || totalDy != 0f)) {
-                if (pos.bearing != cachedBearing) {
-                    cachedBearing = pos.bearing
-                    val bearingRad = Math.toRadians(pos.bearing)
-                    cachedCosB = cos(bearingRad)
-                    cachedSinB = sin(bearingRad)
-                }
-                val cosB      = cachedCosB.toFloat()
-                val sinB      = cachedSinB.toFloat()
-                val rotatedDx = totalDx * cosB - totalDy * sinB
-                val rotatedDy = totalDx * sinB + totalDy * cosB
-
-                val lat = target.latitude
-                if (lat != cachedLat || pos.zoom != cachedZoom) {
-                    cachedLat         = lat
-                    cachedZoom        = pos.zoom
-                    cachedCosLat      = cos(Math.toRadians(lat))
-                    cachedMetersPerPx = MERCATOR_CIRCUMFERENCE * cachedCosLat / Math.pow(2.0, pos.zoom)
-                }
-                val latDelta = -(rotatedDy * cachedMetersPerPx) / METERS_PER_DEGREE_LAT
-                val lngDelta =  (rotatedDx * cachedMetersPerPx) / (METERS_PER_DEGREE_LAT * cachedCosLat)
-                LatLng(target.latitude + latDelta, target.longitude + lngDelta)
+                val screenPos = map.projection.toScreenLocation(target)
+                map.projection.fromScreenLocation(
+                    PointF(screenPos.x + totalDx, screenPos.y + totalDy)
+                )
             } else target
 
             map.animateCamera(
