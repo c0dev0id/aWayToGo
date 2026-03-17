@@ -282,6 +282,7 @@ class PanController(private val onEnterPanningMode: () -> Unit) {
                         .zoom(pos.zoom + totalZoom)
                         .bearing(pos.bearing)
                         .tilt(pos.tilt)
+                        .padding(pos.padding)
                         .build(),
                 ),
                 PAN_LOOK_AHEAD_MS,
