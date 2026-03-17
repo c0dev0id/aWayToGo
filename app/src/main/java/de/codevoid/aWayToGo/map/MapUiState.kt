@@ -58,5 +58,6 @@ data class MapUiState(
     val isOfflineMode: Boolean = false,
     val isInMapStyleMenu: Boolean = false,
     val isInMapStyleMode: Boolean = false,
+    val isAppsMenuOpen: Boolean = false,
     val downloadState: DownloadState = DownloadState.Idle,
 )
