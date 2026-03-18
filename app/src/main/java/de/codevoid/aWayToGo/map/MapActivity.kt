@@ -3,17 +3,20 @@ package de.codevoid.aWayToGo.map
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
+import android.app.AlertDialog
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.Manifest
+import android.widget.EditText
 import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Intent
@@ -310,9 +313,13 @@ class MapActivity : ComponentActivity() {
 
     /** Tracks which submenu is active inside the apps panel. */
     private enum class AppsSubmenu { MAIN, ADD_APP, APP_ACTIONS }
-    private var appsSubmenu = AppsSubmenu.MAIN
+    private var appsSubmenu    = AppsSubmenu.MAIN
+    /** True when the apps panel is expanded (list or submenu visible). */
+    private var appsIsOpen     = false
     /** The app currently shown in the APP_ACTIONS submenu; null when not active. */
     private var selectedAppInfo: de.codevoid.aWayToGo.apps.AppInfo? = null
+    /** Reference to the apps button bars for bar animations. */
+    private lateinit var appsBars: List<View>
 
     private val viewModel: MapViewModel by viewModels()
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
@@ -719,8 +726,20 @@ class MapActivity : ComponentActivity() {
             // The ring grows over 450 ms; at 500 ms MapLibre fires onMapLongClickListener
             // which calls openMapLockMenu().  If the user lifts their finger before 500 ms
             // (short tap / pan), onSingleTouchEnd cancels the animation.
-            onSingleTouchDown = {
-                if (viewModel.uiState.value.isInPanningMode
+            onSingleTouchDown = { ev ->
+                // Suppress lock ring if the touch lands on a visible UI panel
+                // (menu, apps panel, or any other overlay). Only trigger on the map.
+                val touchX = ev.rawX; val touchY = ev.rawY
+                fun View.containsTouch(): Boolean {
+                    if (visibility != View.VISIBLE) return false
+                    val loc = IntArray(2); getLocationOnScreen(loc)
+                    return touchX >= loc[0] && touchX <= loc[0] + width
+                        && touchY >= loc[1] && touchY <= loc[1] + height
+                }
+                val onUi = menuPanel.containsTouch()
+                    || appsPanel.containsTouch()
+                if (!onUi
+                    && viewModel.uiState.value.isInPanningMode
                     && !viewModel.uiState.value.isMapLockMenuOpen
                 ) {
                     startLockRingAnimation()
@@ -1153,7 +1172,7 @@ class MapActivity : ComponentActivity() {
             isClickable = true
             isFocusable = false
             visibility  = View.GONE
-            setOnClickListener { viewModel.closeAppsMenu() }
+            setOnClickListener { runCloseAppsAnimation() }
         }
         root.addView(
             appsDismissOverlay,
@@ -1169,6 +1188,7 @@ class MapActivity : ComponentActivity() {
         ).also { result ->
             appsPanelResult = result
             appsPanel       = result.root
+            appsBars        = result.appsBars
 
             result.addAppRow.setOnClickListener { showAddAppSubmenu() }
         }
@@ -5192,15 +5212,21 @@ class MapActivity : ComponentActivity() {
     // ── Apps panel helpers ─────────────────────────────────────────────────────
 
     private fun resetAppsPanelToButton() {
-        appsSubmenu    = AppsSubmenu.MAIN
+        appsIsOpen      = false
+        appsSubmenu     = AppsSubmenu.MAIN
         selectedAppInfo = null
         hideAllAppsScrolls()
         appsDismissOverlay.visibility = View.GONE
-        appsPanelResult.appsButton.text = "APPS"
-        // Shrink panel to just the APPS button
+        // Reset bars to "A" shape
+        appsBars[0].rotation = -50f; appsBars[0].scaleX = 1f
+        appsBars[1].rotation =   0f; appsBars[1].scaleX = 1f
+        appsBars[2].rotation = +50f; appsBars[2].scaleX = 1f
+        // Shrink panel to just the button
+        val d  = resources.displayMetrics.density
+        val sz = (64 * d).toInt()
         val lp = appsPanel.layoutParams as FrameLayout.LayoutParams
-        lp.width  = FrameLayout.LayoutParams.WRAP_CONTENT
-        lp.height = FrameLayout.LayoutParams.WRAP_CONTENT
+        lp.width  = sz
+        lp.height = sz
         appsPanel.layoutParams = lp
         appsPanelFullHeight = -1
     }
@@ -5243,9 +5269,18 @@ class MapActivity : ComponentActivity() {
         appsPanel.layoutParams = lp
     }
 
+    /**
+     * Animate bars from "A" to "→" and expand the panel to show the app list.
+     *
+     * Bar animation mirrors the main menu's enter-settings animation in reverse:
+     *   Bar 0: −50° → +45°, scaleX 1→0.5 (upper-right diagonal of →)
+     *   Bar 1:    0° →   0°, scaleX unchanged (horizontal shaft of →)
+     *   Bar 2: +50° → −45°, scaleX 1→0.5 (lower-right diagonal of →)
+     */
     private fun runOpenAppsAnimation() {
         appsAnimator?.cancel()
         val d      = resources.displayMetrics.density
+        val btnSz  = (64 * d).toInt()
         val panelW = (280 * d).toInt()
 
         // Make list visible before measuring
@@ -5253,12 +5288,17 @@ class MapActivity : ComponentActivity() {
 
         val panelH = getOrMeasureAppsPanelHeight()
         val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
-        val startW = lp.width.let { if (it <= 0) appsPanelResult.appsButton.width.coerceAtLeast((80 * d).toInt()) else it }
-        val startH = lp.height.let { if (it <= 0) appsPanelResult.appsButton.height.coerceAtLeast((48 * d).toInt()) else it }
+        val startW = lp.width.coerceAtLeast(btnSz)
+        val startH = lp.height.coerceAtLeast(btnSz)
 
         appsDismissOverlay.visibility = View.VISIBLE
-        // Button becomes a back arrow when the panel is open.
-        appsPanelResult.appsButton.text = "→"
+        appsIsOpen = true
+
+        // Capture start rotations (may be mid-animation if re-opened quickly).
+        val startRot  = floatArrayOf(appsBars[0].rotation, appsBars[1].rotation, appsBars[2].rotation)
+        val startScaleX = floatArrayOf(appsBars[0].scaleX,  appsBars[1].scaleX,  appsBars[2].scaleX)
+        val targetRot   = floatArrayOf(+45f, 0f, -45f)
+        val targetScaleX = floatArrayOf(0.5f, 1f, 0.5f)
 
         appsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = Anim.NORMAL
@@ -5268,36 +5308,49 @@ class MapActivity : ComponentActivity() {
                 lp.width  = (startW + (panelW - startW) * t).toInt()
                 lp.height = (startH + (panelH - startH) * t).toInt()
                 appsPanel.layoutParams = lp
+                for (i in 0..2) {
+                    appsBars[i].rotation = startRot[i] + (targetRot[i] - startRot[i]) * t
+                    appsBars[i].scaleX   = startScaleX[i] + (targetScaleX[i] - startScaleX[i]) * t
+                }
             }
             start()
         }
     }
 
+    /**
+     * Animate bars from "→" back to "A" and shrink the panel to button size.
+     */
     private fun runCloseAppsAnimation(instant: Boolean = false) {
         appsAnimator?.cancel()
-        appsSubmenu = AppsSubmenu.MAIN
-
-        val d = resources.displayMetrics.density
 
         if (instant) {
             resetAppsPanelToButton()
             return
         }
 
+        val d      = resources.displayMetrics.density
+        val btnSz  = (64 * d).toInt()
         val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
         val startW = lp.width
         val startH = lp.height
-        val btnW   = appsPanelResult.appsButton.width.coerceAtLeast((80 * d).toInt())
-        val btnH   = appsPanelResult.appsButton.height.coerceAtLeast((48 * d).toInt())
+
+        val startRot   = floatArrayOf(appsBars[0].rotation, appsBars[1].rotation, appsBars[2].rotation)
+        val startScaleX = floatArrayOf(appsBars[0].scaleX,  appsBars[1].scaleX,  appsBars[2].scaleX)
+        val targetRot   = floatArrayOf(-50f, 0f, +50f)
+        val targetScaleX = floatArrayOf(1f, 1f, 1f)
 
         appsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 180L
             interpolator = Anim.EXIT
             addUpdateListener { va ->
                 val t = va.animatedValue as Float
-                lp.width  = (startW + (btnW - startW) * t).toInt()
-                lp.height = (startH + (btnH - startH) * t).toInt()
+                lp.width  = (startW + (btnSz - startW) * t).toInt()
+                lp.height = (startH + (btnSz - startH) * t).toInt()
                 appsPanel.layoutParams = lp
+                for (i in 0..2) {
+                    appsBars[i].rotation = startRot[i] + (targetRot[i] - startRot[i]) * t
+                    appsBars[i].scaleX   = startScaleX[i] + (targetScaleX[i] - startScaleX[i]) * t
+                }
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -5326,10 +5379,27 @@ class MapActivity : ComponentActivity() {
         appsPanelFullHeight = -1
     }
 
+    private fun handleAppsButton() {
+        if (!appsIsOpen) {
+            refreshAppsList()
+            runOpenAppsAnimation()
+        } else {
+            // Navigate back: submenu → main list, main list → close.
+            when (appsSubmenu) {
+                AppsSubmenu.ADD_APP, AppsSubmenu.APP_ACTIONS -> {
+                    appsSubmenu = AppsSubmenu.MAIN
+                    showAppsScroll(appsPanelResult.appListScroll)
+                    resizeAppsPanelToContent()
+                }
+                AppsSubmenu.MAIN -> runCloseAppsAnimation()
+            }
+        }
+    }
+
     private fun showAddAppSubmenu() {
         appsSubmenu = AppsSubmenu.ADD_APP
         val allApps = appRepository.queryAllApps()
-        val rows = allApps.map { AppRowInfo(it.label, it.packageName, it.icon) }
+        val rows    = allApps.map { AppRowInfo(it.label, it.originalLabel, it.packageName, it.icon) }
         val addedSet = addedApps.getAdded()
 
         populateAddAppList(
@@ -5345,44 +5415,27 @@ class MapActivity : ComponentActivity() {
         resizeAppsPanelToContent()
     }
 
-    private fun showManageSubmenu() {
-        appsSubmenu = AppsSubmenu.MANAGE
-        val apps = appRepository.getAddedApps()
-        val rows = apps.map { AppRowInfo(it.label, it.packageName, it.icon) }
+    private fun showAppActionsSubmenu(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
+        appsSubmenu     = AppsSubmenu.APP_ACTIONS
+        selectedAppInfo = appInfo
 
-        populateAppList(
-            container = appsPanelResult.manageContainer,
-            apps      = rows,
-            onClick   = { pkg ->
-                val info = apps.find { it.packageName == pkg }
-                showManageActionsSubmenu(pkg, info?.label ?: pkg)
+        populateAppActions(
+            container   = appsPanelResult.appActionsContainer,
+            appIcon     = appInfo.icon,
+            appLabel    = appInfo.label,
+            onHide      = {
+                addedApps.remove(appInfo.packageName)
+                appsSubmenu = AppsSubmenu.MAIN
+                refreshAppsList()
+                showAppsScroll(appsPanelResult.appListScroll)
+                resizeAppsPanelToContent()
             },
+            onRename    = { /* TODO: show rename dialog */ },
+            onAppInfo   = { appRepository.openAppInfo(appInfo.packageName) },
+            onUninstall = { appRepository.uninstallApp(appInfo.packageName) },
         )
 
-        showAppsScroll(appsPanelResult.manageScroll)
-        resizeAppsPanelToContent()
-    }
-
-    private fun showManageActionsSubmenu(packageName: String, label: String) {
-        appsSubmenu = AppsSubmenu.MANAGE_ACTIONS
-        manageActionsPackage = packageName
-
-        populateManageActions(
-            container   = appsPanelResult.manageActionsContainer,
-            appLabel    = label,
-            onRemove    = {
-                addedApps.remove(packageName)
-                showManageSubmenu()
-            },
-            onAppInfo   = {
-                appRepository.openAppInfo(packageName)
-            },
-            onUninstall = {
-                appRepository.uninstallApp(packageName)
-            },
-        )
-
-        showAppsScroll(appsPanelResult.manageActionsScroll)
+        showAppsScroll(appsPanelResult.appActionsScroll)
         resizeAppsPanelToContent()
     }
 }

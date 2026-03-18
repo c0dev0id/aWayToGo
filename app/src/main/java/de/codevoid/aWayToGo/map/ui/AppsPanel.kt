@@ -33,15 +33,18 @@ data class AppRowInfo(
  * Result of [buildAppsPanel].
  *
  * [root] is the panel FrameLayout added to the map root.
- * [appsButton] is the "APPS" / "→" pill button at the bottom-right of the panel.
+ * [appsButton] is the circle button at the bottom-right corner of the panel.
+ * [appsBars] are the three bar views that form the "A" icon; exposed so
+ * [MapActivity] can animate them into an arrow (→) when the panel opens.
  * [appListScroll] / [appListContainer] hold the main list of added apps.
  * [addAppRow] is the "Add App" action row at the bottom of the main list.
  * [addAppScroll] / [addAppContainer] hold the "Add App" submenu with checkboxes.
  * [appActionsScroll] / [appActionsContainer] hold the actions for a long-pressed app.
  */
-data class AppsPanelResult(
+class AppsPanelResult(
     val root: View,
-    val appsButton: TextView,
+    val appsButton: View,
+    val appsBars: List<View>,
     val appListScroll: ScrollView,
     val appListContainer: LinearLayout,
     val addAppRow: View,
@@ -58,15 +61,75 @@ data class AppsPanelResult(
  *   ├── appListScroll   (main list of added apps + "Add App" row)
  *   ├── addAppScroll    (submenu: all apps with checkboxes, initially GONE)
  *   ├── appActionsScroll (submenu: actions for a long-pressed app, initially GONE)
- *   └── appsButton      (APPS / → pill, gravity BOTTOM|END — always visible at corner)
+ *   └── appsButton      (64×64dp circle with A-icon bars, gravity BOTTOM|END — always visible)
+ *
+ * The three bars form the letter "A": two diagonal legs (±50°) and a horizontal crossbar.
+ * They animate to a right-arrow (→) when the panel opens.
  */
 fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult {
     val d       = context.resources.displayMetrics.density
     val radius  = 32 * d
     val panelW  = (280 * d).toInt()
-    val buttonH = (48 * d).toInt()
+    val btnSz   = (64 * d).toInt()
 
-    // ── "Add App" action row ────────────────────────────────────────────────
+    // ── "A" icon bars — same structure as the hamburger in MenuPanel ───────────
+    // Three bars pivot around the button's centre Y, identical to the main menu.
+    // Initial rotations (±50°, 0°) form the letter "A"; animated to arrow on open.
+    val barH     = (3 * d).toInt().coerceAtLeast(2)
+    val barW     = (32 * d).toInt()
+    val btnPad   = (12 * d).toInt()
+    val contentH = btnSz - 2 * btnPad          // 40dp icon area
+    val iconCY   = btnSz / 2f                   // 32dp — button centre Y
+    val barLeftMargin = (iconCY - barW / 2f).toInt()
+
+    // Bar Y centres at 1/4, 2/4, 3/4 of the icon area (same spacing as hamburger).
+    val barTops = Array(3) { i ->
+        val barCY = btnPad + contentH * (i + 1f) / 4f
+        (barCY - barH / 2f).toInt()
+    }
+
+    val appsBars = Array(3) { i ->
+        View(context).apply {
+            background = GradientDrawable().apply {
+                shape        = GradientDrawable.RECTANGLE
+                cornerRadius = barH / 2f
+                setColor(Color.WHITE)
+            }
+            pivotX = barW / 2f
+            pivotY = iconCY - barTops[i]   // pivot at button centre Y
+        }
+    }
+
+    // Initial "A" rotations: left leg (−50°), crossbar (0°), right leg (+50°).
+    appsBars[0].rotation = -50f
+    appsBars[2].rotation = +50f
+
+    val appsButton = FrameLayout(context).apply {
+        clipChildren = false
+        isClickable  = true
+        isFocusable  = true
+        background = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+            GradientDrawable().apply {
+                shape        = GradientDrawable.OVAL
+                setColor(Color.argb(220, 20, 20, 20))
+            },
+            GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.WHITE)
+            },
+        )
+        setOnClickListener { onAppsButton() }
+        appsBars.forEachIndexed { i, bar ->
+            addView(bar, FrameLayout.LayoutParams(barW, barH).apply {
+                gravity    = Gravity.TOP or Gravity.START
+                topMargin  = barTops[i]
+                leftMargin = barLeftMargin
+            })
+        }
+    }
+
+    // ── "Add App" action row ──────────────────────────────────────────────────
     val hPad = (16 * d).toInt()
     val addAppRow = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
@@ -101,7 +164,7 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
         )
     }
 
-    // ── Scroll + container factory ────────────────────────────────────────
+    // ── Scroll + container factory ─────────────────────────────────────────────
     fun scrollWithContainer(): Pair<ScrollView, LinearLayout> {
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -123,18 +186,16 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     appActionsScroll.visibility = View.GONE
     appActionsScroll.alpha = 0f
 
-    // ── APPS pill button ─────────────────────────────────────────────────
-    val appsButton = makePillButton(context, "APPS") { onAppsButton() }
-
-    // ── Root panel ───────────────────────────────────────────────────────
+    // Scroll views sit above the button (bottomMargin = btnSz).
     val scrollLp = FrameLayout.LayoutParams(
         panelW,
         FrameLayout.LayoutParams.WRAP_CONTENT,
     ).apply {
         gravity = Gravity.BOTTOM or Gravity.END
-        bottomMargin = buttonH
+        bottomMargin = btnSz
     }
 
+    // ── Root panel ────────────────────────────────────────────────────────────
     val root = FrameLayout(context).apply {
         background = GradientDrawable().apply {
             shape        = GradientDrawable.RECTANGLE
@@ -148,8 +209,7 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
         addView(appActionsScroll, FrameLayout.LayoutParams(scrollLp))
 
         addView(appsButton, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
+            btnSz, btnSz,
             Gravity.BOTTOM or Gravity.END,
         ))
     }
@@ -157,6 +217,7 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     return AppsPanelResult(
         root                 = root,
         appsButton           = appsButton,
+        appsBars             = appsBars.toList(),
         appListScroll        = appListScroll,
         appListContainer     = appListContainer,
         addAppRow            = addAppRow,

@@ -55,8 +55,10 @@ class TwoFingerLockLayout(context: Context) : FrameLayout(context) {
     /**
      * Fired on [MotionEvent.ACTION_DOWN] (first finger down, single-touch gesture start).
      * [MapActivity] uses this to begin the lock-ring animation after a 50 ms delay.
+     * The [MotionEvent] is passed so callers can hit-test against UI panels and suppress
+     * the lock ring when the touch lands on a button or overlay (not on the map).
      */
-    var onSingleTouchDown: (() -> Unit)? = null
+    var onSingleTouchDown: ((MotionEvent) -> Unit)? = null
 
     /**
      * Fired on [MotionEvent.ACTION_UP] or [MotionEvent.ACTION_CANCEL] (all fingers lifted
@@ -95,7 +97,7 @@ class TwoFingerLockLayout(context: Context) : FrameLayout(context) {
 
         // Lock-ring animation hooks (fired regardless of map readiness).
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN            -> onSingleTouchDown?.invoke()
+            MotionEvent.ACTION_DOWN            -> onSingleTouchDown?.invoke(ev)
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL          -> onSingleTouchEnd?.invoke()
         }
