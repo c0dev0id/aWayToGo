@@ -320,6 +320,8 @@ class MapActivity : ComponentActivity() {
     private var selectedAppInfo: de.codevoid.aWayToGo.apps.AppInfo? = null
     /** Reference to the apps button bars for bar animations. */
     private lateinit var appsBars: List<View>
+    /** The "A" label shown on the apps button when the panel is closed. */
+    private lateinit var appsALabel: TextView
 
     private val viewModel: MapViewModel by viewModels()
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
@@ -1189,6 +1191,7 @@ class MapActivity : ComponentActivity() {
             appsPanelResult = result
             appsPanel       = result.root
             appsBars        = result.appsBars
+            appsALabel      = result.appsALabel
 
             result.addAppRow.setOnClickListener { showAddAppSubmenu() }
         }
@@ -5217,10 +5220,10 @@ class MapActivity : ComponentActivity() {
         selectedAppInfo = null
         hideAllAppsScrolls()
         appsDismissOverlay.visibility = View.GONE
-        // Reset bars to "A" shape
-        appsBars[0].rotation = -50f; appsBars[0].scaleX = 1f
-        appsBars[1].rotation =   0f; appsBars[1].scaleX = 1f
-        appsBars[2].rotation = +50f; appsBars[2].scaleX = 1f
+        // Show "A" label; reset bars to hidden (scaleX=0, no translations).
+        appsALabel.alpha      = 1f
+        appsALabel.visibility = View.VISIBLE
+        appsBars.forEach { it.rotation = 0f; it.scaleX = 0f; it.translationX = 0f; it.translationY = 0f }
         // Shrink panel to just the button
         val d  = resources.displayMetrics.density
         val sz = (64 * d).toInt()
@@ -5270,12 +5273,13 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Animate bars from "A" to "→" and expand the panel to show the app list.
+     * Fade out the "A" label, grow three bars from hidden into a right arrow (→),
+     * and expand the panel to show the app list.
      *
-     * Bar animation mirrors the main menu's enter-settings animation in reverse:
-     *   Bar 0: −50° → +45°, scaleX 1→0.5 (upper-right diagonal of →)
-     *   Bar 1:    0° →   0°, scaleX unchanged (horizontal shaft of →)
-     *   Bar 2: +50° → −45°, scaleX 1→0.5 (lower-right diagonal of →)
+     * Arrow tip pixel corrections mirror the ← arrow used by the top menu:
+     *   Bar 0: +45°, scaleX 0→0.5, tx +1.5dp, ty +1.5dp  (upper arrowhead \)
+     *   Bar 1:   0°, scaleX 0→1.0, tx −2.0dp, ty 0        (horizontal shaft)
+     *   Bar 2: −45°, scaleX 0→0.5, tx +1.5dp, ty −1.5dp  (lower arrowhead /)
      */
     private fun runOpenAppsAnimation() {
         appsAnimator?.cancel()
@@ -5294,13 +5298,19 @@ class MapActivity : ComponentActivity() {
         appsDismissOverlay.visibility = View.VISIBLE
         appsIsOpen = true
 
-        // Capture start rotations (may be mid-animation if re-opened quickly).
-        val startRot  = floatArrayOf(appsBars[0].rotation, appsBars[1].rotation, appsBars[2].rotation)
-        val startScaleX = floatArrayOf(appsBars[0].scaleX,  appsBars[1].scaleX,  appsBars[2].scaleX)
-        val targetRot   = floatArrayOf(+45f, 0f, -45f)
-        val targetScaleX = floatArrayOf(0.5f, 1f, 0.5f)
+        // Capture start state (may be mid-animation if re-opened quickly).
+        val startRot    = FloatArray(3) { appsBars[it].rotation }
+        val startScaleX = FloatArray(3) { appsBars[it].scaleX }
+        val startTX     = FloatArray(3) { appsBars[it].translationX }
+        val startTY     = FloatArray(3) { appsBars[it].translationY }
+        val startAlpha  = appsALabel.alpha
 
-        appsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        val targetRot    = floatArrayOf(+45f,        0f,       -45f)
+        val targetScaleX = floatArrayOf( 0.5f,       1f,        0.5f)
+        val targetTX     = floatArrayOf(+1.5f * d,  -2f * d,  +1.5f * d)
+        val targetTY     = floatArrayOf(+1.5f * d,   0f,      -1.5f * d)
+
+        appsAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = Anim.NORMAL
             interpolator = Anim.ENTER
             addUpdateListener { va ->
@@ -5308,17 +5318,25 @@ class MapActivity : ComponentActivity() {
                 lp.width  = (startW + (panelW - startW) * t).toInt()
                 lp.height = (startH + (panelH - startH) * t).toInt()
                 appsPanel.layoutParams = lp
+                appsALabel.alpha = startAlpha * (1f - t)
                 for (i in 0..2) {
-                    appsBars[i].rotation = startRot[i] + (targetRot[i] - startRot[i]) * t
-                    appsBars[i].scaleX   = startScaleX[i] + (targetScaleX[i] - startScaleX[i]) * t
+                    appsBars[i].rotation     = startRot[i]    + (targetRot[i]    - startRot[i])    * t
+                    appsBars[i].scaleX       = startScaleX[i] + (targetScaleX[i] - startScaleX[i]) * t
+                    appsBars[i].translationX = startTX[i]     + (targetTX[i]     - startTX[i])     * t
+                    appsBars[i].translationY = startTY[i]     + (targetTY[i]     - startTY[i])     * t
                 }
             }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    appsALabel.visibility = View.GONE
+                }
+            })
             start()
-        }
+        })
     }
 
     /**
-     * Animate bars from "→" back to "A" and shrink the panel to button size.
+     * Shrink bars back to hidden and fade in the "A" label, collapsing the panel to button size.
      */
     private fun runCloseAppsAnimation(instant: Boolean = false) {
         appsAnimator?.cancel()
@@ -5334,12 +5352,15 @@ class MapActivity : ComponentActivity() {
         val startW = lp.width
         val startH = lp.height
 
-        val startRot   = floatArrayOf(appsBars[0].rotation, appsBars[1].rotation, appsBars[2].rotation)
-        val startScaleX = floatArrayOf(appsBars[0].scaleX,  appsBars[1].scaleX,  appsBars[2].scaleX)
-        val targetRot   = floatArrayOf(-50f, 0f, +50f)
-        val targetScaleX = floatArrayOf(1f, 1f, 1f)
+        val startRot    = FloatArray(3) { appsBars[it].rotation }
+        val startScaleX = FloatArray(3) { appsBars[it].scaleX }
+        val startTX     = FloatArray(3) { appsBars[it].translationX }
+        val startTY     = FloatArray(3) { appsBars[it].translationY }
 
-        appsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        appsALabel.alpha      = 0f
+        appsALabel.visibility = View.VISIBLE
+
+        appsAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 180L
             interpolator = Anim.EXIT
             addUpdateListener { va ->
@@ -5347,9 +5368,13 @@ class MapActivity : ComponentActivity() {
                 lp.width  = (startW + (btnSz - startW) * t).toInt()
                 lp.height = (startH + (btnSz - startH) * t).toInt()
                 appsPanel.layoutParams = lp
+                // "A" fades in as bars shrink — starts appearing at t=0.5.
+                appsALabel.alpha = ((t - 0.5f) / 0.5f).coerceIn(0f, 1f)
                 for (i in 0..2) {
-                    appsBars[i].rotation = startRot[i] + (targetRot[i] - startRot[i]) * t
-                    appsBars[i].scaleX   = startScaleX[i] + (targetScaleX[i] - startScaleX[i]) * t
+                    appsBars[i].rotation     = startRot[i]    + (0f - startRot[i])    * t
+                    appsBars[i].scaleX       = startScaleX[i] + (0f - startScaleX[i]) * t
+                    appsBars[i].translationX = startTX[i]     + (0f - startTX[i])     * t
+                    appsBars[i].translationY = startTY[i]     + (0f - startTY[i])     * t
                 }
             }
             addListener(object : AnimatorListenerAdapter() {
@@ -5358,7 +5383,7 @@ class MapActivity : ComponentActivity() {
                 }
             })
             start()
-        }
+        })
     }
 
     private fun refreshAppsList() {
