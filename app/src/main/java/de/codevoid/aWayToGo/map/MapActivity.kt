@@ -201,22 +201,14 @@ private const val PREF_APPLY_PENDING   = "apply_pending"
 // enough to cover GPS noise at low speed while rejecting true outliers.
 private const val FOLLOW_MAX_SPEED_MS = 83.3   // 300 km/h in m/s
 
-// Animation duration per GPS fix; slightly longer than the 200 ms GPS interval
-// so consecutive animations overlap → continuous smooth motion.
-private const val GPS_FOLLOW_ANIM_MS = 250
-
 // Below this speed we snap to the exact fix (no animation) so noisy stationary
 // GPS readings don't make the camera swing.
 private const val LOW_SPEED_MS = 2.0   // ≈ 7 km/h
 
-// Course Up bearing smoothing: EMA weight applied each GPS fix (~5 Hz).
-// Chosen to give the same ~3 s smoothing time constant as 0.005 at 60 fps.
-private const val BEARING_SMOOTH_ALPHA = 0.06
-
-// Compass bearing smoothing when falling back to sensor azimuth (no GPS bearing).
-// ~10× more responsive than GPS EMA since the rotation-vector sensor is already
-// hardware-filtered and needs less software smoothing.
-private const val COMPASS_SMOOTH_ALPHA = 0.1
+// Desired EMA time constant for Course Up bearing smoothing (seconds).
+// α is computed per-fix as 1 − exp(−dt / τ) so the effective smoothing window
+// stays constant regardless of GPS update rate (1 Hz → α≈0.28, 4 Hz → α≈0.08).
+private const val BEARING_SMOOTH_TAU_S = 3.0
 
 private const val FLYTO_DURATION_MS = 800
 
@@ -432,6 +424,13 @@ class MapActivity : ComponentActivity() {
     private fun onLocationFix(loc: Location) {
         rawGpsLocation = loc
 
+        // ── Elapsed time since last accepted fix ───────────────────────────
+        // Hoisted to the top so outlier rejection, bearing EMA, and camera
+        // animation all use the same measured interval — adapting automatically
+        // to whatever rate the GPS hardware delivers (1 Hz, 4 Hz, etc.).
+        val elapsedS = if (rawGpsLastFixNs == 0L) 1.0   // assume 1 Hz on first fix
+                       else (loc.elapsedRealtimeNanos - rawGpsLastFixNs) / 1_000_000_000.0
+
         // ── Outlier rejection ──────────────────────────────────────────────
         if (!followLastLat.isNaN()) {
             if (loc.hasSpeed() && loc.speed >= FOLLOW_MAX_SPEED_MS) return
@@ -441,10 +440,6 @@ class MapActivity : ComponentActivity() {
                 (dLat  * 111_000.0).let { it * it } +
                 (dLon  * 111_000.0 * cos(Math.toRadians(loc.latitude))).let { it * it }
             )
-            // Scale the max-distance threshold by actual elapsed time so the same
-            // speed limit applies for both GPS (~200 ms) and network (~5 s+) fixes.
-            val elapsedS = if (rawGpsLastFixNs == 0L) 0.2
-                           else (loc.elapsedRealtimeNanos - rawGpsLastFixNs) / 1_000_000_000.0
             if (dMeters > FOLLOW_MAX_SPEED_MS * elapsedS) return
         }
 
@@ -464,6 +459,8 @@ class MapActivity : ComponentActivity() {
         syntheticEngine.pushLocation(loc)
 
         // ── Bearing EMA ────────────────────────────────────────────────────
+        // α = 1 − exp(−dt / τ) gives a constant time constant τ regardless of
+        // GPS rate: at 1 Hz α≈0.28, at 4 Hz α≈0.08, at 5 Hz α≈0.065.
         val m       = map ?: return
         val uiState = viewModel.uiState.value
         if (uiState.isCourseUpEnabled) {
@@ -473,7 +470,7 @@ class MapActivity : ComponentActivity() {
                 ?.bearing?.let { Math.toRadians(it.toDouble()) }
             val compass   = compassBearingRad.takeUnless { it.isNaN() }?.toDouble()
             val sourceRad = gpsCourse ?: compass
-            val alpha     = if (gpsCourse != null) BEARING_SMOOTH_ALPHA else COMPASS_SMOOTH_ALPHA
+            val alpha     = 1.0 - exp(-elapsedS / BEARING_SMOOTH_TAU_S)
             if (sourceRad != null) {
                 if (followSmoothedSin.isNaN()) {
                     followSmoothedSin = sin(sourceRad)
@@ -506,7 +503,11 @@ class MapActivity : ComponentActivity() {
                 .build()
         )
         if (isMoving) {
-            m.animateCamera(cameraUpdate, GPS_FOLLOW_ANIM_MS)
+            // Animate for 110% of the measured fix interval so consecutive animations
+            // slightly overlap — giving smooth continuous motion at any GPS rate.
+            // At 1 Hz: ~1100 ms. At 4 Hz: ~275 ms. Clamped to avoid extremes.
+            val animMs = (elapsedS * 1100.0).toInt().coerceIn(200, 2000)
+            m.animateCamera(cameraUpdate, animMs)
         } else {
             m.moveCamera(cameraUpdate)
         }
@@ -515,7 +516,7 @@ class MapActivity : ComponentActivity() {
 
         // ── Settled drag-line refresh ──────────────────────────────────────
         // While the whip animation is running doFrame pushes geometry every vsync.
-        // Once settled, only GPS fixes move the puck end — update here at 5 Hz.
+        // Once settled, only GPS fixes move the puck end — update here at GPS rate.
         if (dragLineSettled) {
             dragLineAnchor?.let { anchor ->
                 setDragLine(LatLng(followLastLat, followLastLon), anchor, 0.0)
@@ -5288,14 +5289,14 @@ class MapActivity : ComponentActivity() {
     private fun showAddAppSubmenu() {
         appsSubmenu = AppsSubmenu.ADD_APP
         val allApps = appRepository.queryAllApps()
-        val rows = allApps.map { AppRowInfo(it.label, it.originalLabel, it.packageName, it.icon) }
+        val rows = allApps.map { AppRowInfo(it.label, it.packageName, it.icon) }
         val addedSet = addedApps.getAdded()
 
         populateAddAppList(
-            container     = appsPanelResult.addAppContainer,
-            apps          = rows,
-            addedPackages = addedSet,
-            onToggle      = { pkg, checked ->
+            container       = appsPanelResult.addAppContainer,
+            apps            = rows,
+            addedPackages   = addedSet,
+            onToggle        = { pkg, checked ->
                 if (checked) addedApps.add(pkg) else addedApps.remove(pkg)
             },
         )
@@ -5304,103 +5305,45 @@ class MapActivity : ComponentActivity() {
         resizeAppsPanelToContent()
     }
 
-    /**
-     * Show the app-actions submenu for [appInfo].
-     *
-     * Called when the user long-presses an app row in the main list, and again
-     * after rename/reset to refresh the header label.
-     */
-    private fun showAppActionsSubmenu(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
-        appsSubmenu    = AppsSubmenu.APP_ACTIONS
-        selectedAppInfo = appInfo
+    private fun showManageSubmenu() {
+        appsSubmenu = AppsSubmenu.MANAGE
+        val apps = appRepository.getAddedApps()
+        val rows = apps.map { AppRowInfo(it.label, it.packageName, it.icon) }
 
-        populateAppActions(
-            container   = appsPanelResult.appActionsContainer,
-            appIcon     = appInfo.icon,
-            appLabel    = appInfo.label,
-            onHide      = {
-                addedApps.remove(appInfo.packageName)
-                refreshAppsList()
-                showAppsScroll(appsPanelResult.appListScroll)
-                appsSubmenu     = AppsSubmenu.MAIN
-                selectedAppInfo = null
-                resizeAppsPanelToContent()
+        populateAppList(
+            container = appsPanelResult.manageContainer,
+            apps      = rows,
+            onClick   = { pkg ->
+                val info = apps.find { it.packageName == pkg }
+                showManageActionsSubmenu(pkg, info?.label ?: pkg)
             },
-            onRename    = { showRenameDialog(appInfo) },
-            onAppInfo   = { appRepository.openAppInfo(appInfo.packageName) },
-            onUninstall = { appRepository.uninstallApp(appInfo.packageName) },
         )
 
-        showAppsScroll(appsPanelResult.appActionsScroll)
+        showAppsScroll(appsPanelResult.manageScroll)
         resizeAppsPanelToContent()
     }
 
-    /**
-     * Show a popup dialog for renaming [appInfo].
-     *
-     * Pre-fills the text field with the current display name.
-     * OK → persist new name; Reset → clear custom name (restore original);
-     * Cancel → do nothing.
-     */
-    private fun showRenameDialog(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
-        val d     = resources.displayMetrics.density
-        val padPx = (16 * d).toInt()
+    private fun showManageActionsSubmenu(packageName: String, label: String) {
+        appsSubmenu = AppsSubmenu.MANAGE_ACTIONS
+        manageActionsPackage = packageName
 
-        val editText = android.widget.EditText(this).apply {
-            setText(appInfo.label)
-            selectAll()
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                        android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
-        }
-        val wrapper = android.widget.FrameLayout(this).apply {
-            setPadding(padPx, padPx / 2, padPx, 0)
-            addView(editText)
-        }
+        populateManageActions(
+            container   = appsPanelResult.manageActionsContainer,
+            appLabel    = label,
+            onRemove    = {
+                addedApps.remove(packageName)
+                showManageSubmenu()
+            },
+            onAppInfo   = {
+                appRepository.openAppInfo(packageName)
+            },
+            onUninstall = {
+                appRepository.uninstallApp(packageName)
+            },
+        )
 
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Rename")
-            .setView(wrapper)
-            .setPositiveButton("OK") { _, _ ->
-                val newName = editText.text.toString().trim()
-                if (newName.isNotEmpty()) {
-                    addedApps.setCustomName(appInfo.packageName, newName)
-                    refreshAppsList()
-                    // Refresh the actions header with the new label.
-                    showAppActionsSubmenu(appInfo.copy(label = newName))
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .setNeutralButton("Reset") { _, _ ->
-                addedApps.setCustomName(appInfo.packageName, null)
-                refreshAppsList()
-                // Refresh the actions header, restoring the system label.
-                showAppActionsSubmenu(appInfo.copy(label = appInfo.originalLabel))
-            }
-            .show()
-    }
-
-    /**
-     * Handle the APPS / → button tap.
-     *
-     * Panel closed  → open panel.
-     * Panel open, main list → close panel (→ acts as dismiss).
-     * Panel open, submenu  → go back to main list.
-     */
-    private fun handleAppsButton() {
-        if (!viewModel.uiState.value.isAppsMenuOpen) {
-            viewModel.toggleAppsMenu()
-            return
-        }
-        when (appsSubmenu) {
-            AppsSubmenu.MAIN -> viewModel.closeAppsMenu()
-            AppsSubmenu.ADD_APP, AppsSubmenu.APP_ACTIONS -> {
-                refreshAppsList()
-                showAppsScroll(appsPanelResult.appListScroll)
-                appsSubmenu     = AppsSubmenu.MAIN
-                selectedAppInfo = null
-                resizeAppsPanelToContent()
-            }
-        }
+        showAppsScroll(appsPanelResult.manageActionsScroll)
+        resizeAppsPanelToContent()
     }
 }
 
