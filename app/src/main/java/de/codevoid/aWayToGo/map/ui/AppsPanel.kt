@@ -48,10 +48,8 @@ data class AppRowInfo(
  *
  * [root] is the panel FrameLayout added to the map root.
  * [appsButton] is the circle button at the bottom-right corner of the panel.
- * [appsALabel] is the bold "A" TextView shown when the panel is closed; it matches
- * the letter style of the SAT pill button and fades out as the panel opens.
- * [appsBars] are the three bar views that animate into a right arrow (→) when the
- * panel opens; they start hidden (scaleX=0) behind the "A" label.
+ * [appsBars] are the three bar views that form the letter "A" in the idle state and
+ * animate into a right arrow (→) when the panel opens.
  * [appListScroll] / [appListContainer] hold the main list of added apps.
  * [addAppRow] is the "Add App" action row at the bottom of the main list.
  * [addAppScroll] / [addAppContainer] hold the "Add App" submenu with checkboxes.
@@ -64,7 +62,6 @@ data class AppRowInfo(
 class AppsPanelResult(
     val root: View,
     val appsButton: View,
-    val appsALabel: TextView,
     val appsBars: List<View>,
     val appListScroll: ScrollView,
     val appListContainer: LinearLayout,
@@ -89,9 +86,11 @@ class AppsPanelResult(
  *   ├── appActionsScroll (submenu: actions for a long-pressed app, initially GONE)
  *   └── appsButton      (64×64dp circle with A-icon bars, gravity BOTTOM|END — always visible)
  *
- * The button shows the letter "A" (bold white TextView, same style as the SAT pill button)
- * as its idle icon. Three hidden bars (scaleX=0) animate into a right arrow (→) as the
- * panel opens while the "A" label fades out.
+ * The button shows the letter "A" drawn by three bars in their idle/closed state:
+ *   Bar 0 at −60°: left diagonal leg "/"
+ *   Bar 1 at   0°: horizontal crossbar "─"
+ *   Bar 2 at +60°: right diagonal leg "\"
+ * When the panel opens the bars animate into a right arrow (→).
  */
 fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult {
     val d       = context.resources.displayMetrics.density
@@ -102,10 +101,13 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     val iconSz  = (40 * d).toInt()
     val iconGap = (12 * d).toInt()
 
-    // ── Arrow bars — same structure as the hamburger in MenuPanel ───────────────
+    // ── "A" bars — same structure as the hamburger in MenuPanel ─────────────────
     // Three bars pivot around the button's centre Y, identical to the main menu.
-    // Initial state: scaleX=0 (hidden behind the "A" label). They grow into a
-    // right arrow (→) at ±45°/0° with scaleX 0.5/1/0.5 when the panel opens.
+    // Idle state: bars form the letter "A":
+    //   Bar 0 at −60°: left diagonal leg "/"
+    //   Bar 1 at   0°: horizontal crossbar "─"
+    //   Bar 2 at +60°: right diagonal leg "\"
+    // When the panel opens they animate into a right arrow (→).
     val barH     = (3 * d).toInt().coerceAtLeast(2)
     val barW     = (32 * d).toInt()
     val btnPad   = (12 * d).toInt()
@@ -119,6 +121,9 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
         (barCY - barH / 2f).toInt()
     }
 
+    // Initial rotations for the "A" shape.
+    val aRotations = floatArrayOf(-60f, 0f, +60f)
+
     val appsBars = Array(3) { i ->
         View(context).apply {
             background = GradientDrawable().apply {
@@ -126,19 +131,10 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
                 cornerRadius = barH / 2f
                 setColor(Color.WHITE)
             }
-            pivotX = barW / 2f
-            pivotY = iconCY - barTops[i]   // pivot at button centre Y
-            scaleX = 0f                    // hidden; "A" label is shown instead
+            pivotX   = barW / 2f
+            pivotY   = iconCY - barTops[i]   // pivot at button centre Y
+            rotation = aRotations[i]          // "A" formation at rest
         }
-    }
-
-    // ── "A" label — matches the letter style of the SAT pill button ──────────
-    val appsALabel = TextView(context).apply {
-        text     = "A"
-        setTextColor(Color.WHITE)
-        textSize = 20f
-        typeface = Typeface.DEFAULT_BOLD
-        gravity  = Gravity.CENTER
     }
 
     val appsButton = FrameLayout(context).apply {
@@ -164,11 +160,6 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
                 leftMargin = barLeftMargin
             })
         }
-        // "A" label sits on top of the bars; fills the button area so it stays centred.
-        addView(appsALabel, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-        ))
     }
 
     // ── "Add App" action row ──────────────────────────────────────────────────
@@ -334,7 +325,6 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     return AppsPanelResult(
         root                     = root,
         appsButton               = appsButton,
-        appsALabel               = appsALabel,
         appsBars                 = appsBars.toList(),
         appListScroll            = appListScroll,
         appListContainer         = appListContainer,
