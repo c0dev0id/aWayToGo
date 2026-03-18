@@ -82,8 +82,10 @@ import de.codevoid.aWayToGo.map.ui.AppsPanelResult
 import de.codevoid.aWayToGo.map.ui.AppRowInfo
 import de.codevoid.aWayToGo.map.ui.buildAppsPanel
 import de.codevoid.aWayToGo.map.ui.populateAppList
+import de.codevoid.aWayToGo.map.ui.populateAddAppList
+import de.codevoid.aWayToGo.map.ui.populateManageActions
 import de.codevoid.aWayToGo.apps.AppRepository
-import de.codevoid.aWayToGo.apps.HiddenApps
+import de.codevoid.aWayToGo.apps.AddedApps
 import de.codevoid.aWayToGo.search.BoundingBox
 import de.codevoid.aWayToGo.search.GeocodingRepository
 import de.codevoid.aWayToGo.search.RecentSearches
@@ -309,12 +311,15 @@ class MapActivity : ComponentActivity() {
     private lateinit var appsPanelResult: AppsPanelResult
     private lateinit var appsPanel: View
     private lateinit var appsDismissOverlay: View
-    private lateinit var hiddenApps: HiddenApps
+    private lateinit var addedApps: AddedApps
     private lateinit var appRepository: AppRepository
     private var appsAnimator: ValueAnimator? = null
     private var appsPanelFullHeight = -1
-    private var isShowingHiddenApps = false
-    private var contextMenuPackage: String? = null
+
+    /** Tracks which submenu is active inside the apps panel. */
+    private enum class AppsSubmenu { MAIN, ADD_APP, MANAGE, MANAGE_ACTIONS }
+    private var appsSubmenu = AppsSubmenu.MAIN
+    private var manageActionsPackage: String? = null
 
     private val viewModel: MapViewModel by viewModels()
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
@@ -1131,8 +1136,8 @@ class MapActivity : ComponentActivity() {
         )
 
         // ── Apps launcher panel ────────────────────────────────────────────────
-        hiddenApps    = HiddenApps(getSharedPreferences("hidden_apps", MODE_PRIVATE))
-        appRepository = AppRepository(this, hiddenApps)
+        addedApps     = AddedApps(getSharedPreferences("added_apps", MODE_PRIVATE))
+        appRepository = AppRepository(this, addedApps)
 
         // Apps dismiss overlay — same pattern as the menu dismiss overlay.
         appsDismissOverlay = View(this).apply {
@@ -1157,24 +1162,8 @@ class MapActivity : ComponentActivity() {
             appsPanelResult = result
             appsPanel       = result.root
 
-            result.hiddenHeaderRow.setOnClickListener { showHiddenAppsList() }
-
-            result.contextHideRow.setOnClickListener {
-                val pkg = contextMenuPackage ?: return@setOnClickListener
-                if (hiddenApps.isHidden(pkg)) hiddenApps.show(pkg) else hiddenApps.hide(pkg)
-                dismissAppsContextMenu()
-                refreshAppsList()
-            }
-            result.contextStopRow.setOnClickListener {
-                val pkg = contextMenuPackage ?: return@setOnClickListener
-                appRepository.openAppInfo(pkg)
-                dismissAppsContextMenu()
-            }
-            result.contextUninstallRow.setOnClickListener {
-                val pkg = contextMenuPackage ?: return@setOnClickListener
-                appRepository.uninstallApp(pkg)
-                dismissAppsContextMenu()
-            }
+            result.addAppRow.setOnClickListener { showAddAppSubmenu() }
+            result.manageRow.setOnClickListener { showManageSubmenu() }
         }
         root.addView(
             appsPanel,
@@ -5162,14 +5151,9 @@ class MapActivity : ComponentActivity() {
     // ── Apps panel helpers ─────────────────────────────────────────────────────
 
     private fun resetAppsPanelToButton() {
-        isShowingHiddenApps = false
-        contextMenuPackage = null
-        appsPanelResult.contextMenu.visibility = View.GONE
-        appsPanelResult.hiddenListScroll.visibility = View.GONE
-        appsPanelResult.hiddenListScroll.alpha = 0f
-        // Reset list state so it's ready for the next open.
-        appsPanelResult.appListScroll.alpha = 1f
-        appsPanelResult.appListScroll.visibility = View.GONE
+        appsSubmenu = AppsSubmenu.MAIN
+        manageActionsPackage = null
+        hideAllAppsScrolls()
         appsDismissOverlay.visibility = View.GONE
         // Shrink panel to just the APPS button
         val lp = appsPanel.layoutParams as FrameLayout.LayoutParams
@@ -5177,6 +5161,23 @@ class MapActivity : ComponentActivity() {
         lp.height = FrameLayout.LayoutParams.WRAP_CONTENT
         appsPanel.layoutParams = lp
         appsPanelFullHeight = -1
+    }
+
+    private fun hideAllAppsScrolls() {
+        appsPanelResult.appListScroll.visibility = View.GONE
+        appsPanelResult.appListScroll.alpha = 0f
+        appsPanelResult.addAppScroll.visibility = View.GONE
+        appsPanelResult.addAppScroll.alpha = 0f
+        appsPanelResult.manageScroll.visibility = View.GONE
+        appsPanelResult.manageScroll.alpha = 0f
+        appsPanelResult.manageActionsScroll.visibility = View.GONE
+        appsPanelResult.manageActionsScroll.alpha = 0f
+    }
+
+    private fun showAppsScroll(scroll: ScrollView) {
+        hideAllAppsScrolls()
+        scroll.visibility = View.VISIBLE
+        scroll.alpha = 1f
     }
 
     private fun getOrMeasureAppsPanelHeight(): Int {
@@ -5191,14 +5192,24 @@ class MapActivity : ComponentActivity() {
         return appsPanelFullHeight
     }
 
+    private fun resizeAppsPanelToContent() {
+        appsPanelFullHeight = -1
+        val d = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+        val panelH = getOrMeasureAppsPanelHeight()
+        val lp = appsPanel.layoutParams as FrameLayout.LayoutParams
+        lp.width  = panelW
+        lp.height = panelH
+        appsPanel.layoutParams = lp
+    }
+
     private fun runOpenAppsAnimation() {
         appsAnimator?.cancel()
         val d      = resources.displayMetrics.density
         val panelW = (280 * d).toInt()
 
         // Make list visible before measuring
-        appsPanelResult.appListScroll.visibility = View.VISIBLE
-        appsPanelResult.appListScroll.alpha = 1f
+        showAppsScroll(appsPanelResult.appListScroll)
 
         val panelH = getOrMeasureAppsPanelHeight()
         val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
@@ -5222,8 +5233,7 @@ class MapActivity : ComponentActivity() {
 
     private fun runCloseAppsAnimation(instant: Boolean = false) {
         appsAnimator?.cancel()
-        dismissAppsContextMenu()
-        isShowingHiddenApps = false
+        appsSubmenu = AppsSubmenu.MAIN
 
         val d = resources.displayMetrics.density
 
@@ -5257,57 +5267,77 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun refreshAppsList() {
-        val apps = if (isShowingHiddenApps) {
-            appRepository.getHiddenApps()
-        } else {
-            appRepository.getVisibleApps()
-        }
-
+        val apps = appRepository.getAddedApps()
         val rows = apps.map { AppRowInfo(it.label, it.packageName, it.icon) }
-        val container = if (isShowingHiddenApps) {
-            appsPanelResult.hiddenListContainer
-        } else {
-            appsPanelResult.appListContainer
-        }
 
         populateAppList(
-            container     = container,
-            apps          = rows,
-            showHiddenRow = if (!isShowingHiddenApps) appsPanelResult.hiddenHeaderRow else null,
-            onClick       = { pkg -> appRepository.launchApp(pkg) },
-            onLongClick   = { pkg, _ -> showAppsContextMenu(pkg) },
+            container  = appsPanelResult.appListContainer,
+            apps       = rows,
+            actionRows = listOf(appsPanelResult.addAppRow, appsPanelResult.manageRow),
+            onClick    = { pkg -> appRepository.launchApp(pkg) },
         )
 
-        // Re-measure panel height since content changed
         appsPanelFullHeight = -1
     }
 
-    private fun showAppsContextMenu(packageName: String) {
-        contextMenuPackage = packageName
-        appsPanelResult.contextHideLabel.text = if (hiddenApps.isHidden(packageName)) "Show" else "Hide"
-        appsPanelResult.contextMenu.visibility = View.VISIBLE
+    private fun showAddAppSubmenu() {
+        appsSubmenu = AppsSubmenu.ADD_APP
+        val allApps = appRepository.queryAllApps()
+        val rows = allApps.map { AppRowInfo(it.label, it.packageName, it.icon) }
+        val addedSet = addedApps.getAdded()
+
+        populateAddAppList(
+            container       = appsPanelResult.addAppContainer,
+            apps            = rows,
+            addedPackages   = addedSet,
+            onToggle        = { pkg, checked ->
+                if (checked) addedApps.add(pkg) else addedApps.remove(pkg)
+            },
+        )
+
+        showAppsScroll(appsPanelResult.addAppScroll)
+        resizeAppsPanelToContent()
     }
 
-    private fun dismissAppsContextMenu() {
-        contextMenuPackage = null
-        appsPanelResult.contextMenu.visibility = View.GONE
+    private fun showManageSubmenu() {
+        appsSubmenu = AppsSubmenu.MANAGE
+        val apps = appRepository.getAddedApps()
+        val rows = apps.map { AppRowInfo(it.label, it.packageName, it.icon) }
+
+        populateAppList(
+            container = appsPanelResult.manageContainer,
+            apps      = rows,
+            onClick   = { pkg ->
+                val info = apps.find { it.packageName == pkg }
+                showManageActionsSubmenu(pkg, info?.label ?: pkg)
+            },
+        )
+
+        showAppsScroll(appsPanelResult.manageScroll)
+        resizeAppsPanelToContent()
     }
 
-    private fun showHiddenAppsList() {
-        isShowingHiddenApps = true
-        refreshAppsList()
-        appsPanelResult.appListScroll.visibility = View.GONE
-        appsPanelResult.hiddenListScroll.visibility = View.VISIBLE
-        appsPanelResult.hiddenListScroll.alpha = 1f
-        // Re-measure and resize panel
-        appsPanelFullHeight = -1
-        val d = resources.displayMetrics.density
-        val panelW = (280 * d).toInt()
-        val panelH = getOrMeasureAppsPanelHeight()
-        val lp = appsPanel.layoutParams as FrameLayout.LayoutParams
-        lp.width  = panelW
-        lp.height = panelH
-        appsPanel.layoutParams = lp
+    private fun showManageActionsSubmenu(packageName: String, label: String) {
+        appsSubmenu = AppsSubmenu.MANAGE_ACTIONS
+        manageActionsPackage = packageName
+
+        populateManageActions(
+            container   = appsPanelResult.manageActionsContainer,
+            appLabel    = label,
+            onRemove    = {
+                addedApps.remove(packageName)
+                showManageSubmenu()
+            },
+            onAppInfo   = {
+                appRepository.openAppInfo(packageName)
+            },
+            onUninstall = {
+                appRepository.uninstallApp(packageName)
+            },
+        )
+
+        showAppsScroll(appsPanelResult.manageActionsScroll)
+        resizeAppsPanelToContent()
     }
 }
 
