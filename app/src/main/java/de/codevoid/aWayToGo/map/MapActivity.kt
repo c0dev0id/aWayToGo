@@ -83,6 +83,7 @@ import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
 import de.codevoid.aWayToGo.map.ui.makePillButton
 import de.codevoid.aWayToGo.map.ui.AppsPanelResult
 import de.codevoid.aWayToGo.map.ui.AppRowInfo
+import de.codevoid.aWayToGo.map.ui.ShortcutRowInfo
 import de.codevoid.aWayToGo.map.ui.buildAppsPanel
 import de.codevoid.aWayToGo.map.ui.populateAppList
 import de.codevoid.aWayToGo.map.ui.populateAddAppList
@@ -5469,10 +5470,17 @@ class MapActivity : ComponentActivity() {
         appsSubmenu     = AppsSubmenu.APP_ACTIONS
         selectedAppInfo = appInfo
 
+        val shortcuts = appRepository.getAppShortcuts(appInfo.packageName)
+            .map { s -> ShortcutRowInfo(s.id, s.packageName, s.label, s.icon) }
+
         populateAppActions(
             container   = appsPanelResult.appActionsContainer,
             appIcon     = appInfo.icon,
             appLabel    = appInfo.label,
+            shortcuts   = shortcuts,
+            onShortcut  = { row -> appRepository.launchShortcut(
+                de.codevoid.aWayToGo.apps.AppShortcutInfo(row.id, row.packageName, row.label, row.icon)
+            )},
             onHide      = {
                 addedApps.remove(appInfo.packageName)
                 appsSubmenu = AppsSubmenu.MAIN

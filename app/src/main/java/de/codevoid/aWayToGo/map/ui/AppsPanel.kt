@@ -17,6 +17,17 @@ import android.widget.ScrollView
 import android.widget.TextView
 
 /**
+ * A single launcher shortcut row (maps to one [AppShortcutInfo] from the domain layer).
+ * Kept in the UI layer to avoid pulling domain imports into view code.
+ */
+data class ShortcutRowInfo(
+    val id: String,
+    val packageName: String,
+    val label: String,
+    val icon: android.graphics.drawable.Drawable?,
+)
+
+/**
  * Data passed to the panel to populate an app row.
  *
  * [label] is the display name (custom if renamed, otherwise system label).
@@ -404,11 +415,14 @@ fun populateAddAppList(
  * Populate the app-actions submenu for a single app (reached by long-pressing in main list).
  *
  * The selected app's icon and name appear as a non-interactive header at the top,
- * followed by action rows: Hide, Rename, App Info, Uninstall.
+ * followed by any launcher shortcuts (static + dynamic), then management actions:
+ * Hide, Rename, App Info, Uninstall.
  *
  * @param container   The LinearLayout to populate (cleared first).
  * @param appIcon     Icon of the selected app.
  * @param appLabel    Display name of the selected app (custom name if renamed).
+ * @param shortcuts   Launcher shortcuts to show above the management actions.
+ * @param onShortcut  Called when a shortcut row is tapped.
  * @param onHide      Remove app from the launcher list.
  * @param onRename    Open the rename dialog.
  * @param onAppInfo   Open system app info screen.
@@ -418,6 +432,8 @@ fun populateAppActions(
     container: LinearLayout,
     appIcon: Drawable,
     appLabel: String,
+    shortcuts: List<ShortcutRowInfo> = emptyList(),
+    onShortcut: (ShortcutRowInfo) -> Unit = {},
     onHide: () -> Unit,
     onRename: () -> Unit,
     onAppInfo: () -> Unit,
@@ -469,6 +485,60 @@ fun populateAppActions(
         View(context).apply { setBackgroundColor(Color.argb(60, 255, 255, 255)) },
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (1 * d).toInt()),
     )
+
+    // ── Launcher shortcuts ─────────────────────────────────────────────────────
+    if (shortcuts.isNotEmpty()) {
+        for (shortcut in shortcuts) {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity     = Gravity.CENTER_VERTICAL
+                setPadding(hPad, 0, hPad, 0)
+                isClickable = true
+                isFocusable = true
+                background = RippleDrawable(
+                    ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+                    null,
+                    GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        setColor(Color.WHITE)
+                    },
+                )
+                val iconView = ImageView(context).apply {
+                    if (shortcut.icon != null) {
+                        setImageDrawable(shortcut.icon)
+                    } else {
+                        // Fallback: a small white circle placeholder
+                        setImageDrawable(GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(Color.argb(80, 255, 255, 255))
+                        })
+                    }
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz))
+                addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+                addView(
+                    TextView(context).apply {
+                        text = shortcut.label
+                        setTextColor(Color.argb(220, 255, 255, 255))
+                        textSize = 16f
+                        gravity = Gravity.CENTER_VERTICAL
+                        maxLines = 1
+                        setSingleLine(true)
+                    },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                setOnClickListener { onShortcut(shortcut) }
+            }
+            container.addView(row, LinearLayout.LayoutParams(panelW, actionH))
+        }
+
+        // Separator before management actions
+        container.addView(
+            View(context).apply { setBackgroundColor(Color.argb(60, 255, 255, 255)) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (1 * d).toInt()),
+        )
+    }
 
     // ── Action rows ───────────────────────────────────────────────────────────
     fun actionItem(label: String, onClick: () -> Unit) {
