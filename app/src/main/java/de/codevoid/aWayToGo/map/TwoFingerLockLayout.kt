@@ -21,9 +21,9 @@ import org.maplibre.android.maps.MapLibreMap
  * every MOVE event, so the change takes effect immediately without needing to
  * cancel and replay the gesture sequence.
  *
- * Re-enable scroll as soon as the multi-finger gesture ends — either when the
- * pointer count drops back to one (so single-finger panning resumes naturally)
- * or when all fingers are lifted.
+ * Scroll gestures remain disabled throughout — single-finger panning is owned
+ * entirely by MapActivity's custom touch listener, which handles both plain
+ * pans and the 2→1 finger transition via ACTION_POINTER_UP.
  *
  * ### Usage
  * Use as the root layout in the activity.  After [MapLibreMap] is ready, call
@@ -81,16 +81,18 @@ class TwoFingerLockLayout(context: Context) : FrameLayout(context) {
                 }
 
                 MotionEvent.ACTION_POINTER_UP -> if (ev.pointerCount == 2) {
-                    // Dropping from two fingers back to one — re-enable panning
-                    // so the remaining finger can continue scrolling normally.
-                    m.uiSettings.isScrollGesturesEnabled = true
+                    // Dropping from two fingers back to one.  Keep scroll disabled —
+                    // single-finger panning is handled entirely by MapActivity's custom
+                    // touch listener; re-enabling here would cause MapLibre to also
+                    // scroll the map, doubling the movement speed.
+                    m.uiSettings.isScrollGesturesEnabled = false
                 }
 
                 MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_CANCEL -> {
-                    // All fingers lifted (or gesture cancelled) — unconditionally
-                    // restore scroll in case it was disabled.
-                    m.uiSettings.isScrollGesturesEnabled = true
+                    // All fingers lifted (or gesture cancelled).  Keep scroll disabled
+                    // for the same reason — the custom touch listener owns all panning.
+                    m.uiSettings.isScrollGesturesEnabled = false
                 }
             }
         }
