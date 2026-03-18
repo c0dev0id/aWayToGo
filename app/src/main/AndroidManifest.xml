@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Required to open the package installer for self-update from GitHub releases. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Required on API 30+ to enumerate all installed apps for the launcher app list. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <!-- Required on Android 14+ to maintain GPS access without throttling.
          FOREGROUND_SERVICE_LOCATION gates the foregroundServiceType="location" attribute. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

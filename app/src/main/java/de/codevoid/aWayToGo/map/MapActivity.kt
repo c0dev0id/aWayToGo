@@ -78,6 +78,12 @@ import android.content.ClipboardManager
 import de.codevoid.aWayToGo.map.ui.buildNavigateOverlay
 import de.codevoid.aWayToGo.map.ui.buildSearchOverlay
 import de.codevoid.aWayToGo.map.ui.makePillButton
+import de.codevoid.aWayToGo.map.ui.AppsPanelResult
+import de.codevoid.aWayToGo.map.ui.AppRowInfo
+import de.codevoid.aWayToGo.map.ui.buildAppsPanel
+import de.codevoid.aWayToGo.map.ui.populateAppList
+import de.codevoid.aWayToGo.apps.AppRepository
+import de.codevoid.aWayToGo.apps.HiddenApps
 import de.codevoid.aWayToGo.search.BoundingBox
 import de.codevoid.aWayToGo.search.GeocodingRepository
 import de.codevoid.aWayToGo.search.RecentSearches
@@ -298,6 +304,17 @@ class MapActivity : ComponentActivity() {
     private lateinit var navigateBanner: View
     private lateinit var navigateStopBtn: View
     private lateinit var editTopBar: LinearLayout
+
+    // ── Apps launcher panel ────────────────────────────────────────────────
+    private lateinit var appsPanelResult: AppsPanelResult
+    private lateinit var appsPanel: View
+    private lateinit var appsDismissOverlay: View
+    private lateinit var hiddenApps: HiddenApps
+    private lateinit var appRepository: AppRepository
+    private var appsAnimator: ValueAnimator? = null
+    private var appsPanelFullHeight = -1
+    private var isShowingHiddenApps = false
+    private var contextMenuPackage: String? = null
 
     private val viewModel: MapViewModel by viewModels()
     // Last state that was fully rendered; used to diff new vs old in renderUiState().
@@ -1113,6 +1130,61 @@ class MapActivity : ComponentActivity() {
             ),
         )
 
+        // ── Apps launcher panel ────────────────────────────────────────────────
+        hiddenApps    = HiddenApps(getSharedPreferences("hidden_apps", MODE_PRIVATE))
+        appRepository = AppRepository(this, hiddenApps)
+
+        // Apps dismiss overlay — same pattern as the menu dismiss overlay.
+        appsDismissOverlay = View(this).apply {
+            background  = null
+            isClickable = true
+            isFocusable = false
+            visibility  = View.GONE
+            setOnClickListener { viewModel.closeAppsMenu() }
+        }
+        root.addView(
+            appsDismissOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        buildAppsPanel(
+            context       = this,
+            onToggleApps  = { viewModel.toggleAppsMenu() },
+        ).also { result ->
+            appsPanelResult = result
+            appsPanel       = result.root
+
+            result.hiddenHeaderRow.setOnClickListener { showHiddenAppsList() }
+
+            result.contextHideRow.setOnClickListener {
+                val pkg = contextMenuPackage ?: return@setOnClickListener
+                if (hiddenApps.isHidden(pkg)) hiddenApps.show(pkg) else hiddenApps.hide(pkg)
+                dismissAppsContextMenu()
+                refreshAppsList()
+            }
+            result.contextStopRow.setOnClickListener {
+                val pkg = contextMenuPackage ?: return@setOnClickListener
+                appRepository.openAppInfo(pkg)
+                dismissAppsContextMenu()
+            }
+            result.contextUninstallRow.setOnClickListener {
+                val pkg = contextMenuPackage ?: return@setOnClickListener
+                appRepository.uninstallApp(pkg)
+                dismissAppsContextMenu()
+            }
+        }
+        root.addView(
+            appsPanel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END,
+            ).apply { setMargins(0, 0, btnMargin, btnMargin + (40 * density).toInt()) },
+        )
+
         // Version card added here (above dismiss overlays in z-order) so it always
         // receives taps directly, even when the menu dismiss overlay is visible.
         root.addView(
@@ -1759,6 +1831,7 @@ class MapActivity : ComponentActivity() {
         menuPanel.visibility        = if (inExplore)  View.VISIBLE else View.GONE
         myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
         exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
+        appsPanel.visibility        = if (inExplore)  View.VISIBLE else View.GONE
         navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
         editTopBar.visibility       = if (inEdit)      View.VISIBLE else View.GONE
 
@@ -1770,6 +1843,8 @@ class MapActivity : ComponentActivity() {
                 menuPanel.layoutParams = lp
             }
             hamburgerBars.forEach { it.rotation = 0f }
+            // Reset apps panel to button size.
+            resetAppsPanelToButton()
         }
     }
 
@@ -1814,6 +1889,10 @@ class MapActivity : ComponentActivity() {
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
                     .start()
+                appsPanel.animate().translationX(w)
+                    .setDuration(outDur).setInterpolator(outInterp)
+                    .withEndAction { appsPanel.visibility = View.GONE; appsPanel.translationX = 0f; resetAppsPanelToButton() }
+                    .start()
             }
             AppMode.NAVIGATE -> {
                 navigateBanner.animate().translationY(-h)
@@ -1848,11 +1927,15 @@ class MapActivity : ComponentActivity() {
                 menuPanel.visibility          = View.VISIBLE
                 myLocationButton.visibility   = View.VISIBLE
                 exploreBottomBar.visibility   = View.VISIBLE
+                appsPanel.translationX        = w
+                appsPanel.visibility          = View.VISIBLE
                 menuPanel.animate().translationX(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
                 myLocationButton.animate().translationX(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
                 exploreBottomBar.animate().translationY(0f)
+                    .setDuration(inDur).setInterpolator(inInterp).start()
+                appsPanel.animate().translationX(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
             }
             AppMode.NAVIGATE -> {
@@ -2103,6 +2186,7 @@ class MapActivity : ComponentActivity() {
         val offlineModeChanged        = old?.isOfflineMode != new.isOfflineMode
         val mapLockMenuChanged        = old?.isMapLockMenuOpen != new.isMapLockMenuOpen
         val downloadStateChanged      = old?.downloadState != new.downloadState
+        val appsMenuChanged           = old?.isAppsMenuOpen != new.isAppsMenuOpen
 
         // ── Crosshair ──────────────────────────────────────────────────────────
         // EDIT always shows the crosshair (it acts as the placement cursor).
@@ -2233,6 +2317,16 @@ class MapActivity : ComponentActivity() {
                 // Close instantly when a mode change is also happening so the menu
                 // does not fight with the mode-transition slide animation.
                 runCloseMenuAnimation(instant = modeChanged)
+            }
+        }
+
+        // ── Apps menu animation ───────────────────────────────────────────────
+        if (old != null && appsMenuChanged) {
+            if (new.isAppsMenuOpen) {
+                refreshAppsList()
+                runOpenAppsAnimation()
+            } else {
+                runCloseAppsAnimation(instant = modeChanged)
             }
         }
 
@@ -5063,6 +5157,157 @@ class MapActivity : ComponentActivity() {
                 if (rotationOverlay === overlay) rotationOverlay = null
             }
             .start()
+    }
+
+    // ── Apps panel helpers ─────────────────────────────────────────────────────
+
+    private fun resetAppsPanelToButton() {
+        isShowingHiddenApps = false
+        contextMenuPackage = null
+        appsPanelResult.contextMenu.visibility = View.GONE
+        appsPanelResult.hiddenListScroll.visibility = View.GONE
+        appsPanelResult.hiddenListScroll.alpha = 0f
+        // Reset list state so it's ready for the next open.
+        appsPanelResult.appListScroll.alpha = 1f
+        appsPanelResult.appListScroll.visibility = View.GONE
+        appsDismissOverlay.visibility = View.GONE
+        // Shrink panel to just the APPS button
+        val lp = appsPanel.layoutParams as FrameLayout.LayoutParams
+        lp.width  = FrameLayout.LayoutParams.WRAP_CONTENT
+        lp.height = FrameLayout.LayoutParams.WRAP_CONTENT
+        appsPanel.layoutParams = lp
+        appsPanelFullHeight = -1
+    }
+
+    private fun getOrMeasureAppsPanelHeight(): Int {
+        if (appsPanelFullHeight > 0) return appsPanelFullHeight
+        val d = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+        val maxH = (resources.displayMetrics.heightPixels * 0.7f).toInt()
+        val wSpec = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST)
+        appsPanel.measure(wSpec, hSpec)
+        appsPanelFullHeight = appsPanel.measuredHeight.coerceAtMost(maxH)
+        return appsPanelFullHeight
+    }
+
+    private fun runOpenAppsAnimation() {
+        appsAnimator?.cancel()
+        val d      = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+
+        // Make list visible before measuring
+        appsPanelResult.appListScroll.visibility = View.VISIBLE
+        appsPanelResult.appListScroll.alpha = 1f
+
+        val panelH = getOrMeasureAppsPanelHeight()
+        val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width.let { if (it <= 0) appsPanelResult.appsButton.width.coerceAtLeast((80 * d).toInt()) else it }
+        val startH = lp.height.let { if (it <= 0) appsPanelResult.appsButton.height.coerceAtLeast((48 * d).toInt()) else it }
+
+        appsDismissOverlay.visibility = View.VISIBLE
+
+        appsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (panelW - startW) * t).toInt()
+                lp.height = (startH + (panelH - startH) * t).toInt()
+                appsPanel.layoutParams = lp
+            }
+            start()
+        }
+    }
+
+    private fun runCloseAppsAnimation(instant: Boolean = false) {
+        appsAnimator?.cancel()
+        dismissAppsContextMenu()
+        isShowingHiddenApps = false
+
+        val d = resources.displayMetrics.density
+
+        if (instant) {
+            resetAppsPanelToButton()
+            return
+        }
+
+        val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
+        val startW = lp.width
+        val startH = lp.height
+        val btnW   = appsPanelResult.appsButton.width.coerceAtLeast((80 * d).toInt())
+        val btnH   = appsPanelResult.appsButton.height.coerceAtLeast((48 * d).toInt())
+
+        appsAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = 180L
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.width  = (startW + (btnW - startW) * t).toInt()
+                lp.height = (startH + (btnH - startH) * t).toInt()
+                appsPanel.layoutParams = lp
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    resetAppsPanelToButton()
+                }
+            })
+            start()
+        }
+    }
+
+    private fun refreshAppsList() {
+        val apps = if (isShowingHiddenApps) {
+            appRepository.getHiddenApps()
+        } else {
+            appRepository.getVisibleApps()
+        }
+
+        val rows = apps.map { AppRowInfo(it.label, it.packageName, it.icon) }
+        val container = if (isShowingHiddenApps) {
+            appsPanelResult.hiddenListContainer
+        } else {
+            appsPanelResult.appListContainer
+        }
+
+        populateAppList(
+            container     = container,
+            apps          = rows,
+            showHiddenRow = if (!isShowingHiddenApps) appsPanelResult.hiddenHeaderRow else null,
+            onClick       = { pkg -> appRepository.launchApp(pkg) },
+            onLongClick   = { pkg, _ -> showAppsContextMenu(pkg) },
+        )
+
+        // Re-measure panel height since content changed
+        appsPanelFullHeight = -1
+    }
+
+    private fun showAppsContextMenu(packageName: String) {
+        contextMenuPackage = packageName
+        appsPanelResult.contextHideLabel.text = if (hiddenApps.isHidden(packageName)) "Show" else "Hide"
+        appsPanelResult.contextMenu.visibility = View.VISIBLE
+    }
+
+    private fun dismissAppsContextMenu() {
+        contextMenuPackage = null
+        appsPanelResult.contextMenu.visibility = View.GONE
+    }
+
+    private fun showHiddenAppsList() {
+        isShowingHiddenApps = true
+        refreshAppsList()
+        appsPanelResult.appListScroll.visibility = View.GONE
+        appsPanelResult.hiddenListScroll.visibility = View.VISIBLE
+        appsPanelResult.hiddenListScroll.alpha = 1f
+        // Re-measure and resize panel
+        appsPanelFullHeight = -1
+        val d = resources.displayMetrics.density
+        val panelW = (280 * d).toInt()
+        val panelH = getOrMeasureAppsPanelHeight()
+        val lp = appsPanel.layoutParams as FrameLayout.LayoutParams
+        lp.width  = panelW
+        lp.height = panelH
+        appsPanel.layoutParams = lp
     }
 }
 

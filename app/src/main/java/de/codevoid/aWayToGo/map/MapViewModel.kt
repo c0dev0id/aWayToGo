@@ -163,6 +163,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
                 isInTileSelectMode = false,
                 isInMapStyleMenu   = false,
                 isInMapStyleMode   = false,
+                isAppsMenuOpen     = false,
                 isSearchOpen       = if (mode == AppMode.EXPLORE) current.isSearchOpen else false,
                 isInPanningMode    = when (mode) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
@@ -221,7 +222,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Collapse the hamburger panel and exit any open submenu. */
     fun closeMenu() {
-        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false, isInTileSelectMode = false, isInMapStyleMenu = false, isInMapStyleMode = false) }
+        _uiState.update { it.copy(isMenuOpen = false, isInSettingsMenu = false, isInDebugMenu = false, isInOfflineMapsMenu = false, isInTileSelectMode = false, isInMapStyleMenu = false, isInMapStyleMode = false, isAppsMenuOpen = false) }
     }
 
     /** Toggle the hamburger panel open/closed. */
@@ -368,6 +369,21 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
      *  Also deactivates tile-selection mode. */
     fun exitOfflineMapsMenu() {
         _uiState.update { it.copy(isInOfflineMapsMenu = false, isInTileSelectMode = false) }
+    }
+
+    /** Open the apps launcher panel. */
+    fun openAppsMenu() {
+        _uiState.update { it.copy(isAppsMenuOpen = true) }
+    }
+
+    /** Close the apps launcher panel. */
+    fun closeAppsMenu() {
+        _uiState.update { it.copy(isAppsMenuOpen = false) }
+    }
+
+    /** Toggle the apps launcher panel open/closed. */
+    fun toggleAppsMenu() {
+        _uiState.update { it.copy(isAppsMenuOpen = !it.isAppsMenuOpen) }
     }
 
 }
