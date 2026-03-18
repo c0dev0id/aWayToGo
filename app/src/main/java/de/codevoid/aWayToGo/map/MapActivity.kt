@@ -456,7 +456,13 @@ class MapActivity : ComponentActivity() {
         }
 
         // ── Update puck ────────────────────────────────────────────────────
-        syntheticEngine.pushLocation(loc)
+        // In follow mode the puck is driven by the camera's animated position
+        // (see OnCameraMoveListener in getMapAsync), keeping it locked to screen
+        // centre so camera and puck move as one.  Outside follow mode, push the
+        // accepted GPS fix directly so the puck shows the real GPS position.
+        if (!viewModel.uiState.value.isFollowModeActive) {
+            syntheticEngine.pushLocation(loc)
+        }
 
         // ── Bearing EMA ────────────────────────────────────────────────────
         // α = 1 − exp(−dt / τ) gives a constant time constant τ regardless of
@@ -1380,6 +1386,33 @@ class MapActivity : ComponentActivity() {
                 updateCrosshairAlpha()
             }
 
+            // Puck-locked-to-camera-centre in follow mode.
+            // OnCameraMoveListener fires every rendered frame during animation;
+            // at that point m.cameraPosition.target is the current interpolated
+            // GL position, not the destination — so the puck tracks the camera's
+            // exact on-screen centre at every frame.  Preserves accuracy/bearing
+            // metadata from the last GPS fix so the accuracy ring and arrow stay.
+            m.addOnCameraMoveListener {
+                if (!viewModel.uiState.value.isFollowModeActive) return@addOnCameraMoveListener
+                val center = m.cameraPosition.target ?: return@addOnCameraMoveListener
+                val base   = rawGpsLocation
+                val loc = if (base != null) Location(base).apply {
+                    latitude  = center.latitude
+                    longitude = center.longitude
+                } else Location("camera").apply {
+                    latitude  = center.latitude
+                    longitude = center.longitude
+                }
+                syntheticEngine.pushLocation(loc)
+            }
+            // When the camera comes to rest in follow mode, sync the puck to the
+            // real GPS coordinate (which the camera just finished animating to).
+            m.addOnCameraIdleListener {
+                if (viewModel.uiState.value.isFollowModeActive) {
+                    rawGpsLocation?.let { syntheticEngine.pushLocation(it) }
+                }
+            }
+
             // ── Direct 1-finger pan ────────────────────────────────────────────
             // Returns false so MapLibre still sees every event (tap, long-press,
             // pinch-zoom, rotate, tilt all continue to work normally).  With
@@ -2209,6 +2242,13 @@ class MapActivity : ComponentActivity() {
             if (m != null && loc != null) {
                 flyToLocation(m, LatLng(loc.latitude, loc.longitude))
             }
+        }
+
+        // ── Puck snap on follow mode disable ───────────────────────────────────
+        // When follow mode turns off, the puck was tracking the camera centre.
+        // Push the real GPS fix now so it snaps back to the actual GPS position.
+        if (followChanged && !new.isFollowModeActive) {
+            rawGpsLocation?.let { syntheticEngine.pushLocation(it) }
         }
 
         // ── Fly-to on panning exit (without follow mode) ──────────────────────
