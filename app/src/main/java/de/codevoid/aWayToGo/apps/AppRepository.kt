@@ -2,6 +2,7 @@ package de.codevoid.aWayToGo.apps
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.provider.Settings
@@ -14,16 +15,13 @@ data class AppInfo(
 
 class AppRepository(
     private val context: Context,
-    private val hiddenApps: HiddenApps,
+    private val addedApps: AddedApps,
 ) {
     private val pm = context.packageManager
     private val selfPackage = context.packageName
 
-    fun getVisibleApps(): List<AppInfo> = queryApps().filter { !hiddenApps.isHidden(it.packageName) }
-
-    fun getHiddenApps(): List<AppInfo> = queryApps().filter { hiddenApps.isHidden(it.packageName) }
-
-    private fun queryApps(): List<AppInfo> {
+    /** Full query of all launchable apps.  Only call this for the "Add App" submenu. */
+    fun queryAllApps(): List<AppInfo> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         return pm.queryIntentActivities(intent, 0)
             .asSequence()
@@ -37,6 +35,20 @@ class AppRepository(
             }
             .sortedBy { it.label.lowercase() }
             .toList()
+    }
+
+    /** Returns info for the saved "added" packages.  Skips unresolvable ones silently. */
+    fun getAddedApps(): List<AppInfo> {
+        return addedApps.getAdded().mapNotNull { pkg ->
+            try {
+                val ai = pm.getApplicationInfo(pkg, 0)
+                AppInfo(
+                    label = ai.loadLabel(pm).toString(),
+                    packageName = pkg,
+                    icon = ai.loadIcon(pm),
+                )
+            } catch (_: PackageManager.NameNotFoundException) { null }
+        }.sortedBy { it.label.lowercase() }
     }
 
     fun launchApp(packageName: String) {
