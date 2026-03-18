@@ -36,4 +36,14 @@ object ConnectivityChecker {
             && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             && caps.linkDownstreamBandwidthKbps >= minBandwidthKbps
     }
+
+    /** Returns true only when the active validated network is a Wi-Fi link. */
+    fun isOnWifi(context: Context): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
 }

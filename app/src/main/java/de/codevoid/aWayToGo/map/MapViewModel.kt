@@ -57,10 +57,11 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(isFrequentUpdatesEnabled = true) }
     }
 
-    private val appUpdater       = AppUpdater(getApplication())
+    private val appUpdater          = AppUpdater(getApplication())
     private var _downloadedApk: File? = null
-    private var downloadJob:     Job? = null
-    private var frequentUpdateJob: Job? = null
+    private var downloadJob:        Job? = null
+    private var frequentUpdateJob:  Job? = null
+    private var checkedThisSession: Boolean = false
 
     private fun setDownloadState(s: DownloadState) = _uiState.update { it.copy(downloadState = s) }
 
@@ -86,11 +87,10 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
     fun checkUpdateIfDue() {
         if (_downloadedApk != null) { setDownloadState(DownloadState.Ready); return }
         if (downloadJob?.isActive == true) return
-        val lastCheck = prefs.getLong("last_update_check_ms", 0L)
-        if (System.currentTimeMillis() - lastCheck < 24 * 60 * 60_000L) return
-        if (!ConnectivityChecker.isStableOnline(getApplication())) return
+        if (checkedThisSession) return
+        if (!ConnectivityChecker.isOnWifi(getApplication())) return
+        checkedThisSession = true
         viewModelScope.launch {
-            prefs.edit().putLong("last_update_check_ms", System.currentTimeMillis()).apply()
             val url = appUpdater.checkForUpdate() ?: return@launch
             appUpdater.cleanupStaleFiles(url)
             startDownload(url)
@@ -133,7 +133,7 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
                     val url = appUpdater.checkForUpdate()
                     if (url != null) { appUpdater.cleanupStaleFiles(url); startDownload(url) }
                 }
-                delay(5 * 60_000L)
+                delay(60_000L)
             }
         }
     }
