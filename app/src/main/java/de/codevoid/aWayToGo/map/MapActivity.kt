@@ -1198,7 +1198,7 @@ class MapActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM or Gravity.END,
-            ).apply { setMargins(0, 0, btnMargin, btnMargin + (40 * density).toInt()) },
+            ).apply { setMargins(0, 0, btnMargin, btnMargin + (80 * density).toInt()) },
         )
 
         // Version card added here (above dismiss overlays in z-order) so it always
