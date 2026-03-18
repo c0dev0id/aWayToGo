@@ -5415,6 +5415,31 @@ class MapActivity : ComponentActivity() {
         resizeAppsPanelToContent()
     }
 
+    private fun showRenameDialog(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
+        val input = EditText(this).apply {
+            setText(appInfo.label)
+            selectAll()
+            setPadding(48, 24, 48, 8)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(appInfo.originalLabel)
+            .setView(input)
+            .setPositiveButton("OK") { _, _ ->
+                val name = input.text.toString().trim().takeIf { it.isNotEmpty() } ?: return@setPositiveButton
+                addedApps.setCustomName(appInfo.packageName, name)
+                refreshAppsList()
+                // Refresh the header in the actions submenu with the new name.
+                showAppActionsSubmenu(appInfo.copy(label = name))
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Reset") { _, _ ->
+                addedApps.setCustomName(appInfo.packageName, null)
+                refreshAppsList()
+                showAppActionsSubmenu(appInfo.copy(label = appInfo.originalLabel))
+            }
+            .show()
+    }
+
     private fun showAppActionsSubmenu(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
         appsSubmenu     = AppsSubmenu.APP_ACTIONS
         selectedAppInfo = appInfo
@@ -5430,7 +5455,7 @@ class MapActivity : ComponentActivity() {
                 showAppsScroll(appsPanelResult.appListScroll)
                 resizeAppsPanelToContent()
             },
-            onRename    = { /* TODO: show rename dialog */ },
+            onRename    = { showRenameDialog(appInfo) },
             onAppInfo   = { appRepository.openAppInfo(appInfo.packageName) },
             onUninstall = { appRepository.uninstallApp(appInfo.packageName) },
         )
