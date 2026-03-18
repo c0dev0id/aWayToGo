@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
-import android.content.pm.ShortcutQuery
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Process
@@ -95,13 +94,13 @@ class AppRepository(
     fun getAppShortcuts(packageName: String): List<AppShortcutInfo> {
         val la = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
         if (!la.hasShortcutHostPermission()) return emptyList()
-        val query = ShortcutQuery().apply {
+        val query = LauncherApps.ShortcutQuery().apply {
             setPackage(packageName)
-            setQueryFlags(ShortcutQuery.FLAG_MATCH_MANIFEST or ShortcutQuery.FLAG_MATCH_DYNAMIC)
+            setQueryFlags(LauncherApps.ShortcutQuery.FLAG_MATCH_MANIFEST or LauncherApps.ShortcutQuery.FLAG_MATCH_DYNAMIC)
         }
         return try {
             la.getShortcuts(query, Process.myUserHandle())
-                ?.filter { !it.isHidden }
+                ?.filter { it.isEnabled }
                 ?.map { info ->
                     AppShortcutInfo(
                         id          = info.id,
