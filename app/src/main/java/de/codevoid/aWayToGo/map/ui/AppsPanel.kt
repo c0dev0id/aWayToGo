@@ -101,27 +101,38 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     val iconSz  = (40 * d).toInt()
     val iconGap = (12 * d).toInt()
 
-    // ── "A" bars — same structure as the hamburger in MenuPanel ─────────────────
-    // Three bars pivot around the button's centre Y, identical to the main menu.
-    // Idle state: bars form the letter "A":
-    //   Bar 0 at −60°: left diagonal leg "/"
-    //   Bar 1 at   0°: horizontal crossbar "─"
-    //   Bar 2 at +60°: right diagonal leg "\"
-    // When the panel opens they animate into a right arrow (→).
+    // ── "A" bars ──────────────────────────────────────────────────────────────────
+    // Idle state: bars form the letter "A".
+    // All three bars pivot around the button centre (iconCY × iconCY).
+    //
+    // Bars 0 and 2 (the legs) sit at the same 1/4-height mark and are offset
+    // ±1dp from the button centre X.  After rotating ∓60° around the button
+    // centre their inner tips converge at a shared apex at the top-centre of
+    // the icon area, forming a proper "A":
+    //
+    //   Bar 0 (left  leg "/"): leftMargin = centre+1dp,  rot = −60°
+    //   Bar 1 (crossbar  "─"): leftMargin = centre,      rot =   0°
+    //   Bar 2 (right leg "\"): leftMargin = centre−1dp,  rot = +60°
+    //
+    // When the panel opens the bars animate into a right arrow (→).
     val barH     = (3 * d).toInt().coerceAtLeast(2)
     val barW     = (32 * d).toInt()
     val btnPad   = (12 * d).toInt()
     val contentH = btnSz - 2 * btnPad          // 40dp icon area
-    val iconCY   = btnSz / 2f                   // 32dp — button centre Y
-    val barLeftMargin = (iconCY - barW / 2f).toInt()
+    val iconCY   = btnSz / 2f                   // 32dp — button centre (square button, same for X and Y)
 
-    // Bar Y centres at 1/4, 2/4, 3/4 of the icon area (same spacing as hamburger).
-    val barTops = Array(3) { i ->
-        val barCY = btnPad + contentH * (i + 1f) / 4f
-        (barCY - barH / 2f).toInt()
-    }
+    // Leg bars are at 1/4 height; crossbar at 2/4 (centre).
+    val legTop  = (btnPad + contentH * 1f / 4f - barH / 2f).toInt()
+    val xbarTop = (btnPad + contentH * 2f / 4f - barH / 2f).toInt()
 
-    // Initial rotations for the "A" shape.
+    val barTopsArr    = intArrayOf(legTop, xbarTop, legTop)
+    val barMarginsArr = intArrayOf(
+        (iconCY - barW / 2f + d).toInt(),   // bar 0: 1dp right of centre
+        (iconCY - barW / 2f).toInt(),        // bar 1: centred
+        (iconCY - barW / 2f - d).toInt(),   // bar 2: 1dp left of centre
+    )
+
+    // Initial rotations for the "A" formation.
     val aRotations = floatArrayOf(-60f, 0f, +60f)
 
     val appsBars = Array(3) { i ->
@@ -131,9 +142,10 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
                 cornerRadius = barH / 2f
                 setColor(Color.WHITE)
             }
-            pivotX   = barW / 2f
-            pivotY   = iconCY - barTops[i]   // pivot at button centre Y
-            rotation = aRotations[i]          // "A" formation at rest
+            // pivotX/Y in view-local coords so every bar pivots around the button centre.
+            pivotX   = iconCY - barMarginsArr[i]
+            pivotY   = iconCY - barTopsArr[i]
+            rotation = aRotations[i]
         }
     }
 
@@ -156,8 +168,8 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
         appsBars.forEachIndexed { i, bar ->
             addView(bar, FrameLayout.LayoutParams(barW, barH).apply {
                 gravity    = Gravity.TOP or Gravity.START
-                topMargin  = barTops[i]
-                leftMargin = barLeftMargin
+                topMargin  = barTopsArr[i]
+                leftMargin = barMarginsArr[i]
             })
         }
     }

@@ -5310,10 +5310,12 @@ class MapActivity : ComponentActivity() {
         val startTX     = FloatArray(3) { appsBars[it].translationX }
         val startTY     = FloatArray(3) { appsBars[it].translationY }
 
-        val targetRot    = floatArrayOf(+45f,        0f,       -45f)
-        val targetScaleX = floatArrayOf( 0.5f,       1f,        0.5f)
-        val targetTX     = floatArrayOf(+1.5f * d,  -2f * d,  +1.5f * d)
-        val targetTY     = floatArrayOf(+1.5f * d,   0f,      -1.5f * d)
+        // Both leg bars (0 and 2) now start at the same height (1/4 mark) so
+        // bar 2 must translate significantly downward to reach the lower arm of "→".
+        val targetRot    = floatArrayOf(+45f,       0f,      -45f)
+        val targetScaleX = floatArrayOf( 0.7f,      0.8f,    0.7f)
+        val targetTX     = floatArrayOf(-5f * d,   -3f * d, +10f * d)
+        val targetTY     = floatArrayOf(+2f * d,    0f,     +12f * d)
 
         appsAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = Anim.NORMAL
