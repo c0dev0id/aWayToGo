@@ -8,7 +8,10 @@ import android.net.Uri
 import android.provider.Settings
 
 data class AppInfo(
+    /** Display name — custom if the user renamed the app, otherwise the system label. */
     val label: String,
+    /** Always the system-assigned label, regardless of any custom name. Used for Reset. */
+    val originalLabel: String,
     val packageName: String,
     val icon: Drawable,
 )
@@ -27,25 +30,33 @@ class AppRepository(
             .asSequence()
             .filter { it.activityInfo.packageName != selfPackage }
             .map { ri ->
+                val systemLabel = ri.loadLabel(pm).toString()
                 AppInfo(
-                    label = ri.loadLabel(pm).toString(),
-                    packageName = ri.activityInfo.packageName,
-                    icon = ri.loadIcon(pm),
+                    label         = systemLabel,
+                    originalLabel = systemLabel,
+                    packageName   = ri.activityInfo.packageName,
+                    icon          = ri.loadIcon(pm),
                 )
             }
             .sortedBy { it.label.lowercase() }
             .toList()
     }
 
-    /** Returns info for the saved "added" packages.  Skips unresolvable ones silently. */
+    /**
+     * Returns info for the saved "added" packages.
+     * Skips unresolvable ones silently.
+     * Uses any custom name stored in [AddedApps] as the display label.
+     */
     fun getAddedApps(): List<AppInfo> {
         return addedApps.getAdded().mapNotNull { pkg ->
             try {
-                val ai = pm.getApplicationInfo(pkg, 0)
+                val ai          = pm.getApplicationInfo(pkg, 0)
+                val systemLabel = ai.loadLabel(pm).toString()
                 AppInfo(
-                    label = ai.loadLabel(pm).toString(),
-                    packageName = pkg,
-                    icon = ai.loadIcon(pm),
+                    label         = addedApps.getCustomName(pkg) ?: systemLabel,
+                    originalLabel = systemLabel,
+                    packageName   = pkg,
+                    icon          = ai.loadIcon(pm),
                 )
             } catch (_: PackageManager.NameNotFoundException) { null }
         }.sortedBy { it.label.lowercase() }
