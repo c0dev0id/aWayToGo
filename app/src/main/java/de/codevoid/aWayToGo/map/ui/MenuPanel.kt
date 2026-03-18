@@ -38,10 +38,10 @@ import de.codevoid.aWayToGo.R
  * enters the Debug submenu layer.
  * [debugGhostHeader] is a full-width clone of the Debug row placed at the
  * panel's top (y=0), initially GONE.  Animates in when entering the Debug layer.
- * [debugContent] is the LinearLayout that holds Debug submenu items (Debug Mode
+ * [debugContent] is the LinearLayout that holds Debug submenu items (Info Panel
  * toggle and Run Benchmark), initially GONE.
- * [debugToggleLabel] is the TextView inside the Debug Mode item; its text is
- * kept in sync ("Debug Mode: OFF" / "Debug Mode: ON") by renderUiState.
+ * [debugToggleLabel] is the TextView inside the Info Panel item; its text is
+ * kept in sync ("Info Panel: OFF" / "Info Panel: ON") by renderUiState.
  * [frequentUpdatesLabel] is the TextView for the Frequent Updates toggle row.
  * [offlineModeLabel] is the TextView for the Offline Mode toggle row in the debug submenu.
  * [mapStyleRowInList] is the "Map Style" item inside the main menu list.
@@ -99,7 +99,7 @@ data class MenuPanelResult(
  *   ├── settingsContent (LinearLayout, topMargin=64dp, initially GONE)
  *   │     └── Debug entry row
  *   ├── debugContent (LinearLayout, topMargin=64dp, initially GONE)
- *   │     ├── Debug Mode toggle
+ *   │     ├── Info Panel toggle
  *   │     └── Run Benchmark row
  *   ├── settingsGhostHeader (280×64dp row, gravity=TOP|START, initially GONE)
  *   ├── debugGhostHeader (280×64dp row, gravity=TOP|START, initially GONE)
@@ -234,7 +234,7 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
 
     // ── Debug submenu content ──────────────────────────────────────────────────
     val debugToggleLabel = TextView(context).apply {
-        text = "Debug Mode: OFF"
+        text = "Info Panel: OFF"
         setTextColor(Color.WHITE)
         textSize = 20f
         gravity = Gravity.CENTER_VERTICAL

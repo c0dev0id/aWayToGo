@@ -1240,7 +1240,7 @@ class MapActivity : ComponentActivity() {
             result.settingsRowInList.setOnClickListener { viewModel.enterSettingsMenu() }
             // Debug row in settings → enters the debug submenu layer.
             result.debugRowInSettings.setOnClickListener { viewModel.enterDebugMenu() }
-            // Debug Mode toggle → flips isDebugMode in state.
+            // Info Panel toggle → flips isDebugMode in state.
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
             // Run Benchmark → starts the benchmark.
             result.debugContent.getChildAt(1).setOnClickListener { startBenchmark() }
@@ -2435,7 +2435,7 @@ class MapActivity : ComponentActivity() {
         if (debugModeChanged || old == null) {
             osdView.visibility = if (new.isDebugMode) View.VISIBLE else View.GONE
             menuPanelResult.debugToggleLabel.text =
-                "Debug Mode: ${if (new.isDebugMode) "ON" else "OFF"}"
+                "Info Panel: ${if (new.isDebugMode) "ON" else "OFF"}"
         }
 
         // ── Frequent Updates polling ────────────────────────────────────────────
