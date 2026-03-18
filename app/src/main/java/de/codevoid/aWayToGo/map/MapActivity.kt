@@ -1817,15 +1817,16 @@ class MapActivity : ComponentActivity() {
      *
      * All other modes: flat (0° tilt), no padding, 400 ms smooth animation.
      */
-    private fun applyCameraForMode(mode: AppMode, animated: Boolean) {
+    private fun applyCameraForMode(mode: AppMode, animated: Boolean, bearing: Double? = null) {
         val m = map ?: return
         val screenH = resources.displayMetrics.heightPixels
+        val cur     = m.cameraPosition
 
         if (mode == AppMode.NAVIGATE && animated) {
             // Fly to GPS position with tilt and focal-point padding applied at arrival.
             val gpsTarget = m.locationComponent.lastKnownLocation
                 ?.let { LatLng(it.latitude, it.longitude) }
-                ?: m.cameraPosition.target
+                ?: cur.target
                 ?: return
             flyToLocation(
                 m, gpsTarget,
@@ -1843,11 +1844,10 @@ class MapActivity : ComponentActivity() {
             else             -> { targetTilt = 0.0;  topPad = 0.0 }
         }
 
-        val cur    = m.cameraPosition
         val newPos = CameraPosition.Builder()
             .target(cur.target)
             .zoom(if (mode == AppMode.NAVIGATE) 17.0 else cur.zoom)
-            .bearing(cur.bearing)
+            .bearing(bearing ?: cur.bearing)
             .tilt(targetTilt)
             .padding(doubleArrayOf(0.0, topPad, 0.0, 0.0))
             .build()
@@ -1964,7 +1964,9 @@ class MapActivity : ComponentActivity() {
         // Starting immediately rather than waiting for Phase 1 to finish eliminates
         // all timing-coordination hazards (postDelayed, AnimationLatch, withEndAction
         // chaining) that previously caused the incoming mode's UI to stay invisible.
-        applyCameraForMode(to, animated = true)
+        // When leaving NAVIGATE, reset bearing to north in the same animation that
+        // resets tilt — avoids two competing animateCamera calls.
+        applyCameraForMode(to, animated = true, bearing = if (from == AppMode.NAVIGATE) 0.0 else null)
 
         when (to) {
             AppMode.EXPLORE -> {
@@ -2258,14 +2260,18 @@ class MapActivity : ComponentActivity() {
         // ── Fly-to on follow mode enable ───────────────────────────────────────
         // Snap the camera to GPS immediately when follow mode is turned on so
         // there is no visible delay before the Choreographer tracking takes over.
+        // Skip when modeChanged — applyCameraForMode already handles the camera
+        // transition with the correct tilt and zoom.
         if (followChanged && new.isFollowModeActive) {
             // Reset last-fix state so the next GPS fix is always accepted.
             followLastLat = Double.NaN
             followLastLon = Double.NaN
-            val m   = map
-            val loc = rawGpsLocation ?: m?.locationComponent?.lastKnownLocation
-            if (m != null && loc != null) {
-                flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+            if (!modeChanged) {
+                val m   = map
+                val loc = rawGpsLocation ?: m?.locationComponent?.lastKnownLocation
+                if (m != null && loc != null) {
+                    flyToLocation(m, LatLng(loc.latitude, loc.longitude))
+                }
             }
         }
 
@@ -2525,13 +2531,15 @@ class MapActivity : ComponentActivity() {
         setToggleActive(fuelStationToggleBtn, new.isFuelStationsEnabled)
 
         // ── Course Up → North Up transition ───────────────────────────────────
-        // When Course Up is turned off, animate the map back to 0° (north at top)
-        // and reset smoothed bearing state so re-enabling starts fresh.
+        // When Course Up is turned off, reset smoothed bearing state so re-enabling
+        // starts fresh.  Only call rotate(0.0) when toggling CSR manually — when a
+        // mode change also fires, applyCameraForMode owns the camera animation and
+        // already resets bearing to north (passing bearing=0.0 when from==NAVIGATE).
         val courseUpChanged = old?.isCourseUpEnabled != new.isCourseUpEnabled
         if (courseUpChanged && !new.isCourseUpEnabled) {
-            rotate(0.0)
             followSmoothedSin = Double.NaN
             followSmoothedCos = Double.NaN
+            if (!modeChanged) rotate(0.0)
         }
     }
 

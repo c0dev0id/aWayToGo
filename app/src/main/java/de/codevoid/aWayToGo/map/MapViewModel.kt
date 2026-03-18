@@ -169,8 +169,9 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
                 },
-                // NAVIGATE enables follow mode automatically; other modes disable it.
+                // NAVIGATE activates FOL + CSR automatically; other modes deactivate both.
                 isFollowModeActive = mode == AppMode.NAVIGATE,
+                isCourseUpEnabled  = mode == AppMode.NAVIGATE,
             )
         }
     }
