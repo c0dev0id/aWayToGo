@@ -56,6 +56,10 @@ data class AppRowInfo(
  * [addAppRow] is the "Add App" action row at the bottom of the main list.
  * [addAppScroll] / [addAppContainer] hold the "Add App" submenu with checkboxes.
  * [appActionsScroll] / [appActionsContainer] hold the actions for a long-pressed app.
+ * [appListHeader] is a fixed "Apps" title row at the top of the panel, shown when open.
+ * [addAppGhostHeader] is a ghost header for the "Add App" submenu transition.
+ * [appActionsGhostHeader] is a ghost header for the app-actions submenu transition;
+ * its [appActionsGhostIcon] and [appActionsGhostLabel] are populated before animating.
  */
 class AppsPanelResult(
     val root: View,
@@ -69,6 +73,11 @@ class AppsPanelResult(
     val addAppContainer: LinearLayout,
     val appActionsScroll: ScrollView,
     val appActionsContainer: LinearLayout,
+    val appListHeader: View,
+    val addAppGhostHeader: View,
+    val appActionsGhostHeader: LinearLayout,
+    val appActionsGhostIcon: ImageView,
+    val appActionsGhostLabel: TextView,
 )
 
 /**
@@ -89,6 +98,9 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     val radius  = 32 * d
     val panelW  = (280 * d).toInt()
     val btnSz   = (64 * d).toInt()
+    val headerH = (56 * d).toInt()   // matches app-row height
+    val iconSz  = (40 * d).toInt()
+    val iconGap = (12 * d).toInt()
 
     // ── Arrow bars — same structure as the hamburger in MenuPanel ───────────────
     // Three bars pivot around the button's centre Y, identical to the main menu.
@@ -216,16 +228,86 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     appActionsScroll.visibility = View.GONE
     appActionsScroll.alpha = 0f
 
-    // Scroll views sit above the button (bottomMargin = btnSz).
+    // Scroll views sit above the button; topMargin reserves space for the header at the top.
     val scrollLp = FrameLayout.LayoutParams(
         panelW,
         FrameLayout.LayoutParams.WRAP_CONTENT,
     ).apply {
-        gravity = Gravity.BOTTOM or Gravity.END
+        gravity      = Gravity.BOTTOM or Gravity.END
         bottomMargin = btnSz
+        topMargin    = headerH
+    }
+
+    // ── Header views (fixed at panel top, one visible at a time) ──────────────
+
+    // "Apps" title — visible when the main app list is shown.
+    val appListHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(
+            TextView(context).apply {
+                text = "Apps"
+                setTextColor(Color.WHITE)
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+                maxLines = 1
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+    }
+
+    // Ghost header for the "Add App" submenu transition.
+    val addAppGhostHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(
+            TextView(context).apply {
+                text = "Add App"
+                setTextColor(Color.WHITE)
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity  = Gravity.END or Gravity.CENTER_VERTICAL
+                maxLines = 1
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+    }
+
+    // Ghost header for the app-actions submenu — icon+label populated before animating.
+    val appActionsGhostIcon = ImageView(context).apply {
+        scaleType = ImageView.ScaleType.FIT_CENTER
+    }
+    val appActionsGhostLabel = TextView(context).apply {
+        setTextColor(Color.WHITE)
+        textSize = 18f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity  = Gravity.CENTER_VERTICAL
+        maxLines = 1
+        setSingleLine(true)
+    }
+    val appActionsGhostHeader = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        visibility  = View.GONE
+        alpha       = 0f
+        addView(appActionsGhostIcon,  LinearLayout.LayoutParams(iconSz, iconSz))
+        addView(View(context),        LinearLayout.LayoutParams(iconGap, 0))
+        addView(appActionsGhostLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
     }
 
     // ── Root panel ────────────────────────────────────────────────────────────
+    val headerLp = FrameLayout.LayoutParams(panelW, headerH).apply {
+        gravity = Gravity.TOP or Gravity.END
+    }
+
     val root = FrameLayout(context).apply {
         background = GradientDrawable().apply {
             shape        = GradientDrawable.RECTANGLE
@@ -238,6 +320,11 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
         addView(addAppScroll,     FrameLayout.LayoutParams(scrollLp))
         addView(appActionsScroll, FrameLayout.LayoutParams(scrollLp))
 
+        // Ghost headers sit at the top of the panel, below the button in z-order.
+        addView(appListHeader,         FrameLayout.LayoutParams(headerLp))
+        addView(addAppGhostHeader,     FrameLayout.LayoutParams(headerLp))
+        addView(appActionsGhostHeader, FrameLayout.LayoutParams(headerLp))
+
         addView(appsButton, FrameLayout.LayoutParams(
             btnSz, btnSz,
             Gravity.BOTTOM or Gravity.END,
@@ -245,17 +332,22 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
     }
 
     return AppsPanelResult(
-        root                 = root,
-        appsButton           = appsButton,
-        appsALabel           = appsALabel,
-        appsBars             = appsBars.toList(),
-        appListScroll        = appListScroll,
-        appListContainer     = appListContainer,
-        addAppRow            = addAppRow,
-        addAppScroll         = addAppScroll,
-        addAppContainer      = addAppContainer,
-        appActionsScroll     = appActionsScroll,
-        appActionsContainer  = appActionsContainer,
+        root                     = root,
+        appsButton               = appsButton,
+        appsALabel               = appsALabel,
+        appsBars                 = appsBars.toList(),
+        appListScroll            = appListScroll,
+        appListContainer         = appListContainer,
+        addAppRow                = addAppRow,
+        addAppScroll             = addAppScroll,
+        addAppContainer          = addAppContainer,
+        appActionsScroll         = appActionsScroll,
+        appActionsContainer      = appActionsContainer,
+        appListHeader            = appListHeader,
+        addAppGhostHeader        = addAppGhostHeader,
+        appActionsGhostHeader    = appActionsGhostHeader,
+        appActionsGhostIcon      = appActionsGhostIcon,
+        appActionsGhostLabel     = appActionsGhostLabel,
     )
 }
 
@@ -585,12 +677,12 @@ fun populateAddAppList(
 /**
  * Populate the app-actions submenu for a single app (reached by long-pressing in main list).
  *
- * The selected app's icon and name appear as a non-interactive header at the top,
- * followed by any launcher shortcuts (static + dynamic), then management actions:
- * Hide, Rename, App Info, Uninstall.
+ * The selected app's icon and name are shown in the panel's ghost header (set by the caller
+ * before starting the submenu-enter animation). The scroll container holds any launcher
+ * shortcuts (static + dynamic) followed by management actions: Hide, Rename, App Info, Uninstall.
  *
  * @param container   The LinearLayout to populate (cleared first).
- * @param appIcon     Icon of the selected app.
+ * @param appIcon     Icon of the selected app (used for the non-interactive header row).
  * @param appLabel    Display name of the selected app (custom name if renamed).
  * @param shortcuts   Launcher shortcuts to show above the management actions.
  * @param onShortcut  Called when a shortcut row is tapped.
@@ -612,8 +704,8 @@ fun populateAppActions(
 ) {
     val context = container.context
     val d       = context.resources.displayMetrics.density
-    val itemH   = (56 * d).toInt()
     val actionH = (48 * d).toInt()
+    val itemH   = (56 * d).toInt()
     val iconSz  = (40 * d).toInt()
     val hPad    = (16 * d).toInt()
     val iconGap = (12 * d).toInt()

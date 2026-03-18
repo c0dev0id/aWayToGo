@@ -310,7 +310,10 @@ class MapActivity : ComponentActivity() {
     private lateinit var addedApps: AddedApps
     private lateinit var appRepository: AppRepository
     private var appsAnimator: ValueAnimator? = null
+    private var appsSubmenuAnimator: ValueAnimator? = null
     private var appsPanelFullHeight = -1
+    /** Y offset (px) from panel top to the selected row when a submenu was entered; used for exit slide. */
+    private var appsGhostStartY = 0f
 
     /** Tracks which submenu is active inside the apps panel. */
     private enum class AppsSubmenu { MAIN, ADD_APP, APP_ACTIONS }
@@ -5220,6 +5223,14 @@ class MapActivity : ComponentActivity() {
         appsSubmenu     = AppsSubmenu.MAIN
         selectedAppInfo = null
         hideAllAppsScrolls()
+        // Hide all headers
+        with(appsPanelResult) {
+            appListHeader.visibility         = View.GONE;  appListHeader.alpha         = 0f
+            addAppGhostHeader.visibility     = View.GONE;  addAppGhostHeader.alpha     = 0f
+            appActionsGhostHeader.visibility = View.GONE;  appActionsGhostHeader.alpha = 0f
+            addAppGhostHeader.translationY     = 0f
+            appActionsGhostHeader.translationY = 0f
+        }
         appsDismissOverlay.visibility = View.GONE
         // Show "A" label; reset bars to hidden (scaleX=0, no translations).
         appsALabel.alpha      = 1f
@@ -5288,8 +5299,10 @@ class MapActivity : ComponentActivity() {
         val btnSz  = (64 * d).toInt()
         val panelW = (280 * d).toInt()
 
-        // Make list visible before measuring
+        // Make list and header visible before measuring so height includes both.
         showAppsScroll(appsPanelResult.appListScroll)
+        appsPanelResult.appListHeader.visibility = View.VISIBLE
+        appsPanelResult.appListHeader.alpha = 0f
 
         val panelH = getOrMeasureAppsPanelHeight()
         val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
@@ -5320,6 +5333,7 @@ class MapActivity : ComponentActivity() {
                 lp.height = (startH + (panelH - startH) * t).toInt()
                 appsPanel.layoutParams = lp
                 appsALabel.alpha = startAlpha * (1f - t)
+                appsPanelResult.appListHeader.alpha = t
                 for (i in 0..2) {
                     appsBars[i].rotation     = startRot[i]    + (targetRot[i]    - startRot[i])    * t
                     appsBars[i].scaleX       = startScaleX[i] + (targetScaleX[i] - startScaleX[i]) * t
@@ -5417,10 +5431,8 @@ class MapActivity : ComponentActivity() {
         } else {
             // Navigate back: submenu → main list, main list → close.
             when (appsSubmenu) {
-                AppsSubmenu.ADD_APP, AppsSubmenu.APP_ACTIONS -> {
+                AppsSubmenu.ADD_APP, AppsSubmenu.APP_ACTIONS -> runExitAppsSubmenuAnimation {
                     appsSubmenu = AppsSubmenu.MAIN
-                    showAppsScroll(appsPanelResult.appListScroll)
-                    resizeAppsPanelToContent()
                 }
                 AppsSubmenu.MAIN -> runCloseAppsAnimation()
             }
@@ -5429,21 +5441,31 @@ class MapActivity : ComponentActivity() {
 
     private fun showAddAppSubmenu() {
         appsSubmenu = AppsSubmenu.ADD_APP
-        val allApps = appRepository.queryAllApps()
-        val rows    = allApps.map { AppRowInfo(it.label, it.originalLabel, it.packageName, it.icon) }
+        val allApps  = appRepository.queryAllApps()
+        val rows     = allApps.map { AppRowInfo(it.label, it.originalLabel, it.packageName, it.icon) }
         val addedSet = addedApps.getAdded()
 
         populateAddAppList(
-            container       = appsPanelResult.addAppContainer,
-            apps            = rows,
-            addedPackages   = addedSet,
-            onToggle        = { pkg, checked ->
+            container     = appsPanelResult.addAppContainer,
+            apps          = rows,
+            addedPackages = addedSet,
+            onToggle      = { pkg, checked ->
                 if (checked) addedApps.add(pkg) else addedApps.remove(pkg)
             },
         )
 
-        showAppsScroll(appsPanelResult.addAppScroll)
-        resizeAppsPanelToContent()
+        // "Add App" row is the last child; its top in panel coords = headerH + N×rowH.
+        val d       = resources.displayMetrics.density
+        val headerH = (56 * d)
+        val rowH    = (56 * d)
+        val n       = appsPanelResult.appListContainer.childCount - 1  // excluding addAppRow itself
+        val ghostY  = headerH + n * rowH
+
+        runEnterAppsSubmenuAnimation(
+            ghostHeader  = appsPanelResult.addAppGhostHeader,
+            newScroll    = appsPanelResult.addAppScroll,
+            ghostStartY  = ghostY,
+        )
     }
 
     private fun showRenameDialog(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
@@ -5459,7 +5481,6 @@ class MapActivity : ComponentActivity() {
                 val name = input.text.toString().trim().takeIf { it.isNotEmpty() } ?: return@setPositiveButton
                 addedApps.setCustomName(appInfo.packageName, name)
                 refreshAppsList()
-                // Refresh the header in the actions submenu with the new name.
                 showAppActionsSubmenu(appInfo.copy(label = name))
             }
             .setNegativeButton("Cancel", null)
@@ -5472,8 +5493,13 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun showAppActionsSubmenu(appInfo: de.codevoid.aWayToGo.apps.AppInfo) {
+        val alreadyInActions = appsSubmenu == AppsSubmenu.APP_ACTIONS
         appsSubmenu     = AppsSubmenu.APP_ACTIONS
         selectedAppInfo = appInfo
+
+        // Set ghost header content before populating (icon/label go in the fixed header).
+        appsPanelResult.appActionsGhostIcon.setImageDrawable(appInfo.icon)
+        appsPanelResult.appActionsGhostLabel.text = appInfo.label
 
         val shortcuts = appRepository.getAppShortcuts(appInfo.packageName)
             .map { s -> ShortcutRowInfo(s.id, s.packageName, s.label, s.icon) }
@@ -5488,18 +5514,180 @@ class MapActivity : ComponentActivity() {
             )},
             onHide      = {
                 addedApps.remove(appInfo.packageName)
-                appsSubmenu = AppsSubmenu.MAIN
-                refreshAppsList()
-                showAppsScroll(appsPanelResult.appListScroll)
-                resizeAppsPanelToContent()
+                runExitAppsSubmenuAnimation {
+                    appsSubmenu = AppsSubmenu.MAIN
+                    refreshAppsList()
+                }
             },
             onRename    = { showRenameDialog(appInfo) },
             onAppInfo   = { appRepository.openAppInfo(appInfo.packageName) },
             onUninstall = { appRepository.uninstallApp(appInfo.packageName) },
         )
 
-        showAppsScroll(appsPanelResult.appActionsScroll)
-        resizeAppsPanelToContent()
+        // If already in the app-actions submenu (e.g. after rename/reset), only
+        // refresh content — no enter animation needed.
+        if (alreadyInActions) {
+            showAppsScroll(appsPanelResult.appActionsScroll)
+            resizeAppsPanelToContent()
+            return
+        }
+
+        // App row is at its list index; top in panel coords = headerH + index×rowH.
+        val d       = resources.displayMetrics.density
+        val headerH = (56 * d)
+        val rowH    = (56 * d)
+        val apps    = appRepository.getAddedApps()
+        val index   = apps.indexOfFirst { it.packageName == appInfo.packageName }.coerceAtLeast(0)
+        val ghostY  = headerH + index * rowH
+
+        runEnterAppsSubmenuAnimation(
+            ghostHeader = appsPanelResult.appActionsGhostHeader,
+            newScroll   = appsPanelResult.appActionsScroll,
+            ghostStartY = ghostY,
+        )
+    }
+
+    /**
+     * Animate from the main app list into a submenu layer.
+     *
+     * Sequence (all concurrent, [Anim.NORMAL] duration):
+     * - [ghostHeader] slides up from [ghostStartY] to y=0 and fades in.
+     * - Main list scroll and "Apps" header fade out.
+     * - [newScroll] fades in (staggered: starts at t=0.3).
+     * - Panel height adjusts to fit [newScroll] content.
+     */
+    private fun runEnterAppsSubmenuAnimation(
+        ghostHeader: View,
+        newScroll: ScrollView,
+        ghostStartY: Float,
+    ) {
+        appsSubmenuAnimator?.cancel()
+
+        val d       = resources.displayMetrics.density
+        val headerH = (56 * d).toInt()
+        val btnSz   = (64 * d).toInt()
+        val panelW  = (280 * d).toInt()
+        val maxH    = (resources.displayMetrics.heightPixels * 0.7f).toInt()
+
+        appsGhostStartY = ghostStartY
+
+        // Prepare ghost header at its source position.
+        ghostHeader.translationY = ghostStartY
+        ghostHeader.alpha        = 0f
+        ghostHeader.visibility   = View.VISIBLE
+
+        // Prepare new scroll content (hidden; fades in during animation).
+        newScroll.visibility = View.VISIBLE
+        newScroll.alpha      = 0f
+
+        // Measure target panel height from the new scroll's intrinsic content.
+        val wSpec   = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec   = View.MeasureSpec.makeMeasureSpec(maxH - headerH - btnSz, View.MeasureSpec.AT_MOST)
+        newScroll.measure(wSpec, hSpec)
+        val targetH = (headerH + newScroll.measuredHeight + btnSz).coerceAtMost(maxH)
+
+        val lp      = appsPanel.layoutParams as FrameLayout.LayoutParams
+        val startH  = lp.height
+
+        val listScroll  = appsPanelResult.appListScroll
+        val listHeader  = appsPanelResult.appListHeader
+
+        appsSubmenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.ENTER
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                appsPanel.layoutParams    = lp
+                ghostHeader.translationY  = ghostStartY * (1f - t)
+                ghostHeader.alpha         = t
+                listHeader.alpha          = 1f - t
+                listScroll.alpha          = 1f - t
+                newScroll.alpha           = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    listHeader.visibility = View.GONE
+                    listScroll.visibility = View.GONE
+                    listScroll.alpha      = 0f
+                    appsPanelFullHeight   = -1
+                }
+            })
+            start()
+        })
+    }
+
+    /**
+     * Animate back from a submenu to the main app list.
+     *
+     * The active ghost header fades out while sliding back toward its origin.
+     * The main list and "Apps" header fade in. [onComplete] is invoked at the end.
+     */
+    private fun runExitAppsSubmenuAnimation(onComplete: (() -> Unit)? = null) {
+        appsSubmenuAnimator?.cancel()
+
+        val ghostHeader = listOf(
+            appsPanelResult.addAppGhostHeader,
+            appsPanelResult.appActionsGhostHeader,
+        ).firstOrNull { it.visibility == View.VISIBLE } ?: run { onComplete?.invoke(); return }
+
+        val activeScroll = when {
+            appsPanelResult.addAppScroll.visibility     == View.VISIBLE -> appsPanelResult.addAppScroll
+            appsPanelResult.appActionsScroll.visibility == View.VISIBLE -> appsPanelResult.appActionsScroll
+            else -> { onComplete?.invoke(); return }
+        }
+
+        val d       = resources.displayMetrics.density
+        val headerH = (56 * d).toInt()
+        val btnSz   = (64 * d).toInt()
+        val panelW  = (280 * d).toInt()
+        val maxH    = (resources.displayMetrics.heightPixels * 0.7f).toInt()
+
+        val listScroll = appsPanelResult.appListScroll
+        val listHeader = appsPanelResult.appListHeader
+
+        // Restore main list visibility (hidden during submenu) for fade-in.
+        listHeader.alpha      = 0f
+        listHeader.visibility = View.VISIBLE
+        listScroll.alpha      = 0f
+        listScroll.visibility = View.VISIBLE
+
+        // Measure target panel height from the main list's content.
+        val wSpec   = View.MeasureSpec.makeMeasureSpec(panelW, View.MeasureSpec.EXACTLY)
+        val hSpec   = View.MeasureSpec.makeMeasureSpec(maxH - headerH - btnSz, View.MeasureSpec.AT_MOST)
+        listScroll.measure(wSpec, hSpec)
+        val targetH = (headerH + listScroll.measuredHeight + btnSz).coerceAtMost(maxH)
+
+        val lp     = appsPanel.layoutParams as FrameLayout.LayoutParams
+        val startH = lp.height
+        val ghostEndY = appsGhostStartY
+
+        appsSubmenuAnimator = animBag.add(ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = Anim.NORMAL
+            interpolator = Anim.EXIT
+            addUpdateListener { va ->
+                val t = va.animatedValue as Float
+                lp.height = (startH + (targetH - startH) * t).toInt()
+                appsPanel.layoutParams   = lp
+                ghostHeader.translationY = ghostEndY * t
+                ghostHeader.alpha        = 1f - t
+                listHeader.alpha         = t
+                activeScroll.alpha       = (1f - t / 0.7f).coerceIn(0f, 1f)
+                listScroll.alpha         = ((t - 0.3f) / 0.7f).coerceIn(0f, 1f)
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    ghostHeader.visibility     = View.GONE
+                    ghostHeader.alpha          = 0f
+                    ghostHeader.translationY   = 0f
+                    activeScroll.visibility    = View.GONE
+                    activeScroll.alpha         = 0f
+                    appsPanelFullHeight        = -1
+                    onComplete?.invoke()
+                }
+            })
+            start()
+        })
     }
 }
 
