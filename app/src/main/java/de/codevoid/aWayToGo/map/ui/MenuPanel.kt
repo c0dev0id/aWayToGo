@@ -34,6 +34,9 @@ import de.codevoid.aWayToGo.R
  * [settingsRowIcon] is the icon ImageView inside [settingsRowInList]; faded
  * out during the enter-settings animation so the icon appears to teleport
  * from the left side of the list row to the right side of the ghost header.
+ * [lockResumeRow] is the "Resume after: Xs" row inside [settingsContent]; tapping
+ * cycles through allowed delay values (3 / 5 / 10 / 30 s).
+ * [lockResumeLabel] is the TextView inside [lockResumeRow] showing the current value.
  * [debugRowInSettings] is the "Debug" row inside [settingsContent]; its click
  * enters the Debug submenu layer.
  * [debugGhostHeader] is a full-width clone of the Debug row placed at the
@@ -66,6 +69,8 @@ data class MenuPanelResult(
     val settingsRowIcon: ImageView,
     val settingsGhostHeader: View,
     val settingsContent: LinearLayout,
+    val lockResumeRow: View,
+    val lockResumeLabel: TextView,
     val debugRowInSettings: View,
     val debugGhostHeader: View,
     val debugContent: LinearLayout,
@@ -222,13 +227,49 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
     val mainMenuScroll = ScrollView(context).apply { addView(contentList) }
 
     // ── Settings submenu content ───────────────────────────────────────────────
-    // Contains a single "Debug" row that opens the Debug submenu layer.
+    val lockResumeLabel = TextView(context).apply {
+        text = "Resume after: 5s"
+        setTextColor(Color.WHITE)
+        textSize = 20f
+        gravity = Gravity.CENTER_VERTICAL
+        maxLines = 1
+    }
+
+    val lockResumeRow = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity     = Gravity.CENTER_VERTICAL
+        setPadding(hPad, 0, hPad, 0)
+        isClickable = true
+        isFocusable = true
+        background  = RippleDrawable(
+            ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+            null,
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.WHITE)
+            },
+        )
+        addView(
+            ImageView(context).apply {
+                setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_menu_settings))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            },
+            LinearLayout.LayoutParams(iconSz, iconSz),
+        )
+        addView(View(context), LinearLayout.LayoutParams(iconGap, 0))
+        addView(
+            lockResumeLabel,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT),
+        )
+    }
+
     val debugRowInSettings = menuItem(R.drawable.ic_menu_settings, "Debug")
 
     val settingsContent = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         visibility  = View.GONE
         alpha       = 0f
+        addView(lockResumeRow,      LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
         addView(debugRowInSettings, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, itemH))
     }
 
@@ -563,6 +604,8 @@ fun buildMenuPanel(context: Context, onToggleMenu: () -> Unit): MenuPanelResult 
         settingsRowIcon    = settingsRowIcon,
         settingsGhostHeader = settingsGhostHeader,
         settingsContent    = settingsContent,
+        lockResumeRow      = lockResumeRow,
+        lockResumeLabel    = lockResumeLabel,
         debugRowInSettings = debugRowInSettings,
         debugGhostHeader   = debugGhostHeader,
         debugContent             = debugContent,

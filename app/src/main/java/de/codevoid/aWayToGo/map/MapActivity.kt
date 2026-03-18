@@ -242,7 +242,6 @@ class MapActivity : ComponentActivity() {
     private lateinit var satelliteToggleBtn: TextView
     private lateinit var darkModeToggleBtn: TextView
     private lateinit var courseUpToggleBtn: TextView
-    private lateinit var followToggleBtn: TextView
     private lateinit var fuelStationToggleBtn: TextView
     private lateinit var myLocationButton: ImageView
     private lateinit var crosshairView: CrosshairView
@@ -257,6 +256,7 @@ class MapActivity : ComponentActivity() {
     private var tileDownloadTotal = 0
     @Volatile private var tileDownloadBytes = 0L
     private var tileDownloadStartNs = 0L
+    private var lockResumeJob: Job? = null
     private var tileDownloadClip: ClipDrawable? = null
     private var osdLastTilePct = -1
     /** Camera position saved when entering tile-select mode; restored on exit. */
@@ -468,13 +468,10 @@ class MapActivity : ComponentActivity() {
         }
 
         // ── Update puck ────────────────────────────────────────────────────
-        // In follow mode the puck is driven by the camera's animated position
-        // (see OnCameraMoveListener in getMapAsync), keeping it locked to screen
-        // centre so camera and puck move as one.  Outside follow mode, push the
-        // accepted GPS fix directly so the puck shows the real GPS position.
-        if (!viewModel.uiState.value.isFollowModeActive) {
-            syntheticEngine.pushLocation(loc)
-        }
+        // Always push the accepted fix to the location engine so the puck
+        // reflects the real GPS position.  In lock mode (NAVIGATE + not panning)
+        // the camera is moved to match, keeping puck at screen centre.
+        syntheticEngine.pushLocation(loc)
 
         // ── Bearing EMA ────────────────────────────────────────────────────
         // α = 1 − exp(−dt / τ) gives a constant time constant τ regardless of
@@ -500,8 +497,12 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // ── Camera follow ──────────────────────────────────────────────────
-        if (!uiState.isFollowModeActive) {
+        // ── Camera lock ────────────────────────────────────────────────────
+        // In NAVIGATE mode (locked) and not panning: move camera instantly to
+        // the GPS position.  moveCamera is synchronous/instant — no animation
+        // lag, no drift between puck and camera centre.
+        val locked = uiState.mode == AppMode.NAVIGATE && !uiState.isInPanningMode
+        if (!locked) {
             updateCrosshairAlpha()
             return
         }
@@ -509,26 +510,16 @@ class MapActivity : ComponentActivity() {
         val gpsBearing = if (uiState.isCourseUpEnabled && !followSmoothedSin.isNaN())
             Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
         else cur.bearing
-        val targetTilt = if (uiState.mode == AppMode.NAVIGATE) 45.0 else cur.tilt
-        val isMoving   = loc.hasSpeed() && loc.speed >= LOW_SPEED_MS
         val cameraUpdate = CameraUpdateFactory.newCameraPosition(
             CameraPosition.Builder()
                 .target(LatLng(loc.latitude, loc.longitude))
                 .zoom(cur.zoom)
                 .bearing(gpsBearing)
-                .tilt(targetTilt)
+                .tilt(45.0)
                 .padding(cur.padding)
                 .build()
         )
-        if (isMoving) {
-            // Animate for 110% of the measured fix interval so consecutive animations
-            // slightly overlap — giving smooth continuous motion at any GPS rate.
-            // At 1 Hz: ~1100 ms. At 4 Hz: ~275 ms. Clamped to avoid extremes.
-            val animMs = (elapsedS * 1100.0).toInt().coerceIn(200, 2000)
-            m.animateCamera(cameraUpdate, animMs)
-        } else {
-            m.moveCamera(cameraUpdate)
-        }
+        m.moveCamera(cameraUpdate)
 
             updateCrosshairAlpha()
 
@@ -819,18 +810,9 @@ class MapActivity : ComponentActivity() {
             ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
         )
 
-        courseUpToggleBtn = makePillButton(this, "CRS") { viewModel.toggleCourseUp() }
+        courseUpToggleBtn = makePillButton(this, "C↑") { viewModel.toggleCourseUp() }
         topRightContainer.addView(
             courseUpToggleBtn,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { gravity = Gravity.END; topMargin = btnTopMargin },
-        )
-
-        followToggleBtn = makePillButton(this, "FOL") { viewModel.toggleFollowMode() }
-        topRightContainer.addView(
-            followToggleBtn,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1244,6 +1226,7 @@ class MapActivity : ComponentActivity() {
             // Settings row in main list → enters the settings submenu layer.
             result.settingsRowInList.setOnClickListener { viewModel.enterSettingsMenu() }
             // Debug row in settings → enters the debug submenu layer.
+            result.lockResumeRow.setOnClickListener { viewModel.cycleLockResumeDelay() }
             result.debugRowInSettings.setOnClickListener { viewModel.enterDebugMenu() }
             // Info Panel toggle → flips isDebugMode in state.
             result.debugContent.getChildAt(0).setOnClickListener { viewModel.toggleDebugMode() }
@@ -1377,11 +1360,7 @@ class MapActivity : ComponentActivity() {
                 ) {
                     // User started panning — cancel any in-progress lock-ring animation.
                     cancelLockRingAnimation()
-                    if (viewModel.uiState.value.isFollowModeActive) {
-                        viewModel.disableFollowMode()
-                    } else {
-                        enterPanningMode()
-                    }
+                    enterPanningMode()
                 }
             }
 
@@ -1411,32 +1390,6 @@ class MapActivity : ComponentActivity() {
                 updateCrosshairAlpha()
             }
 
-            // Puck-locked-to-camera-centre in follow mode.
-            // OnCameraMoveListener fires every rendered frame during animation;
-            // at that point m.cameraPosition.target is the current interpolated
-            // GL position, not the destination — so the puck tracks the camera's
-            // exact on-screen centre at every frame.  Preserves accuracy/bearing
-            // metadata from the last GPS fix so the accuracy ring and arrow stay.
-            m.addOnCameraMoveListener {
-                if (!viewModel.uiState.value.isFollowModeActive) return@addOnCameraMoveListener
-                val center = m.cameraPosition.target ?: return@addOnCameraMoveListener
-                val base   = rawGpsLocation
-                val loc = if (base != null) Location(base).apply {
-                    latitude  = center.latitude
-                    longitude = center.longitude
-                } else Location("camera").apply {
-                    latitude  = center.latitude
-                    longitude = center.longitude
-                }
-                syntheticEngine.pushLocation(loc)
-            }
-            // When the camera comes to rest in follow mode, sync the puck to the
-            // real GPS coordinate (which the camera just finished animating to).
-            m.addOnCameraIdleListener {
-                if (viewModel.uiState.value.isFollowModeActive) {
-                    rawGpsLocation?.let { syntheticEngine.pushLocation(it) }
-                }
-            }
 
             // ── Direct 1-finger pan ────────────────────────────────────────────
             // Returns false so MapLibre still sees every event (tap, long-press,
@@ -1472,11 +1425,7 @@ class MapActivity : ComponentActivity() {
                                 if (!panModeTriggered && !viewModel.uiState.value.isInTileSelectMode) {
                                     panModeTriggered = true
                                     cancelLockRingAnimation()
-                                    if (viewModel.uiState.value.isFollowModeActive) {
-                                        viewModel.disableFollowMode()
-                                    } else {
-                                        enterPanningMode()
-                                    }
+                                    enterPanningMode()
                                 }
                             }
                         } else if (event.pointerCount > 1) {
@@ -1707,12 +1656,17 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Switch to panning mode: show the crosshair, disable GPS camera tracking.
+     * Switch to panning mode: show the crosshair, temporarily suspend camera lock.
+     *
+     * Cancels any pending lock-resume countdown so re-panning during the delay
+     * does not accidentally re-engage lock.
      *
      * Idempotent — StateFlow only emits when the value changes, so repeated calls
      * while already in panning mode produce no extra renders.
      */
     private fun enterPanningMode() {
+        lockResumeJob?.cancel()
+        lockResumeJob = null
         viewModel.enterPanningMode()
     }
 
@@ -1737,14 +1691,27 @@ class MapActivity : ComponentActivity() {
     }
 
     /**
-     * Leave panning mode: hide the crosshair, re-enable GPS tracking, and
-     * animate back to the user's current location.
+     * Schedule camera lock re-engagement after the configured delay.
      *
-     * The camera tracking re-enable and flyToLocation are triggered reactively
-     * in [renderUiState] when it observes [MapUiState.isInPanningMode] go false.
+     * In NAVIGATE mode a countdown runs for [MapUiState.lockResumeDelayS] seconds
+     * before calling [MapViewModel.exitPanningMode], giving the user time to orient
+     * before the camera snaps back to GPS.  In other modes the panning mode exits
+     * immediately (there is no lock to resume).
+     *
+     * Re-panning during the countdown cancels it via [enterPanningMode].
      */
     private fun exitPanningMode() {
-        viewModel.exitPanningMode()
+        val state = viewModel.uiState.value
+        if (state.mode == AppMode.NAVIGATE) {
+            lockResumeJob?.cancel()
+            lockResumeJob = lifecycleScope.launch {
+                delay(state.lockResumeDelayS * 1000L)
+                viewModel.exitPanningMode()
+                lockResumeJob = null
+            }
+        } else {
+            viewModel.exitPanningMode()
+        }
     }
 
     // ── Map movement primitives ────────────────────────────────────────────────
@@ -2222,7 +2189,6 @@ class MapActivity : ComponentActivity() {
     private fun renderUiState(new: MapUiState, old: MapUiState?) {
         val modeChanged          = old?.mode != new.mode
         val panningChanged       = old?.isInPanningMode != new.isInPanningMode
-        val followChanged        = old?.isFollowModeActive != new.isFollowModeActive
         val menuChanged          = old?.isMenuOpen != new.isMenuOpen
         val searchChanged        = old?.isSearchOpen != new.isSearchOpen
         val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
@@ -2257,38 +2223,21 @@ class MapActivity : ComponentActivity() {
         }
 
 
-        // ── Fly-to on follow mode enable ───────────────────────────────────────
-        // Snap the camera to GPS immediately when follow mode is turned on so
-        // there is no visible delay before the Choreographer tracking takes over.
-        // Skip when modeChanged — applyCameraForMode already handles the camera
-        // transition with the correct tilt and zoom.
-        if (followChanged && new.isFollowModeActive) {
-            // Reset last-fix state so the next GPS fix is always accepted.
+        // ── Snap camera to GPS on mode enter (lock engage) ────────────────────
+        // When switching into NAVIGATE, snap immediately to GPS so there is no
+        // visible delay before the next fix arrives.  applyCameraForMode handles
+        // tilt/zoom; just reset the last-fix tracker so the next fix is accepted.
+        if (modeChanged && new.mode == AppMode.NAVIGATE) {
             followLastLat = Double.NaN
             followLastLon = Double.NaN
-            if (!modeChanged) {
-                val m   = map
-                val loc = rawGpsLocation ?: m?.locationComponent?.lastKnownLocation
-                if (m != null && loc != null) {
-                    flyToLocation(m, LatLng(loc.latitude, loc.longitude))
-                }
-            }
         }
 
-        // ── Puck snap on follow mode disable ───────────────────────────────────
-        // When follow mode turns off, the puck was tracking the camera centre.
-        // Push the real GPS fix now so it snaps back to the actual GPS position.
-        if (followChanged && !new.isFollowModeActive) {
-            rawGpsLocation?.let { syntheticEngine.pushLocation(it) }
-        }
-
-        // ── Fly-to on panning exit (without follow mode) ──────────────────────
-        // When panning exits and follow mode is NOT active, fly back to GPS once.
-        // If follow mode IS active, the snap above (or the Choreographer loop)
-        // already handles re-centering.
+        // ── Fly-to on panning exit ─────────────────────────────────────────────
+        // When panning exits in non-NAVIGATE modes, fly back to GPS once.
+        // In NAVIGATE mode the next GPS fix will re-lock the camera via moveCamera.
         if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true) {
             fuelTooltipCard.visibility = View.GONE
-            if (!new.isFollowModeActive) {
+            if (new.mode != AppMode.NAVIGATE) {
                 val m   = map
                 val loc = m?.locationComponent?.lastKnownLocation
                 if (m != null && loc != null) {
@@ -2527,7 +2476,8 @@ class MapActivity : ComponentActivity() {
         setToggleActive(satelliteToggleBtn,   new.isSatelliteEnabled)
         setToggleActive(darkModeToggleBtn,    new.isDarkMode)
         setToggleActive(courseUpToggleBtn,    new.isCourseUpEnabled)
-        setToggleActive(followToggleBtn,      new.isFollowModeActive)
+        courseUpToggleBtn.text = if (new.isCourseUpEnabled) "C↑" else "N↑"
+        menuPanelResult.lockResumeLabel.text = "Resume after: ${new.lockResumeDelayS}s"
         setToggleActive(fuelStationToggleBtn, new.isFuelStationsEnabled)
 
         // ── Course Up → North Up transition ───────────────────────────────────

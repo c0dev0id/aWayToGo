@@ -55,6 +55,9 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(isDebugMode = true) }
         if (prefs.getBoolean("frequent_updates", false))
             _uiState.update { it.copy(isFrequentUpdatesEnabled = true) }
+        val savedDelay = prefs.getInt("lock_resume_delay_s", 5)
+        if (savedDelay != 5)
+            _uiState.update { it.copy(lockResumeDelayS = savedDelay) }
     }
 
     private val appUpdater          = AppUpdater(getApplication())
@@ -149,8 +152,10 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
      * Atomically:
      * - Sets [MapUiState.mode] to [mode].
      * - Clears [MapUiState.isMenuOpen] (menu always closes on mode change).
-     * - Clears [MapUiState.isInPanningMode] when entering NAVIGATE or EDIT
-     *   (NAVIGATE re-enables GPS tracking; EDIT pins the crosshair independently).
+     * - Clears [MapUiState.isInPanningMode] when entering NAVIGATE or EDIT.
+     *
+     * Camera lock is implied by mode: NAVIGATE = locked, EXPLORE/EDIT = free.
+     * Entering NAVIGATE also resets bearing to Course Up as the riding default.
      */
     fun setMode(mode: AppMode) {
         _uiState.update { current ->
@@ -169,51 +174,44 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
                     AppMode.NAVIGATE, AppMode.EDIT -> false
                     else                           -> current.isInPanningMode
                 },
-                // NAVIGATE activates FOL + CSR automatically; other modes deactivate both.
-                isFollowModeActive = mode == AppMode.NAVIGATE,
-                isCourseUpEnabled  = mode == AppMode.NAVIGATE,
+                // Entering ride mode defaults to Course Up; other modes leave it as-is.
+                isCourseUpEnabled  = if (mode == AppMode.NAVIGATE) true else current.isCourseUpEnabled,
             )
         }
     }
 
     /**
-     * Enter panning mode: crosshair becomes visible, GPS camera tracking suspends.
-     * Also disables follow mode — the user taking manual control breaks the GPS lock.
+     * Enter panning mode: crosshair becomes visible, camera lock temporarily suspends.
+     *
+     * Lock mode itself ([MapUiState.mode]) is unchanged — the lock re-engages
+     * after [MapUiState.lockResumeDelayS] seconds once panning stops.
      *
      * Idempotent — calling when already in panning mode emits no state change.
      */
     fun enterPanningMode() {
-        _uiState.update { it.copy(isInPanningMode = true, isFollowModeActive = false) }
+        _uiState.update { it.copy(isInPanningMode = true) }
     }
 
     /**
-     * Exit panning mode: crosshair hides, GPS tracking resumes.
+     * Exit panning mode: crosshair hides, camera lock re-engages (for NAVIGATE mode).
      *
-     * The Activity's [MapActivity.renderUiState] observes this transition and
-     * calls [MapActivity.flyToLocation] to animate back to the user's position.
+     * Called by [MapActivity] after [MapUiState.lockResumeDelayS] seconds elapse
+     * post-pan, not immediately on gesture release.
      */
     fun exitPanningMode() {
         _uiState.update { it.copy(isInPanningMode = false) }
     }
 
-    /**
-     * Enable follow mode: camera locks on to the GPS puck and tracks every position
-     * update. Also clears panning mode so the crosshair is hidden.
-     *
-     * Idempotent — repeated calls while already following produce no extra emissions.
-     */
-    fun enableFollowMode() {
-        _uiState.update { it.copy(isFollowModeActive = true, isInPanningMode = false) }
-    }
-
-    /** Disable follow mode: camera stops tracking the GPS puck. */
-    fun disableFollowMode() {
-        _uiState.update { it.copy(isFollowModeActive = false) }
-    }
-
-    /** Toggle follow mode on/off. */
-    fun toggleFollowMode() {
-        _uiState.update { it.copy(isFollowModeActive = !it.isFollowModeActive, isInPanningMode = false) }
+    /** Cycle lock resume delay through allowed values: 3 → 5 → 10 → 30 → 3 … */
+    fun cycleLockResumeDelay() {
+        val next = when (_uiState.value.lockResumeDelayS) {
+            3    -> 5
+            5    -> 10
+            10   -> 30
+            else -> 3
+        }
+        _uiState.update { it.copy(lockResumeDelayS = next) }
+        prefs.edit().putInt("lock_resume_delay_s", next).apply()
     }
 
     /** Expand the hamburger panel. */

@@ -18,17 +18,29 @@ sealed class DownloadState {
  * Held in a [MapViewModel] and observed by [MapActivity] via a [kotlinx.coroutines.flow.StateFlow].
  * Every field change produces a new instance; equality is structural (data class).
  *
+ * ## Camera lock model
+ *
+ * Lock mode is not a separate flag — it is implied by [mode]:
+ *   - [AppMode.NAVIGATE]: camera is locked to the GPS puck.  Each GPS fix calls
+ *     `moveCamera` (instant, no animation) so puck and camera centre are always
+ *     coincident.  [isCourseUpEnabled] selects Course-Up vs North-Up bearing.
+ *   - [AppMode.EXPLORE] / [AppMode.EDIT]: camera is free.  Puck moves on screen
+ *     as GPS fixes arrive; camera is independent.
+ *
+ * [isInPanningMode] temporarily suspends the lock (user is panning the map).
+ * After the user stops, [lockResumeDelayS] seconds elapse before lock re-engages.
+ *
  * | Field               | What it controls                                             |
  * |---------------------|--------------------------------------------------------------|
- * | [mode]              | Which overlay set is visible (Explore / Navigate / Edit).   |
- * | [isInPanningMode]   | Crosshair visible, GPS tracking suspended.                  |
- * | [isFollowModeActive]| Camera locked to GPS puck; tracks position each frame.      |
+ * | [mode]              | App mode; also determines lock (NAVIGATE) vs free camera.  |
+ * | [isInPanningMode]   | Crosshair visible, camera lock temporarily suspended.       |
  * | [isMenuOpen]        | Hamburger panel expanded.                                   |
  * | [isSearchOpen]      | Search overlay visible (Explore mode only).                 |
  * | [isSatelliteEnabled]| Map style switched to hybrid satellite+labels.              |
  * | [isDarkMode]        | Map style switched to dark variant.                         |
- * | [isCourseUpEnabled]         | Map rotates so current GPS course points up (Course Up).   |
- *                               When false, north always points up (North Up).              |
+ * | [isCourseUpEnabled] | In Navigate/lock: bearing tracks GPS course (Course Up).    |
+ *                         When false, north always points up (North Up).              |
+ * | [lockResumeDelayS]  | Seconds to wait after panning stops before re-locking.      |
  * | [isFrequentUpdatesEnabled]  | Debug: check for updates every 5 min while screen is on.  |
  * | [isMapLockMenuOpen]         | Map-lock context menu open (long-press on crosshair).      |
  * | [isFuelStationsEnabled]     | Fuel station POI symbols visible on the map.               |
@@ -41,7 +53,6 @@ sealed class DownloadState {
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
     val isInPanningMode: Boolean = false,
-    val isFollowModeActive: Boolean = false,
     val isMenuOpen: Boolean = false,
     val isSearchOpen: Boolean = false,
     val isSatelliteEnabled: Boolean = false,
@@ -50,6 +61,7 @@ data class MapUiState(
     val isInDebugMenu: Boolean = false,
     val isDebugMode: Boolean = false,
     val isCourseUpEnabled: Boolean = false,
+    val lockResumeDelayS: Int = 5,
     val isFrequentUpdatesEnabled: Boolean = false,
     val isMapLockMenuOpen: Boolean = false,
     val isFuelStationsEnabled: Boolean = false,
