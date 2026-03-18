@@ -135,6 +135,7 @@ import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -190,9 +191,9 @@ private const val SOURCE_TILE_GRID_LINES = "tile-grid-lines-src"
 private const val LAYER_TILE_GRID_LINE   = "tile-grid-line"
 
 private const val SOURCE_OFFLINE_BORDER  = "offline-border-src"
-private const val SOURCE_OFFLINE_LABEL   = "offline-label-src"
+private const val SOURCE_OFFLINE_DIM     = "offline-dim-src"
 private const val LAYER_OFFLINE_BORDER   = "offline-border-line"
-private const val LAYER_OFFLINE_LABEL    = "offline-border-label"
+private const val LAYER_OFFLINE_DIM      = "offline-dim-fill"
 
 
 private const val LOCATION_PERMISSION_REQUEST = 1
@@ -2473,6 +2474,10 @@ class MapActivity : ComponentActivity() {
             menuPanelResult.offlineModeLabel.text =
                 "Offline Mode: ${if (new.isOfflineMode) "ON" else "OFF"}"
             if (offlineModeChanged) {
+                // Show/hide the dim overlay (hidden during tile-select mode).
+                val dimVis = if (new.isOfflineMode && !new.isInTileSelectMode) Property.VISIBLE else Property.NONE
+                style?.getLayerAs<FillLayer>(LAYER_OFFLINE_DIM)
+                    ?.setProperties(PropertyFactory.visibility(dimVis))
                 // Force MapLibre to re-evaluate tiles with the new cache policy.
                 map?.let { m -> m.easeCamera(CameraUpdateFactory.zoomBy(0.0), 1) }
             }
@@ -4039,36 +4044,18 @@ class MapActivity : ComponentActivity() {
     // ── Offline border ────────────────────────────────────────────────────────
 
     /**
-     * Build border lines and label points from the current tile selection.
+     * Build border lines from the current tile selection.
      *
      * For each selected z8 tile, each edge whose neighbour is NOT selected is a
      * border edge.  Edges are emitted as individual LineString features so
      * MapLibre can render them without a separate polygon-dissolve step.
-     *
-     * Label points are placed just outside the border, one per cardinal direction
-     * (N/S/E/W) that has at least one border edge.  The average position of all
-     * edges in that direction is used so the label ends up near the centre of
-     * each face.
-     *
-     * Returns (borderLines, labelPoints) as two separate FeatureCollections so
-     * they can be stored in separate GeoJSON sources and driven by different layer
-     * types without any per-feature filtering.
      */
-    private fun buildOfflineBorderData(): Pair<FeatureCollection, FeatureCollection> {
+    private fun buildOfflineBorderData(): FeatureCollection {
         val sel = tileGridOverlay.selectedTiles
-        if (sel.isEmpty()) {
-            val empty = FeatureCollection.fromFeatures(emptyList())
-            return Pair(empty, empty)
-        }
+        if (sel.isEmpty()) return FeatureCollection.fromFeatures(emptyList())
         val z = tileGridOverlay.gridZoom
 
         val lines = mutableListOf<Feature>()
-        // Accumulate midpoints per cardinal direction for label placement.
-        var nLon = 0.0; var nLat = 0.0; var nN = 0
-        var sLon = 0.0; var sLat = 0.0; var sN = 0
-        var wLon = 0.0; var wLat = 0.0; var wN = 0
-        var eLon = 0.0; var eLat = 0.0; var eN = 0
-
         for (key in sel) {
             val x     = key / 256
             val y     = key % 256
@@ -4076,112 +4063,117 @@ class MapActivity : ComponentActivity() {
             val east  = tileGridOverlay.tileToLon(x + 1, z)
             val north = tileGridOverlay.tileToLat(y,     z)
             val south = tileGridOverlay.tileToLat(y + 1, z)
-            val midLon = (west + east)   / 2.0
-            val midLat = (north + south) / 2.0
 
             // North neighbour absent → top edge is a border
-            if (!sel.contains(x * 256 + (y - 1))) {
+            if (!sel.contains(x * 256 + (y - 1)))
                 lines.add(Feature.fromGeometry(LineString.fromLngLats(listOf(
                     Point.fromLngLat(west, north), Point.fromLngLat(east, north)))))
-                nLon += midLon; nLat += north; nN++
-            }
             // South neighbour absent → bottom edge is a border
-            if (!sel.contains(x * 256 + (y + 1))) {
+            if (!sel.contains(x * 256 + (y + 1)))
                 lines.add(Feature.fromGeometry(LineString.fromLngLats(listOf(
                     Point.fromLngLat(west, south), Point.fromLngLat(east, south)))))
-                sLon += midLon; sLat += south; sN++
-            }
             // West neighbour absent → left edge is a border
-            if (!sel.contains((x - 1) * 256 + y)) {
+            if (!sel.contains((x - 1) * 256 + y))
                 lines.add(Feature.fromGeometry(LineString.fromLngLats(listOf(
                     Point.fromLngLat(west, north), Point.fromLngLat(west, south)))))
-                wLon += west; wLat += midLat; wN++
-            }
             // East neighbour absent → right edge is a border
-            if (!sel.contains((x + 1) * 256 + y)) {
+            if (!sel.contains((x + 1) * 256 + y))
                 lines.add(Feature.fromGeometry(LineString.fromLngLats(listOf(
                     Point.fromLngLat(east, north), Point.fromLngLat(east, south)))))
-                eLon += east; eLat += midLat; eN++
-            }
         }
-
-        // Offset labels by ~40 % of a tile width/height outside the border.
-        val tileW = 360.0 / (1 shl z)          // ~1.406° at z8
-        val tileH = run {
-            // Use average tile height at the median latitude of selected tiles.
-            val ys = sel.map { it % 256 }
-            val midY = ys.average().toInt().coerceIn(0, (1 shl z) - 1)
-            tileGridOverlay.tileToLat(midY, z) - tileGridOverlay.tileToLat(midY + 1, z)
-        }
-        val offLon = tileW * 0.4
-        val offLat = tileH * 0.4
-
-        val labels = mutableListOf<Feature>()
-        fun labelFeature(lon: Double, lat: Double) =
-            Feature.fromGeometry(Point.fromLngLat(lon, lat)).also {
-                it.addStringProperty("label", "online map")
-            }
-        if (nN > 0) labels.add(labelFeature(nLon / nN, nLat / nN + offLat))
-        if (sN > 0) labels.add(labelFeature(sLon / sN, sLat / sN - offLat))
-        if (wN > 0) labels.add(labelFeature(wLon / wN - offLon, wLat / wN))
-        if (eN > 0) labels.add(labelFeature(eLon / eN + offLon, eLat / eN))
-
-        return Pair(
-            FeatureCollection.fromFeatures(lines),
-            FeatureCollection.fromFeatures(labels),
-        )
+        return FeatureCollection.fromFeatures(lines)
     }
 
-    /** Add offline border LineLayer + SymbolLayer to the current style. */
+    /**
+     * Build a world polygon with a hole for each offline tile.
+     *
+     * When rendered as a FillLayer, the world ring is dimmed and the offline
+     * tile holes are transparent — so only areas without cached tiles are
+     * darkened.  Uses GeoJSON winding convention: outer ring CCW, holes CW.
+     */
+    private fun buildOfflineDimPolygon(): FeatureCollection {
+        val sel = tileGridOverlay.selectedTiles
+        if (sel.isEmpty()) return FeatureCollection.fromFeatures(emptyList())
+        val z = tileGridOverlay.gridZoom
+
+        // Outer ring covers the whole renderable world (CCW per GeoJSON spec).
+        val worldRing = listOf(
+            Point.fromLngLat(-180.0, -85.051129),
+            Point.fromLngLat( 180.0, -85.051129),
+            Point.fromLngLat( 180.0,  85.051129),
+            Point.fromLngLat(-180.0,  85.051129),
+            Point.fromLngLat(-180.0, -85.051129),
+        )
+
+        // Each offline tile punches a hole (CW per GeoJSON spec).
+        val holes = sel.map { key ->
+            val x = key / 256
+            val y = key % 256
+            val west  = tileGridOverlay.tileToLon(x,     z)
+            val east  = tileGridOverlay.tileToLon(x + 1, z)
+            val north = tileGridOverlay.tileToLat(y,     z)
+            val south = tileGridOverlay.tileToLat(y + 1, z)
+            listOf(
+                Point.fromLngLat(west, south),
+                Point.fromLngLat(west, north),
+                Point.fromLngLat(east, north),
+                Point.fromLngLat(east, south),
+                Point.fromLngLat(west, south),
+            )
+        }
+
+        val polygon = Polygon.fromLngLats(listOf(worldRing) + holes)
+        return FeatureCollection.fromFeatures(listOf(Feature.fromGeometry(polygon)))
+    }
+
+    /** Add offline border LineLayer + dim FillLayer to the current style. */
     private fun addOfflineBorderLayers() {
         val s = style ?: return
-        val (borderFc, labelFc) = buildOfflineBorderData()
-        val visible = !viewModel.uiState.value.isInTileSelectMode
+        val borderFc = buildOfflineBorderData()
+        val dimFc    = buildOfflineDimPolygon()
+        val state    = viewModel.uiState.value
+        val visible  = !state.isInTileSelectMode
 
         s.addSource(GeoJsonSource(SOURCE_OFFLINE_BORDER, borderFc))
-        s.addSource(GeoJsonSource(SOURCE_OFFLINE_LABEL,  labelFc))
+        s.addSource(GeoJsonSource(SOURCE_OFFLINE_DIM,    dimFc))
 
         val borderLayer = LineLayer(LAYER_OFFLINE_BORDER, SOURCE_OFFLINE_BORDER).withProperties(
             PropertyFactory.lineColor(android.graphics.Color.argb(220, 255, 160, 0)),
             PropertyFactory.lineWidth(2.5f),
             PropertyFactory.visibility(if (visible) Property.VISIBLE else Property.NONE),
         )
-        val labelLayer = SymbolLayer(LAYER_OFFLINE_LABEL, SOURCE_OFFLINE_LABEL).withProperties(
-            PropertyFactory.textField("{label}"),
-            PropertyFactory.textSize(12f),
-            PropertyFactory.textColor(android.graphics.Color.argb(255, 255, 160, 0)),
-            PropertyFactory.textHaloColor(android.graphics.Color.argb(200, 0, 0, 0)),
-            PropertyFactory.textHaloWidth(1.5f),
-            PropertyFactory.textFont(arrayOf("Open Sans Semibold", "Arial Unicode MS Bold")),
-            PropertyFactory.visibility(if (visible) Property.VISIBLE else Property.NONE),
+        val dimLayer = FillLayer(LAYER_OFFLINE_DIM, SOURCE_OFFLINE_DIM).withProperties(
+            PropertyFactory.fillColor(android.graphics.Color.argb(160, 0, 0, 0)),
+            PropertyFactory.visibility(
+                if (visible && state.isOfflineMode) Property.VISIBLE else Property.NONE),
         )
 
-        // Insert below the first symbol layer so labels don't cover road names.
+        // Insert below the first symbol layer so the overlay doesn't cover road names.
         val firstSymbol = s.layers.firstOrNull { it is SymbolLayer }
         if (firstSymbol != null) {
             s.addLayerBelow(borderLayer, firstSymbol.id)
-            s.addLayerBelow(labelLayer,  firstSymbol.id)
+            s.addLayerBelow(dimLayer,    firstSymbol.id)
         } else {
             s.addLayer(borderLayer)
-            s.addLayer(labelLayer)
+            s.addLayer(dimLayer)
         }
     }
 
-    /** Refresh the offline border GeoJSON sources from the current tile selection. */
+    /** Refresh the offline border and dim GeoJSON sources from the current tile selection. */
     private fun updateOfflineBorder() {
         val s = style ?: return
-        val (borderFc, labelFc) = buildOfflineBorderData()
-        s.getSourceAs<GeoJsonSource>(SOURCE_OFFLINE_BORDER)?.setGeoJson(borderFc)
-        s.getSourceAs<GeoJsonSource>(SOURCE_OFFLINE_LABEL)?.setGeoJson(labelFc)
+        s.getSourceAs<GeoJsonSource>(SOURCE_OFFLINE_BORDER)?.setGeoJson(buildOfflineBorderData())
+        s.getSourceAs<GeoJsonSource>(SOURCE_OFFLINE_DIM)?.setGeoJson(buildOfflineDimPolygon())
     }
 
-    /** Show or hide the offline border layers (e.g. hide during tile-select editing). */
+    /** Show or hide the offline border and dim layers (e.g. hide during tile-select editing). */
     private fun setOfflineBorderVisible(visible: Boolean) {
-        val vis = if (visible) Property.VISIBLE else Property.NONE
+        val borderVis = if (visible) Property.VISIBLE else Property.NONE
         style?.getLayerAs<LineLayer>(LAYER_OFFLINE_BORDER)
-            ?.setProperties(PropertyFactory.visibility(vis))
-        style?.getLayerAs<SymbolLayer>(LAYER_OFFLINE_LABEL)
-            ?.setProperties(PropertyFactory.visibility(vis))
+            ?.setProperties(PropertyFactory.visibility(borderVis))
+        val dimVis = if (visible && viewModel.uiState.value.isOfflineMode) Property.VISIBLE else Property.NONE
+        style?.getLayerAs<FillLayer>(LAYER_OFFLINE_DIM)
+            ?.setProperties(PropertyFactory.visibility(dimVis))
     }
 
     // ── Self-update ───────────────────────────────────────────────────────────
