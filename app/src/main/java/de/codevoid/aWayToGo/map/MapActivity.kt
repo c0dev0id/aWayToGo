@@ -5400,6 +5400,11 @@ class MapActivity : ComponentActivity() {
                 val appInfo = apps.find { it.packageName == row.packageName } ?: return@populateAppList
                 showAppActionsSubmenu(appInfo)
             },
+            onReorder   = { newOrder ->
+                addedApps.reorder(newOrder)
+                refreshAppsList()
+                resizeAppsPanelToContent()
+            },
         )
 
         appsPanelFullHeight = -1

@@ -10,31 +10,35 @@ private const val KEY_CUSTOM_NAMES = "custom_names"
 class AddedApps(private val prefs: SharedPreferences) {
 
     fun add(packageName: String) {
-        val set = getAdded().toMutableSet()
-        set.add(packageName)
-        save(set)
+        val list = getAdded().toMutableList()
+        if (!list.contains(packageName)) list.add(packageName)
+        save(list)
     }
 
     fun remove(packageName: String) {
-        val set = getAdded().toMutableSet()
-        set.remove(packageName)
-        save(set)
+        val list = getAdded().toMutableList()
+        list.remove(packageName)
+        save(list)
         // Also clear any custom name so it does not dangle.
         setCustomName(packageName, null)
     }
 
-    fun setAll(packages: Set<String>) {
+    fun setAll(packages: Collection<String>) {
+        save(packages.toList())
+    }
+
+    fun reorder(packages: List<String>) {
         save(packages)
     }
 
     fun isAdded(packageName: String): Boolean = getAdded().contains(packageName)
 
-    fun getAdded(): Set<String> {
-        val json = prefs.getString(KEY_ADDED, null) ?: return emptySet()
+    fun getAdded(): List<String> {
+        val json = prefs.getString(KEY_ADDED, null) ?: return emptyList()
         return try {
             val arr = JSONArray(json)
-            buildSet { for (i in 0 until arr.length()) add(arr.getString(i)) }
-        } catch (_: Exception) { emptySet() }
+            buildList { for (i in 0 until arr.length()) add(arr.getString(i)) }
+        } catch (_: Exception) { emptyList() }
     }
 
     // ── Custom display name ────────────────────────────────────────────────────
@@ -68,9 +72,9 @@ class AddedApps(private val prefs: SharedPreferences) {
 
     // ── Private ────────────────────────────────────────────────────────────────
 
-    private fun save(set: Set<String>) {
+    private fun save(list: List<String>) {
         val arr = JSONArray()
-        set.forEach { arr.put(it) }
+        list.forEach { arr.put(it) }
         prefs.edit().putString(KEY_ADDED, arr.toString()).apply()
     }
 }

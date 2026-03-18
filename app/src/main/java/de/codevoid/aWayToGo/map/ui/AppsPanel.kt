@@ -2,12 +2,15 @@ package de.codevoid.aWayToGo.map.ui
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.CheckBox
 import android.widget.FrameLayout
@@ -261,12 +264,15 @@ fun buildAppsPanel(context: Context, onAppsButton: () -> Unit): AppsPanelResult 
  *
  * Long-pressing a row calls [onLongClick] with the row's [AppRowInfo].
  * Tapping a row calls [onClick] with the package name.
+ * If [onReorder] is provided, each row gets a drag handle on the right; dragging it
+ * reorders the list and calls [onReorder] with the new package-name order on drop.
  *
  * @param container   The LinearLayout to populate (cleared first).
  * @param apps        List of app info to display.
  * @param actionRows  Optional action rows to append at the end (e.g. "Add App").
  * @param onClick     Called on tap (receives packageName).
  * @param onLongClick Called on long-press (receives full AppRowInfo). Null = no long-press.
+ * @param onReorder   Called on successful drag-drop with the new ordered package list.
  */
 fun populateAppList(
     container: LinearLayout,
@@ -274,22 +280,35 @@ fun populateAppList(
     actionRows: List<View> = emptyList(),
     onClick: (String) -> Unit,
     onLongClick: ((AppRowInfo) -> Unit)? = null,
+    onReorder: ((List<String>) -> Unit)? = null,
 ) {
-    val context = container.context
-    val d       = context.resources.displayMetrics.density
-    val itemH   = (56 * d).toInt()
-    val iconSz  = (40 * d).toInt()
-    val hPad    = (16 * d).toInt()
-    val iconGap = (12 * d).toInt()
-    val panelW  = (280 * d).toInt()
+    val context  = container.context
+    val d        = context.resources.displayMetrics.density
+    val itemH    = (56 * d).toInt()
+    val iconSz   = (40 * d).toInt()
+    val hPad     = (16 * d).toInt()
+    val iconGap  = (12 * d).toInt()
+    val handleW  = (36 * d).toInt()
+    val panelW   = (280 * d).toInt()
 
     container.removeAllViews()
 
+    // ── Shared drag state ──────────────────────────────────────────────────────
+    // intArrayOf / arrayOfNulls are used so lambdas can mutate captured state.
+    val rowViews    = mutableListOf<View>()
+    val handles     = mutableListOf<View>()
+    val currentOrder = apps.map { it.packageName }.toMutableList()
+    val draggingIdx  = intArrayOf(-1)
+    val targetIdx    = intArrayOf(-1)
+    val ghostRef     = arrayOfNulls<ImageView>(1)
+
+    // ── Build rows ─────────────────────────────────────────────────────────────
     for (app in apps) {
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity     = Gravity.CENTER_VERTICAL
-            setPadding(hPad, 0, hPad, 0)
+            // No right padding when a handle is present — the handle provides the edge.
+            setPadding(hPad, 0, if (onReorder != null) 0 else hPad, 0)
             isClickable = true
             isFocusable = true
             isLongClickable = onLongClick != null
@@ -320,17 +339,169 @@ fun populateAppList(
                 },
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
             )
+
+            if (onReorder != null) {
+                // ── Drag handle — three-dot grip on the right ──────────────────
+                val handle = TextView(context).apply {
+                    text = "⠿"
+                    textSize = 16f
+                    setTextColor(Color.argb(100, 255, 255, 255))
+                    gravity = Gravity.CENTER
+                    isClickable = true
+                    isFocusable = false
+                }
+                handles.add(handle)
+                addView(handle, LinearLayout.LayoutParams(handleW, itemH))
+            }
+
             setOnClickListener { onClick(app.packageName) }
             if (onLongClick != null) {
                 setOnLongClickListener { onLongClick(app); true }
             }
         }
+        rowViews.add(row)
         container.addView(row, LinearLayout.LayoutParams(panelW, itemH))
+    }
+
+    // ── Wire drag listeners after all rows are built ───────────────────────────
+    if (onReorder != null) {
+        handles.forEachIndexed { hIdx, handle ->
+            handle.setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+
+                    MotionEvent.ACTION_DOWN -> {
+                        val scrollView = container.parent as? ScrollView
+                            ?: return@setOnTouchListener false
+                        val panelRoot = scrollView.parent as? FrameLayout
+                            ?: return@setOnTouchListener false
+
+                        draggingIdx[0] = hIdx
+                        targetIdx[0]   = hIdx
+
+                        // Prevent the ScrollView from stealing subsequent events.
+                        scrollView.requestDisallowInterceptTouchEvent(true)
+
+                        // Capture a bitmap of the row to use as the drag ghost.
+                        val row = rowViews[hIdx]
+                        val bmp = Bitmap.createBitmap(
+                            row.width.coerceAtLeast(1),
+                            row.height.coerceAtLeast(1),
+                            Bitmap.Config.ARGB_8888,
+                        )
+                        row.draw(Canvas(bmp))
+
+                        val panelLoc = IntArray(2)
+                        panelRoot.getLocationOnScreen(panelLoc)
+
+                        val ghost = ImageView(context).apply {
+                            setImageBitmap(bmp)
+                            alpha     = 0.88f
+                            elevation = 8 * d
+                            translationY = (event.rawY - panelLoc[1] - itemH / 2f)
+                                .coerceIn(0f, (panelRoot.height - itemH).toFloat())
+                        }
+                        // Add at END gravity to match the scroll view's horizontal alignment.
+                        panelRoot.addView(ghost, FrameLayout.LayoutParams(
+                            panelW, itemH, Gravity.TOP or Gravity.END,
+                        ))
+                        ghostRef[0] = ghost
+
+                        row.alpha = 0.2f
+                        true
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val ghost = ghostRef[0] ?: return@setOnTouchListener true
+                        val scrollView = container.parent as? ScrollView
+                            ?: return@setOnTouchListener true
+                        val panelRoot = scrollView.parent as? FrameLayout
+                            ?: return@setOnTouchListener true
+
+                        val panelLoc = IntArray(2)
+                        panelRoot.getLocationOnScreen(panelLoc)
+                        ghost.translationY = (event.rawY - panelLoc[1] - itemH / 2f)
+                            .coerceIn(0f, (panelRoot.height - itemH).toFloat())
+
+                        // Determine which slot the ghost is hovering over.
+                        val containerLoc = IntArray(2)
+                        container.getLocationOnScreen(containerLoc)
+                        val yInContainer = event.rawY - containerLoc[1]
+                        val newTarget = (yInContainer / itemH).toInt()
+                            .coerceIn(0, rowViews.size - 1)
+
+                        if (newTarget != targetIdx[0]) {
+                            targetIdx[0] = newTarget
+                            animateRowDisplacement(rowViews, draggingIdx[0], newTarget, itemH.toFloat())
+                        }
+                        true
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val ghost = ghostRef[0] ?: return@setOnTouchListener true
+                        val scrollView = container.parent as? ScrollView
+                            ?: return@setOnTouchListener true
+                        val panelRoot = scrollView.parent as? FrameLayout
+                            ?: return@setOnTouchListener true
+
+                        scrollView.requestDisallowInterceptTouchEvent(false)
+                        panelRoot.removeView(ghost)
+                        ghostRef[0] = null
+
+                        val dIdx = draggingIdx[0]
+                        val tIdx = targetIdx[0]
+                        draggingIdx[0] = -1
+                        targetIdx[0]   = -1
+
+                        if (dIdx >= 0 && dIdx != tIdx && event.actionMasked == MotionEvent.ACTION_UP) {
+                            // Reset translations instantly — onReorder will rebuild the list.
+                            rowViews.forEach { it.translationY = 0f; it.alpha = 1f }
+                            val newOrder = currentOrder.toMutableList()
+                            val moved = newOrder.removeAt(dIdx)
+                            newOrder.add(tIdx, moved)
+                            currentOrder.clear()
+                            currentOrder.addAll(newOrder)
+                            onReorder(newOrder)
+                        } else {
+                            // No move or cancelled — animate everything back.
+                            rowViews.forEach { row ->
+                                row.animate().translationY(0f).alpha(1f).setDuration(120).start()
+                            }
+                        }
+                        true
+                    }
+
+                    else -> false
+                }
+            }
+        }
     }
 
     for (actionRow in actionRows) {
         (actionRow.parent as? android.view.ViewGroup)?.removeView(actionRow)
         container.addView(actionRow, LinearLayout.LayoutParams(panelW, itemH))
+    }
+}
+
+/**
+ * Slides rows aside to visualise where the dragged item will land.
+ *
+ * Items between [dragIdx] and [targetIdx] shift by ±[itemH] to open a gap
+ * at the target slot. The dragged row itself stays in place (it is invisible).
+ */
+private fun animateRowDisplacement(
+    rows: List<View>,
+    dragIdx: Int,
+    targetIdx: Int,
+    itemH: Float,
+) {
+    rows.forEachIndexed { i, row ->
+        val ty = when {
+            i == dragIdx -> 0f
+            dragIdx < targetIdx && i in (dragIdx + 1)..targetIdx -> -itemH
+            dragIdx > targetIdx && i in targetIdx until dragIdx  ->  itemH
+            else -> 0f
+        }
+        row.animate().translationY(ty).setDuration(120).start()
     }
 }
 
@@ -345,7 +516,7 @@ fun populateAppList(
 fun populateAddAppList(
     container: LinearLayout,
     apps: List<AppRowInfo>,
-    addedPackages: Set<String>,
+    addedPackages: Collection<String>,
     onToggle: (String, Boolean) -> Unit,
 ) {
     val context = container.context

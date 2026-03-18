@@ -70,7 +70,7 @@ class AppRepository(
                     icon          = ai.loadIcon(pm),
                 )
             } catch (_: PackageManager.NameNotFoundException) { null }
-        }.sortedBy { it.label.lowercase() }
+        }
     }
 
     fun launchApp(packageName: String) {
