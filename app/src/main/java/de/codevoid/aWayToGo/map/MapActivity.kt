@@ -1546,7 +1546,8 @@ class MapActivity : ComponentActivity() {
             )
             isLocationComponentEnabled = true
         }
-        applyCameraLock(viewModel.uiState.value.mode == AppMode.NAVIGATE
+        applyCameraLock((viewModel.uiState.value.mode == AppMode.NAVIGATE
+            || viewModel.uiState.value.isCameraLocked)
             && !viewModel.uiState.value.isInPanningMode)
 
         // Subscribe to fused location for raw fixes.
@@ -1648,6 +1649,12 @@ class MapActivity : ComponentActivity() {
     private fun enterPanningMode() {
         lockResumeJob?.cancel()
         lockResumeJob = null
+        val state = viewModel.uiState.value
+        if (state.mode != AppMode.NAVIGATE && state.isCameraLocked) {
+            // Panning in EXPLORE while locked: cancel the lock permanently.
+            // Unlike NAVIGATE, there is no countdown to re-engage.
+            viewModel.setCameraLocked(false)
+        }
         viewModel.enterPanningMode()
     }
 
@@ -2044,7 +2051,8 @@ class MapActivity : ComponentActivity() {
             )
             isLocationComponentEnabled = true
         }
-        applyCameraLock(viewModel.uiState.value.mode == AppMode.NAVIGATE
+        applyCameraLock((viewModel.uiState.value.mode == AppMode.NAVIGATE
+            || viewModel.uiState.value.isCameraLocked)
             && !viewModel.uiState.value.isInPanningMode)
     }
 
@@ -2217,6 +2225,7 @@ class MapActivity : ComponentActivity() {
     private fun renderUiState(new: MapUiState, old: MapUiState?) {
         val modeChanged          = old?.mode != new.mode
         val panningChanged       = old?.isInPanningMode != new.isInPanningMode
+        val lockFlagChanged      = old?.isCameraLocked != new.isCameraLocked
         val menuChanged          = old?.isMenuOpen != new.isMenuOpen
         val searchChanged        = old?.isSearchOpen != new.isSearchOpen
         val settingsMenuChanged  = old?.isInSettingsMenu != new.isInSettingsMenu
@@ -2261,11 +2270,11 @@ class MapActivity : ComponentActivity() {
         }
 
         // ── Fly-to on panning exit ─────────────────────────────────────────────
-        // When panning exits in non-NAVIGATE modes, fly back to GPS once.
-        // In NAVIGATE mode the next GPS fix will re-lock the camera via moveCamera.
+        // When panning exits in non-NAVIGATE/non-locked modes, fly back to GPS once.
+        // In NAVIGATE or isCameraLocked mode, TRACKING_GPS re-engages automatically.
         if (panningChanged && !new.isInPanningMode && old?.isInPanningMode == true) {
             fuelTooltipCard.visibility = View.GONE
-            if (new.mode != AppMode.NAVIGATE) {
+            if (new.mode != AppMode.NAVIGATE && !new.isCameraLocked) {
                 val m   = map
                 val loc = m?.locationComponent?.lastKnownLocation
                 if (m != null && loc != null) {
@@ -2470,14 +2479,26 @@ class MapActivity : ComponentActivity() {
         // With CameraMode.TRACKING_GPS engaged in lock mode, MapLibre's animator
         // drives the camera every vsync — 60 fps is needed across all modes.
         // Thermal throttle (thermalListener) may override this to a lower value.
-        if (modeChanged || panningChanged) {
+        if (modeChanged || panningChanged || lockFlagChanged) {
             normalFps = 60
             mapView.setMaximumFps(normalFps)
         }
 
         // ── Camera lock mode ───────────────────────────────────────────────────
-        if (modeChanged || panningChanged) {
-            applyCameraLock(new.mode == AppMode.NAVIGATE && !new.isInPanningMode)
+        val locked = (new.mode == AppMode.NAVIGATE || new.isCameraLocked) && !new.isInPanningMode
+        if (modeChanged || panningChanged || lockFlagChanged) {
+            applyCameraLock(locked)
+        }
+
+        // ── myLocationButton visual — blue background when camera is locked ────
+        if (lockFlagChanged || old == null) {
+            val bgColor = if (new.isCameraLocked) Color.argb(220, 30, 100, 200)
+                          else                    Color.argb(180, 0, 0, 0)
+            myLocationButton.background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(bgColor) },
+                GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) },
+            )
         }
 
         // ── Mode transition ────────────────────────────────────────────────────

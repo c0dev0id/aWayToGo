@@ -20,19 +20,25 @@ sealed class DownloadState {
  *
  * ## Camera lock model
  *
- * Lock mode is not a separate flag — it is implied by [mode]:
+ * Camera lock is active when `mode == NAVIGATE || isCameraLocked`:
  *   - [AppMode.NAVIGATE]: camera is locked to the GPS puck.  Each GPS fix calls
  *     `moveCamera` (instant, no animation) so puck and camera centre are always
  *     coincident.  [isCourseUpEnabled] selects Course-Up vs North-Up bearing.
- *   - [AppMode.EXPLORE] / [AppMode.EDIT]: camera is free.  Puck moves on screen
- *     as GPS fixes arrive; camera is independent.
+ *   - [isCameraLocked] = true: same TRACKING_GPS + course-up lock, but without
+ *     entering NAVIGATE mode (no tilt, no mode change).  Toggled by the
+ *     myLocationButton in EXPLORE mode.
+ *   - [AppMode.EXPLORE] / [AppMode.EDIT] with [isCameraLocked] = false: camera
+ *     is free.  Puck moves on screen as GPS fixes arrive; camera is independent.
  *
  * [isInPanningMode] temporarily suspends the lock (user is panning the map).
- * After the user stops, [lockResumeDelayS] seconds elapse before lock re-engages.
+ * After the user stops, [lockResumeDelayS] seconds elapse before lock re-engages
+ * (NAVIGATE only — in EXPLORE the lock is cancelled permanently on pan).
  *
  * | Field               | What it controls                                             |
  * |---------------------|--------------------------------------------------------------|
- * | [mode]              | App mode; also determines lock (NAVIGATE) vs free camera.  |
+ * | [mode]              | App mode; NAVIGATE implies camera lock.                     |
+ * | [isCameraLocked]    | Explicit camera lock: TRACKING_GPS + course-up, without     |
+ *                         entering NAVIGATE (no tilt, no mode change).               |
  * | [isInPanningMode]   | Crosshair visible, camera lock temporarily suspended.       |
  * | [isMenuOpen]        | Hamburger panel expanded.                                   |
  * | [isSearchOpen]      | Search overlay visible (Explore mode only).                 |
@@ -52,6 +58,7 @@ sealed class DownloadState {
  */
 data class MapUiState(
     val mode: AppMode = AppMode.EXPLORE,
+    val isCameraLocked: Boolean = false,
     val isInPanningMode: Boolean = false,
     val isMenuOpen: Boolean = false,
     val isSearchOpen: Boolean = false,

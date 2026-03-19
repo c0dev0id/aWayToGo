@@ -370,6 +370,37 @@ class MapViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isInOfflineMapsMenu = false, isInTileSelectMode = false) }
     }
 
+    /**
+     * Explicitly set the camera-lock flag.
+     *
+     * Locking: forces [MapUiState.isCourseUpEnabled] = true and clears
+     * [MapUiState.isInPanningMode] so TRACKING_GPS engages immediately.
+     * Unlocking: clears [MapUiState.isCameraLocked] only; other fields unchanged.
+     */
+    fun setCameraLocked(locked: Boolean) {
+        _uiState.update { state ->
+            if (locked) {
+                state.copy(
+                    isCameraLocked    = true,
+                    isCourseUpEnabled = true,
+                    isInPanningMode   = false,
+                )
+            } else {
+                state.copy(isCameraLocked = false)
+            }
+        }
+    }
+
+    /**
+     * Toggle the explicit camera lock on/off.
+     *
+     * Used by the myLocationButton in EXPLORE mode.  Engaging lock enables
+     * Course-Up and exits any active panning; disengaging releases the camera.
+     */
+    fun toggleCameraLock() {
+        _uiState.update { state -> if (state.isCameraLocked) state.copy(isCameraLocked = false) else state.copy(isCameraLocked = true, isCourseUpEnabled = true, isInPanningMode = false) }
+    }
+
     /** Open the apps launcher panel. */
     fun openAppsMenu() {
         _uiState.update { it.copy(isAppsMenuOpen = true) }
