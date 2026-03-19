@@ -12,3 +12,7 @@ doit.sh
 
 # device log dumps (make log)
 log/
+
+# Claude Code local state (not shared)
+.claude/settings.local.json
+.claude/worktrees/
