@@ -1681,13 +1681,13 @@ class MapActivity : ComponentActivity() {
     private fun updateCrosshairAlpha() {
         val m = map ?: return
         if (crosshairView.visibility != View.VISIBLE) return
-        if (followLastLat.isNaN()) { crosshairView.alpha = 1f; return }
+        if (followLastLat.isNaN()) { crosshairView.iconAlpha = 1f; return }
         val d      = resources.displayMetrics.density
         val puck   = m.projection.toScreenLocation(LatLng(followLastLat, followLastLon))
         val dcx    = puck.x - mapView.width  / 2f
         val dcy    = puck.y - mapView.height / 2f
         val distDp = sqrt(dcx * dcx + dcy * dcy) / d
-        crosshairView.alpha = ((distDp - 20f) / (100f - 20f)).coerceIn(0f, 1f)
+        crosshairView.iconAlpha = ((distDp - 20f) / (100f - 20f)).coerceIn(0f, 1f)
     }
 
     /**

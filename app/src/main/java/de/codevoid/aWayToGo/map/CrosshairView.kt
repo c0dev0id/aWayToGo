@@ -57,6 +57,17 @@ class CrosshairView(context: Context) : View(context) {
             invalidate()
         }
 
+    /**
+     * Alpha [0f, 1f] applied only to the crosshair icon, not the lock ring.
+     * Use this instead of [View.alpha] so the ring remains fully opaque even
+     * when the crosshair fades out near the GPS puck.
+     */
+    var iconAlpha: Float = 1f
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         val cx = w / 2f
         val cy = h / 2f
@@ -81,6 +92,7 @@ class CrosshairView(context: Context) : View(context) {
                 (cx - centerRadius).toInt(), (cy - centerRadius).toInt(),
                 (cx + centerRadius).toInt(), (cy + centerRadius).toInt(),
             )
+            d.alpha = (iconAlpha * 255f).toInt().coerceIn(0, 255)
             d.draw(canvas)
         }
     }
