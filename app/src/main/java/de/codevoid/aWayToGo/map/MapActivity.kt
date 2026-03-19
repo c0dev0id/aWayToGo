@@ -129,6 +129,7 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
@@ -468,17 +469,14 @@ class MapActivity : ComponentActivity() {
             osdDirty        = true
         }
 
-        // ── Update puck ────────────────────────────────────────────────────
-        // Always push the accepted fix to the location engine so the puck
-        // reflects the real GPS position.  In lock mode (NAVIGATE + not panning)
-        // the camera is moved to match, keeping puck at screen centre.
-        syntheticEngine.pushLocation(loc)
+        map ?: return
+        val uiState = viewModel.uiState.value
 
         // ── Bearing EMA ────────────────────────────────────────────────────
+        // Computed before the puck push so the smoothed value is baked into the
+        // location handed to the synthetic engine.
         // α = 1 − exp(−dt / τ) gives a constant time constant τ regardless of
         // GPS rate: at 1 Hz α≈0.28, at 4 Hz α≈0.08, at 5 Hz α≈0.065.
-        val m       = map ?: return
-        val uiState = viewModel.uiState.value
         if (uiState.isCourseUpEnabled) {
             // Gate GPS bearing on speed: below ~7 km/h the Doppler signal is too weak
             // and Location.getBearing() is unreliable; fall back to compass instead.
@@ -498,31 +496,19 @@ class MapActivity : ComponentActivity() {
             }
         }
 
-        // ── Camera lock ────────────────────────────────────────────────────
-        // In NAVIGATE mode (locked) and not panning: move camera instantly to
-        // the GPS position.  moveCamera is synchronous/instant — no animation
-        // lag, no drift between puck and camera centre.
-        val locked = uiState.mode == AppMode.NAVIGATE && !uiState.isInPanningMode
-        if (!locked) {
-            updateCrosshairAlpha()
-            return
+        // ── Update puck ────────────────────────────────────────────────────
+        // Bake the smoothed bearing into the location before pushing so that
+        // CameraMode.TRACKING_GPS uses the same value for both puck icon and camera.
+        // CourseUp off → bearing 0 (north-up).  CourseUp on → EMA-smoothed bearing.
+        val locForPuck = Location(loc).apply {
+            bearing = if (uiState.isCourseUpEnabled && !followSmoothedSin.isNaN())
+                Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos)).toFloat()
+            else
+                0f
         }
-        val cur        = m.cameraPosition
-        val gpsBearing = if (uiState.isCourseUpEnabled && !followSmoothedSin.isNaN())
-            Math.toDegrees(atan2(followSmoothedSin, followSmoothedCos))
-        else cur.bearing
-        val cameraUpdate = CameraUpdateFactory.newCameraPosition(
-            CameraPosition.Builder()
-                .target(LatLng(loc.latitude, loc.longitude))
-                .zoom(cur.zoom)
-                .bearing(gpsBearing)
-                .tilt(45.0)
-                .padding(cur.padding)
-                .build()
-        )
-        m.moveCamera(cameraUpdate)
+        syntheticEngine.pushLocation(locForPuck)
 
-            updateCrosshairAlpha()
+        updateCrosshairAlpha()
 
         // ── Settled drag-line refresh ──────────────────────────────────────
         // While the whip animation is running doFrame pushes geometry every vsync.
@@ -1560,6 +1546,8 @@ class MapActivity : ComponentActivity() {
             )
             isLocationComponentEnabled = true
         }
+        applyCameraLock(viewModel.uiState.value.mode == AppMode.NAVIGATE
+            && !viewModel.uiState.value.isInPanningMode)
 
         // Subscribe to fused location for raw fixes.
         // onLocationFix drives the puck, bearing EMA, and camera follow
@@ -1661,6 +1649,19 @@ class MapActivity : ComponentActivity() {
         lockResumeJob?.cancel()
         lockResumeJob = null
         viewModel.enterPanningMode()
+    }
+
+    /**
+     * Engage or disengage camera lock.
+     *
+     * Locked: [CameraMode.TRACKING_GPS] — MapLibre's animator drives both the puck
+     * and the camera from the same Choreographer loop, giving 60 fps camera updates
+     * that are perfectly synchronised with puck movement.
+     * Unlocked: [CameraMode.NONE] — camera is managed manually (panning, fly-to).
+     */
+    private fun applyCameraLock(locked: Boolean) {
+        map?.locationComponent?.cameraMode =
+            if (locked) CameraMode.TRACKING_GPS else CameraMode.NONE
     }
 
     /**
@@ -2043,6 +2044,8 @@ class MapActivity : ComponentActivity() {
             )
             isLocationComponentEnabled = true
         }
+        applyCameraLock(viewModel.uiState.value.mode == AppMode.NAVIGATE
+            && !viewModel.uiState.value.isInPanningMode)
     }
 
     private fun setToggleActive(btn: TextView, active: Boolean) {
@@ -2464,13 +2467,17 @@ class MapActivity : ComponentActivity() {
         }
 
         // ── Dynamic FPS cap ────────────────────────────────────────────────────
-        // NAVIGATE while not panning: GPS updates arrive at 5 Hz and MapLibre's
-        // WHEN_DIRTY mode only re-renders on camera events, so 60 fps is wasteful.
-        // Drop to 30 fps to cut GPU power; restore 60 fps for interactive modes.
+        // With CameraMode.TRACKING_GPS engaged in lock mode, MapLibre's animator
+        // drives the camera every vsync — 60 fps is needed across all modes.
         // Thermal throttle (thermalListener) may override this to a lower value.
         if (modeChanged || panningChanged) {
-            normalFps = if (new.mode == AppMode.NAVIGATE && !new.isInPanningMode) 30 else 60
+            normalFps = 60
             mapView.setMaximumFps(normalFps)
+        }
+
+        // ── Camera lock mode ───────────────────────────────────────────────────
+        if (modeChanged || panningChanged) {
+            applyCameraLock(new.mode == AppMode.NAVIGATE && !new.isInPanningMode)
         }
 
         // ── Mode transition ────────────────────────────────────────────────────
