@@ -5,6 +5,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
+import androidx.core.content.FileProvider
 import de.codevoid.aWayToGo.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -136,51 +138,91 @@ class AppUpdater(private val context: Context) {
         downloader.download(url, apkFile, onProgress)
 
     /**
-     * Installs the downloaded APK via the [PackageInstaller] session API.
+     * Installs [file] via the appropriate mechanism for the current app role.
      *
-     * Unlike `ACTION_VIEW` with a file URI, the system itself controls the
-     * install confirmation dialog.  This avoids the problem where a launcher
-     * activity with `singleTask` + HOME category pushes the installer's
-     * activity behind its own task on `startActivity()`.
+     * When the app is the default HOME app, the [PackageInstaller] session API is used:
+     * the system delivers [PackageInstaller.STATUS_PENDING_USER_ACTION] back to
+     * [activityClass] via [Activity.onNewIntent], which then calls [startActivity] on the
+     * bundled confirmation intent.  This avoids the `singleTask`+HOME task-stack problem
+     * where a plain [Intent.ACTION_VIEW] startActivity() pushes the installer behind our task.
+     *
+     * When the app is running as a regular (non-home) app, [Intent.ACTION_VIEW] is used
+     * instead: the system's package installer activity handles the full confirmation flow
+     * including the "Open / Done" dialog after a successful install.
      *
      * Requires `REQUEST_INSTALL_PACKAGES` permission.
      */
+    suspend fun installApk(file: File, activityClass: Class<out Activity>) {
+        if (isDefaultHomeApp()) {
+            installViaSession(file, activityClass)
+        } else {
+            installViaActionView(file)
+        }
+    }
+
     /**
-     * Writes [file] into a PackageInstaller session and commits it.
+     * Returns true if this app is currently the default HOME (launcher) app.
+     *
+     * Resolves the current default for [Intent.ACTION_MAIN] /
+     * [Intent.CATEGORY_HOME] and compares the package name.
+     */
+    private fun isDefaultHomeApp(): Boolean {
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolved = context.packageManager
+            .resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+        return resolved?.activityInfo?.packageName == context.packageName
+    }
+
+    /**
+     * Installs via [PackageInstaller] session — used when running as the HOME app.
      *
      * The file copy runs on [Dispatchers.IO] so it never blocks the main thread.
      *
-     * [activityClass] is the Activity that will receive [PackageInstaller.STATUS_PENDING_USER_ACTION]
-     * via [android.app.Activity.onNewIntent] when the system is ready to show the install
-     * confirmation dialog.  Must be an Activity declared in the manifest.
-     *
-     * The previous implementation used `context.javaClass` (the Application class) which is
-     * not an Activity, so the confirmation intent was silently dropped and the dialog never
-     * appeared.
+     * [activityClass] receives [PackageInstaller.STATUS_PENDING_USER_ACTION] via
+     * [Activity.onNewIntent]; it must call [startActivity] on [Intent.EXTRA_INTENT] to
+     * surface the system confirmation dialog.
      */
-    suspend fun installApk(file: File, activityClass: Class<out Activity>) = withContext(Dispatchers.IO) {
-        val installer = context.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(
-            PackageInstaller.SessionParams.MODE_FULL_INSTALL
-        )
-        val sessionId = installer.createSession(params)
-        installer.openSession(sessionId).use { session ->
-            file.inputStream().use { input ->
-                val out = session.openWrite("update.apk", 0, file.length())
-                input.copyTo(out, bufferSize = 1024 * 1024)
-                session.fsync(out)
-                out.close()
+    private suspend fun installViaSession(file: File, activityClass: Class<out Activity>) =
+        withContext(Dispatchers.IO) {
+            val installer = context.packageManager.packageInstaller
+            val params    = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            val sessionId = installer.createSession(params)
+            installer.openSession(sessionId).use { session ->
+                file.inputStream().use { input ->
+                    val out = session.openWrite("update.apk", 0, file.length())
+                    input.copyTo(out, bufferSize = 1024 * 1024)
+                    session.fsync(out)
+                    out.close()
+                }
+                val intent = Intent(context, activityClass)
+                // FLAG_MUTABLE is required: PackageInstaller needs to add EXTRA_STATUS
+                // and EXTRA_INTENT to this intent.  FLAG_IMMUTABLE silently blocks those
+                // extras so onNewIntent receives an empty intent and the dialog never appears.
+                val pi = PendingIntent.getActivity(
+                    context, sessionId, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+                )
+                session.commit(pi.intentSender)
             }
-            val intent = Intent(context, activityClass)
-            // FLAG_MUTABLE is required: PackageInstaller needs to add EXTRA_STATUS
-            // and EXTRA_INTENT to this intent when it calls back with the install
-            // confirmation.  FLAG_IMMUTABLE (API 31+) silently blocks those extras,
-            // so onNewIntent receives an empty intent and the installer never appears.
-            val pi = PendingIntent.getActivity(
-                context, sessionId, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
-            )
-            session.commit(pi.intentSender)
         }
+
+    /**
+     * Installs via [Intent.ACTION_VIEW] — used when running as a regular app.
+     *
+     * The system's package installer activity handles confirmation and shows its own
+     * "Open / Done" dialog after a successful install.
+     */
+    private fun installViaActionView(file: File) {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
     }
 }
