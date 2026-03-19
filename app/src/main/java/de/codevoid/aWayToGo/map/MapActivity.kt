@@ -42,7 +42,6 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import java.io.File
 import android.widget.ScrollView
@@ -68,6 +67,8 @@ import de.codevoid.aWayToGo.BuildConfig
 import de.codevoid.aWayToGo.R
 import de.codevoid.aWayToGo.map.ui.Anim
 import de.codevoid.aWayToGo.map.ui.AnimatorBag
+import de.codevoid.aWayToGo.map.ui.SwitchButton
+import de.codevoid.aWayToGo.map.ui.SwitchEntry
 import de.codevoid.aWayToGo.map.ui.SearchOverlayResult
 import de.codevoid.aWayToGo.map.ui.buildEditTopBar
 import de.codevoid.aWayToGo.map.ui.buildExploreBottomBar
@@ -243,7 +244,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var darkModeToggleBtn: TextView
     private lateinit var courseUpToggleBtn: TextView
     private lateinit var fuelStationToggleBtn: TextView
-    private lateinit var myLocationButton: ImageView
+    private lateinit var myLocationButton: SwitchButton
     private lateinit var crosshairView: CrosshairView
     private lateinit var versionCardView: TextView
     private lateinit var fuelTooltipCard: TextView
@@ -837,36 +838,28 @@ class MapActivity : ComponentActivity() {
             ).apply { setMargins(0, 48, 16, 0) },
         )
 
-        // My-location button — bottom-left, circular dark background with ripple.
-        val btnSize = (64 * density).toInt()
-        val btnPad  = (12 * density).toInt()
+        // My-location / lock SwitchButton — bottom-left, expandable pill.
+        val btnSize   = (64 * density).toInt()
         val btnMargin = (16 * density).toInt()
 
-        myLocationButton = ImageView(this).apply {
-            setImageDrawable(ContextCompat.getDrawable(this@MapActivity, R.drawable.ic_my_location))
-            background = RippleDrawable(
-                ColorStateList.valueOf(Color.argb(80, 255, 255, 255)),
-                GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.argb(180, 0, 0, 0))
+        myLocationButton = SwitchButton(
+            context = this,
+            entries = listOf(
+                SwitchEntry(R.drawable.ic_my_location) {
+                    val m   = map ?: return@SwitchEntry
+                    val loc = m.locationComponent?.lastKnownLocation ?: return@SwitchEntry
+                    flyToLocation(m, LatLng(loc.latitude, loc.longitude), zoom = 16.0, bearing = 0.0)
                 },
-                GradientDrawable().apply {          // ripple mask — clips to circle
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.WHITE)
+                SwitchEntry(R.drawable.ic_lock_navigate) {
+                    val mode = viewModel.uiState.value.mode
+                    setMode(if (mode == AppMode.NAVIGATE) AppMode.EXPLORE else AppMode.NAVIGATE)
                 },
-            )
-            setPadding(btnPad, btnPad, btnPad, btnPad)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                val m   = map ?: return@setOnClickListener
-                val loc = m.locationComponent?.lastKnownLocation ?: return@setOnClickListener
-                flyToLocation(m, LatLng(loc.latitude, loc.longitude), zoom = 16.0, bearing = 0.0)
-            }
-        }
+            ),
+        )
         root.addView(
             myLocationButton,
-            FrameLayout.LayoutParams(btnSize, btnSize, Gravity.BOTTOM or Gravity.START)
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, btnSize,
+                                     Gravity.BOTTOM or Gravity.START)
                 .apply { setMargins(btnMargin, 0, 0, btnMargin) },
         )
 
@@ -1844,7 +1837,9 @@ class MapActivity : ComponentActivity() {
         val inEdit     = mode == AppMode.EDIT
 
         menuPanel.visibility        = if (inExplore)  View.VISIBLE else View.GONE
-        myLocationButton.visibility = if (inExplore)  View.VISIBLE else View.GONE
+        val showMyLocationBtn = inExplore || inNavigate
+        if (!showMyLocationBtn) myLocationButton.collapseInstant()
+        myLocationButton.visibility = if (showMyLocationBtn) View.VISIBLE else View.GONE
         exploreBottomBar.visibility = if (inExplore)  View.VISIBLE else View.GONE
         appsPanel.visibility        = if (inExplore)  View.VISIBLE else View.GONE
         navigateOverlay.visibility  = if (inNavigate) View.VISIBLE else View.GONE
@@ -1896,10 +1891,16 @@ class MapActivity : ComponentActivity() {
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction { menuPanel.visibility = View.GONE; menuPanel.translationX = 0f }
                     .start()
-                myLocationButton.animate().translationX(-w)
-                    .setDuration(outDur).setInterpolator(outInterp)
-                    .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
-                    .start()
+                // Button stays visible when going to NAVIGATE; only slide out for EDIT.
+                if (to == AppMode.EDIT) {
+                    myLocationButton.animate().translationX(-w)
+                        .setDuration(outDur).setInterpolator(outInterp)
+                        .withEndAction {
+                            myLocationButton.collapseInstant()
+                            myLocationButton.visibility = View.GONE
+                            myLocationButton.translationX = 0f
+                        }.start()
+                }
                 exploreBottomBar.animate().translationY(h)
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
@@ -1918,6 +1919,16 @@ class MapActivity : ComponentActivity() {
                     .setDuration(outDur).setInterpolator(outInterp)
                     .withEndAction { navigateStopBtn.translationY = 0f }
                     .start()
+                // Button stays visible when going to EXPLORE; only slide out for EDIT.
+                if (to == AppMode.EDIT) {
+                    myLocationButton.animate().translationX(-w)
+                        .setDuration(outDur).setInterpolator(outInterp)
+                        .withEndAction {
+                            myLocationButton.collapseInstant()
+                            myLocationButton.visibility = View.GONE
+                            myLocationButton.translationX = 0f
+                        }.start()
+                }
             }
             AppMode.EDIT -> {
                 editTopBar.animate().translationY(-h)
@@ -1938,22 +1949,27 @@ class MapActivity : ComponentActivity() {
         when (to) {
             AppMode.EXPLORE -> {
                 menuPanel.translationX        = -w
-                myLocationButton.translationX = -w
                 exploreBottomBar.translationY = h
                 exploreBottomBar.alpha        = 1f   // clear any search-fade leftover
                 menuPanel.visibility          = View.VISIBLE
-                myLocationButton.visibility   = View.VISIBLE
                 exploreBottomBar.visibility   = View.VISIBLE
                 appsPanel.translationX        = w
                 appsPanel.visibility          = View.VISIBLE
                 menuPanel.animate().translationX(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
-                myLocationButton.animate().translationX(0f)
-                    .setDuration(inDur).setInterpolator(inInterp).start()
                 exploreBottomBar.animate().translationY(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
                 appsPanel.animate().translationX(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
+                // Button already visible when coming from NAVIGATE; only animate in from EDIT.
+                if (from == AppMode.EDIT) {
+                    myLocationButton.translationX = -w
+                    myLocationButton.visibility   = View.VISIBLE
+                    myLocationButton.animate().translationX(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                } else {
+                    myLocationButton.visibility = View.VISIBLE
+                }
             }
             AppMode.NAVIGATE -> {
                 navigateBanner.translationY  = -h
@@ -1963,6 +1979,15 @@ class MapActivity : ComponentActivity() {
                     .setDuration(inDur).setInterpolator(inInterp).start()
                 navigateStopBtn.animate().translationY(0f)
                     .setDuration(inDur).setInterpolator(inInterp).start()
+                // Button already visible when coming from EXPLORE; only animate in from EDIT.
+                if (from == AppMode.EDIT) {
+                    myLocationButton.translationX = -w
+                    myLocationButton.visibility   = View.VISIBLE
+                    myLocationButton.animate().translationX(0f)
+                        .setDuration(inDur).setInterpolator(inInterp).start()
+                } else {
+                    myLocationButton.visibility = View.VISIBLE
+                }
             }
             AppMode.EDIT -> {
                 editTopBar.translationY = -h
@@ -2457,6 +2482,8 @@ class MapActivity : ComponentActivity() {
             } else {
                 animateModeTransition(old.mode, new.mode)
             }
+            // Sync SwitchButton primary: lock icon in NAVIGATE, fly-to in EXPLORE/EDIT.
+            myLocationButton.setPrimary(if (new.mode == AppMode.NAVIGATE) 1 else 0)
         }
 
         // ── Map style toggles ──────────────────────────────────────────────────
@@ -3589,8 +3616,11 @@ class MapActivity : ComponentActivity() {
 
         // Slide chrome off screen.
         myLocationButton.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
-            .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
-            .start()
+            .withEndAction {
+                myLocationButton.collapseInstant()
+                myLocationButton.visibility = View.GONE
+                myLocationButton.translationX = 0f
+            }.start()
         exploreBottomBar.animate().translationY(h).setDuration(dur).setInterpolator(intr)
             .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
             .start()
@@ -3634,12 +3664,14 @@ class MapActivity : ComponentActivity() {
         val dur  = 350L
         val intr = DecelerateInterpolator()
 
-        // Slide chrome back in (only from EXPLORE mode).
-        if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
+        // Slide chrome back in (EXPLORE or NAVIGATE, but not EDIT).
+        if (viewModel.uiState.value.mode != AppMode.EDIT) {
             myLocationButton.translationX = -w
             myLocationButton.visibility   = View.VISIBLE
             myLocationButton.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+        }
 
+        if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
             exploreBottomBar.translationY = h
             exploreBottomBar.visibility   = View.VISIBLE
             exploreBottomBar.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
@@ -3703,8 +3735,11 @@ class MapActivity : ComponentActivity() {
 
         // ── Slide Explore chrome off screen (menu panel stays put) ────────────
         myLocationButton.animate().translationX(-w).setDuration(dur).setInterpolator(intr)
-            .withEndAction { myLocationButton.visibility = View.GONE; myLocationButton.translationX = 0f }
-            .start()
+            .withEndAction {
+                myLocationButton.collapseInstant()
+                myLocationButton.visibility = View.GONE
+                myLocationButton.translationX = 0f
+            }.start()
 
         exploreBottomBar.animate().translationY(h).setDuration(dur).setInterpolator(intr)
             .withEndAction { exploreBottomBar.visibility = View.GONE; exploreBottomBar.translationY = 0f }
@@ -3752,12 +3787,14 @@ class MapActivity : ComponentActivity() {
             tileSelectSavedCamera = null
         }
 
-        // ── Slide Explore chrome back in (only from EXPLORE mode) ─────────────
-        if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
+        // ── Slide chrome back in (EXPLORE or NAVIGATE, but not EDIT) ─────────
+        if (viewModel.uiState.value.mode != AppMode.EDIT) {
             myLocationButton.translationX = -w
             myLocationButton.visibility = View.VISIBLE
             myLocationButton.animate().translationX(0f).setDuration(dur).setInterpolator(intr).start()
+        }
 
+        if (viewModel.uiState.value.mode == AppMode.EXPLORE) {
             exploreBottomBar.translationY = h
             exploreBottomBar.visibility = View.VISIBLE
             exploreBottomBar.animate().translationY(0f).setDuration(dur).setInterpolator(intr).start()
